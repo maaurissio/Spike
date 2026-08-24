@@ -1,8 +1,9 @@
-# VTracker — Arquitectura y especificación inicial
+# VTracker — Arquitectura y especificación inicial — nombre temporal
 
 > Estado: borrador de arquitectura.  
 > Alcance: decisión y diseño inicial; **no es una implementación**.  
-> Convención: **Decidido** refleja acuerdos ya tomados. **Propuesta** indica una dirección recomendada que debe validarse antes de construirla.
+> Convención: **Decidido** refleja acuerdos ya tomados. **Propuesta** indica una dirección recomendada que debe validarse antes de construirla.  
+> **Nombre:** `VTracker` es **temporal de desarrollo**. El nombre final se definirá antes del release y se propagará a `Cargo.toml`, binario, README y docs (ver `TASKS.md:Prioridad 6`).
 
 ## 1. Resumen del proyecto
 
@@ -14,8 +15,10 @@ Sus objetivos son:
 - Consultar datos mediante una capa de proveedores intercambiable.
 - Evitar solicitudes repetidas y trabajo innecesario mediante caché y un gestor central de solicitudes.
 - Separar los datos originales de las métricas calculadas.
-- Ofrecer una TUI navegable para el seguimiento de partidas, equipo/jugadores, historial y configuración.
+- Ofrecer una TUI navegable para el seguimiento de partidas, equipo/jugadores, historial y **configuración**.
 - Ser medible y operable: logs, diagnóstico y benchmarks desde el inicio.
+- **Experiencia por fase:** al iniciar mostrar perfil propio; al encontrar partida mostrar stats del equipo; en partida mostrar stats generales del game — cada flujo activado por `GameStateSource` autorizado, no por procesos.
+- **Operación desatendida:** apartado de configuración con **autostart** opt-in (iniciar al encender PC / al abrir VALORANT) con minimizado opcional.
 
 ### Límites de producto y cumplimiento
 
@@ -35,6 +38,9 @@ Sus objetivos son:
 | Integraciones | **Provider Layer** | Evita acoplar el dominio a Riot, Tracker u otro origen concreto. |
 | Caché | **L1 RAM + L2 disco** | Respuestas rápidas y menos solicitudes de red. |
 | Red | **Request Manager centralizado** | Dedupe, prioridades, límites, reintentos y cancelación coherentes. |
+| Configuración | **TOML + env var + `.env`** | Separar secretos (`.env`) de opciones (`config.toml`); validar y mostrar en Settings/`doctor` sin exponer claves. |
+| Autostart | **Opt-in con `auto-launch`** | Iniciar al encender/abrir VALORANT solo si el usuario lo habilita; desactivado por defecto. |
+| Nombre | **Temporal `VTracker`** | Evita hardcodear marca antes del release. |
 
 ### Por qué Rust y no Python o C++
 
@@ -48,10 +54,11 @@ Sus objetivos son:
 | Runtime async | Tokio | Tareas asíncronas, canales, temporizadores y cancelación. |
 | HTTP | Reqwest | Solicitudes HTTP de proveedores. |
 | Serialización | Serde + serde_json | Modelos tipados y JSON. |
-| Configuración | TOML + crate `toml` | Archivo de configuración legible. |
-| CLI | Clap | Subcomandos, flags y ayuda. |
-| TUI | Ratatui | Layouts, tablas, gráficos y pantallas. |
+| Configuración | TOML + crate `toml` + `dotenvy` | Archivo legible + `.env` para secretos; validación en `src/config`. |
+| CLI | Clap | Subcomandos, flags y ayuda (`vtracker config`/`autostart`). |
+| TUI | Ratatui | Layouts, tablas, gráficos y pantallas (Elm/TEA: Model/Message/Update/View). |
 | Terminal/input | Crossterm | Backend de terminal y teclado. |
+| Autostart | `auto-launch` | Registro en Run key / Startup folder (Windows), LaunchAgent/XDG en otros OS. |
 | Observabilidad | Tracing + tracing-subscriber | Logs estructurados y diagnóstico. |
 | Errores | `thiserror` + `anyhow` | Errores de dominio tipados y contexto en el borde de la app. |
 
@@ -318,11 +325,11 @@ Pantallas previstas:
 
 | Vista | Propósito |
 |---|---|
-| **Dashboard** | Estado actual, resumen de sesión, señales y accesos rápidos. |
-| **Match** | Contexto de la partida, mapa/modo/estado y datos permitidos. |
-| **Team / Player** | Roster, perfil individual, estadísticas y detalle. |
-| **History** | Historial, filtros, tendencia y desglose por periodo. |
-| **Settings** | Configuración, proveedor, TTL, apariencia y diagnóstico básico. |
+| **Dashboard** | Estado actual, perfil propio con stats, resumen de sesión y señales. |
+| **Match** | Contexto de la partida en curso (mapa/modo/composición) y stats generales del game. |
+| **Team / Player** | Roster de la partida encontrada (PreGame/AgentSelect) + stats del equipo; perfil individual y detalle. |
+| **History** | Historial propio autorizado, filtros, tendencia y desglose por periodo. |
+| **Settings** | **Apartado de configuración:** `config.toml` (intervalo, `profile.riot_id/region`, `autostart.enabled/minimized`, TTL, apariencia), estado de `.env` (`***`), y diagnóstico de providers. |
 
 Navegación propuesta: pestañas o teclas directas; flechas/`j`/`k` para listas, `Enter` para detalle, `r` para actualizar de forma controlada, `q` para salir y ayuda contextual. Los atajos finales deben ser configurables después del MVP.
 
@@ -335,33 +342,34 @@ La TUI debe adaptarse al tamaño disponible:
 ## 13. Estructura de carpetas Rust propuesta
 
 ```text
-vtracker/
+vtracker/  # nombre temporal — se renombrará antes del release
 ├── Cargo.toml
 ├── README.md
 ├── config.example.toml
+├── .env.example
 └── src/
-    ├── main.rs
-    ├── cli/
-    │   └── mod.rs
+    ├── main.rs              # CLI y ciclo principal
+    ├── cli/mod.rs           # parsing testeable (actual)
+    ├── autostart/mod.rs     # enable/disable/status (auto-launch crate)
     ├── app/
     │   ├── mod.rs
     │   ├── lifecycle.rs
-    │   └── state.rs
+    │   └── state.rs         # AppState con profile/team/match + autostart
     ├── core/
     │   ├── mod.rs
     │   ├── player.rs
     │   ├── match.rs
     │   └── game_state.rs
     ├── game/
-    │   ├── mod.rs
+    │   ├── mod.rs           # detection local + GameState
     │   ├── detector.rs
     │   └── watcher.rs
     ├── events/
     │   ├── mod.rs
-    │   └── bus.rs
+    │   └── bus.rs           # Event Bus → AppState → TUI
     ├── providers/
     │   ├── mod.rs
-    │   ├── capabilities.rs
+    │   ├── capabilities.rs  # GameStateSource, PlayerProfileSource, RosterSource...
     │   ├── riot.rs
     │   └── tracker.rs
     ├── requests/
@@ -369,8 +377,8 @@ vtracker/
     │   └── manager.rs
     ├── cache/
     │   ├── mod.rs
-    │   ├── memory.rs
-    │   └── disk.rs
+    │   ├── memory.rs        # L1
+    │   └── disk.rs          # L2
     ├── analytics/
     │   ├── mod.rs
     │   ├── combat.rs
@@ -381,16 +389,14 @@ vtracker/
     │   ├── mod.rs
     │   ├── terminal.rs
     │   ├── views/
-    │   │   ├── dashboard.rs
-    │   │   ├── match.rs
+    │   │   ├── dashboard.rs  # perfil propio + estado
+    │   │   ├── match.rs      # stats generales del game
     │   │   ├── player.rs
     │   │   ├── history.rs
-    │   │   └── settings.rs
+    │   │   └── settings.rs   # apartado configuración (autostart, perfil, TTL)
     │   └── components/
-    ├── config/
-    │   └── mod.rs
-    └── diagnostics/
-        └── mod.rs
+    ├── config/mod.rs        # TOML + env var, validación, tests
+    └── diagnostics/mod.rs   # doctor (sin exponer secretos)
 ```
 
 Es una organización objetivo, no una exigencia para crear todos los módulos vacíos desde el día uno. El MVP debe introducir solo los límites que necesite.
@@ -399,12 +405,13 @@ Es una organización objetivo, no una exigencia para crear todos los módulos va
 
 ```text
 Start
-  → cargar configuración
+  → cargar .env (dotenvy) + config.toml (TOML + validación)
   → iniciar tracing
-  → inicializar caché
-  → crear Request Manager y proveedores habilitados
+  → inicializar caché L1/L2
+  → crear Request Manager y proveedores habilitados (solo si hay API key en env)
   → iniciar Game Engine y Event Bus
-  → entrar al loop de TUI/watch
+  → si autostart.enabled, registrar en sistema (auto-launch) solo si el usuario lo pidió
+  → entrar al loop de TUI/watch (Dashboard con perfil → Team al encontrar partida → Match en game)
   → reaccionar a eventos y actualizar AppState
   → cancelar tareas y restaurar terminal al salir
 ```
@@ -420,13 +427,14 @@ Requisitos de apagado:
 
 | Comando | Propósito inicial |
 |---|---|
-| `vtracker watch` | Ejecutar la TUI y observar el estado del juego. |
-| `vtracker player <riot-id>` | Consultar un jugador mediante providers disponibles. |
+| `vtracker watch` | Ejecutar la TUI y observar el estado del juego (perfil → equipo → partida). |
+| `vtracker player <riot-id>` | Consultar un jugador mediante providers disponibles (requiere RSO/opt-in). |
 | `vtracker match [id]` | Mostrar o abrir detalle de una partida. |
 | `vtracker history [player]` | Mostrar historial y agregados. |
 | `vtracker cache <subcomando>` | Inspeccionar, limpiar selectivamente o diagnosticar caché. |
-| `vtracker config <subcomando>` | Ver/editar/validar configuración. |
-| `vtracker doctor` | Comprobar entorno, cliente, red, proveedores, configuración y caché. |
+| `vtracker config <subcomando>` | **Apartado configuración:** `show`/`edit`/`validate` de `%APPDATA%\vtracker\config.toml` (intervalo, profile, autostart, TTL). |
+| `vtracker autostart <enable\|disable\|status>` | Gestionar inicio automático al encender/abrir VALORANT (auto-launch, opt-in). |
+| `vtracker doctor` | Comprobar entorno, cliente, red, proveedores, configuración, autostart y caché — sin exponer secretos. |
 
 **Propuesta futura:** `vtracker benchmark` para medir arranque, memoria, CPU inactiva, caché y parsing. No debe convertirse en optimización ficticia: primero métricas reproducibles.
 
@@ -434,13 +442,13 @@ Requisitos de apagado:
 
 | Fase | Resultado | Incluye |
 |---|---|---|
-| 0 — Validación | Viabilidad y cumplimiento | Confirmar fuentes permitidas, auth, límites, señales de estado y datos disponibles. |
-| 1 — MVP de detección | `watch` útil y estable | CLI, configuración, tracing, detección de cliente/estado, máquina de estados y TUI mínima. |
-| 2 — Datos base | Perfil/roster/historial normalizados | Primer provider real, Request Manager básico, L1/L2 y AppState. |
-| 3 — Analytics | Métricas reproducibles | Modelos de partida, K/D, WR, HS%, ADR y agregados iniciales. |
-| 4 — TUI completa | Navegación y pantallas | Dashboard, Match, Team/Player, History, Settings, responsive layout. |
-| 5 — Robustez | Operación confiable | Doctor, retries, rate limits, cancelación, tests, benchmarks y observabilidad. |
-| 6 — Extensión | Nuevos proveedores/funciones | Capabilities adicionales solo tras validación de producto y cumplimiento. |
+| 0 — Validación | Viabilidad y cumplimiento | Confirmar fuentes permitidas, auth (RSO), límites, señales de estado y datos disponibles. |
+| 1 — MVP de detección | `watch` útil y estable | CLI testeable, configuración, tracing, detección local, máquina de estados y TUI mínima. **✓ Completado** |
+| 2 — Datos base | Perfil/roster/historial normalizados | `GameStateSource` desacoplado, primer provider real (con `.env` protegido), Request Manager básico, L1/L2 y AppState con flujo perfil→equipo→partida. |
+| 3 — Analytics | Métricas reproducibles | Modelos de partida, K/D, WR, HS%, ADR y agregados iniciales (fixtures + tests). |
+| 4 — TUI completa | Navegación, pantallas y **configuración** | Dashboard (perfil), Match (stats generales), Team/Player (roster), History, **Settings (apartado configuración + autostart)**, responsive layout (Elm/TEA). |
+| 5 — Robustez | Operación confiable | Doctor extendido (sin exponer secretos), retries, rate limits, cancelación, autostart (`auto-launch`), tests, benchmarks y observabilidad (`tracing`). |
+| 6 — Distribución y nombre final | Release | Binarios, instalador con autostart opt-in, auditoría de secretos, y renombrar `VTracker` al nombre final. |
 
 El MVP no debe prometer todas las estadísticas: primero demuestra que detecta el estado correctamente y que puede actualizar la interfaz sin consumo innecesario.
 
@@ -460,26 +468,41 @@ El MVP no debe prometer todas las estadísticas: primero demuestra que detecta e
 
 Ya acordado:
 
+- **Nombre temporal `VTracker`** hasta el release; evitar hardcodear marca.
 - VTracker se construirá en Rust, no Python ni C++.
-- La interfaz será una TUI basada en Ratatui/Crossterm.
+- La interfaz será una TUI basada en Ratatui/Crossterm con patrón Elm/TEA (Model/Message/Update/View) y separación dominio/UI.
 - La arquitectura se divide en Application Core, Game Engine, Data Engine y UI Engine.
 - El Game Engine modela estados explícitos de VALORANT y emite eventos.
 - El flujo de datos es proveedor → caché → raw data → analytics → derived data → AppState → TUI.
 - Analytics Engine calcula métricas y conserva la separación respecto a proveedores y UI.
 - Existirá caché L1 RAM/L2 disco y un Request Manager central.
 - La capa de providers se diseñará por capacidades para admitir Riot, Tracker y futuros orígenes.
+- **Configuración:** `config.toml` para opciones + `.env` para secretos, con `.gitignore` estricto y `doctor` que enmascara claves.
+- **Apartado configuración:** vista Settings y comandos `config`/`autostart` para gestionar perfil, intervalo, TTL y autostart.
+- **Autostart opt-in** con `auto-launch` (Windows Run key / Startup folder), desactivado por defecto, solo por acción explícita del usuario.
+- **Experiencia por fase:** perfil propio (Idle) → stats de equipo (PreGame/AgentSelect) → stats generales del game (InMatch), siempre vía `GameStateSource` autorizado.
 - El desarrollo se enfocará primero en detección fiable y un `watch` mínimo antes de ampliar estadísticas y pantallas.
 
-## 19. Pendientes para la siguiente fase
+## 19. Pendientes para la siguiente fase (actualizado)
 
-1. Verificar las fuentes de datos que sean técnicamente disponibles y permitidas, con sus requisitos de autenticación, consentimiento y límites.
-2. Precisar qué señal o interfaz alimentará cada transición de la máquina de estados.
+1. Verificar las fuentes de datos que sean técnicamente disponibles y permitidas, con sus requisitos de autenticación (RSO), consentimiento y límites (Prioridad 2B).
+2. Precisar qué señal o interfaz alimentará cada transición de la máquina de estados (`GameStateSource` autorizado, no procesos).
 3. Definir el modelo canónico de jugador, partida, ronda y datos crudos.
-4. Elegir el primer provider concreto y el contrato de sus capabilities.
+4. Elegir el primer provider concreto y el contrato de sus capabilities (`PlayerProfileSource`, `RosterSource`, `MatchHistorySource`).
 5. Fijar definiciones de métricas —en especial ACS/KAST/HS%— según los campos verificables de la fuente.
-6. Diseñar el archivo de configuración, política de TTL e información sensible/secretos.
-7. Acordar la TUI del MVP: layout, navegación, comportamiento sin datos y mensajes de error.
-8. Establecer objetivos de rendimiento medibles para arranque, RAM, CPU idle y latencia.
+6. Diseñar el archivo de configuración (`config.toml` + `profile.riot_id/region`, `autostart.enabled/minimized`), política de TTL e información sensible/secretos en `.env` (`.env.example` como plantilla).
+7. Acordar la TUI del MVP y la navegación completa: Dashboard (perfil), Team (equipo), Match (game), History, **Settings (configuración + autostart)**, comportamiento sin datos y mensajes de error (Elm/TEA).
+8. Diseñar el flujo de autostart (`auto-launch` crate, Windows Run key/Startup folder, comandos `autostart enable|disable|status`, `doctor` con estado) y el instalador con consentimiento explícito.
+9. Establecer objetivos de rendimiento medibles para arranque, RAM, CPU idle y latencia (benchmarks reproducibles antes de optimizar).
+10. Planificar renombrado de `VTracker` al nombre final y propagación a `Cargo.toml`/binario/docs antes del release.
+
+## 20. Buenas prácticas y referencias aplicadas (2026)
+
+- **TUI Rust:** Elm/TEA (Model/Message/Update/View) con `ratatui` + `tokio::select!`; separar dominio de presentación; `cargo fmt`/`clippy`/`test` en cada cambio (ver `README.md:Principios técnicos`).
+- **Event-driven:** polling mínimo, caché antes de red, dedupe y cancelación de requests, cálculos incrementales.
+- **Autostart:** usar `auto-launch`/`tauri-plugin-autostart` como referencia; nunca auto-registrar sin `Config::autostart.enabled` explícito; respetar Run key vs Startup folder (MITRE T1547.001).
+- **Seguridad:** `.env` en `.gitignore`, `dotenvy` solo en runtime, `doctor` enmascara (`***`), `cargo audit`, validar RSO/opt-in antes de mostrar datos de otro jugador (política Riot: datos personales solo con consentimiento).
+- **Config:** TOML versionado, validación estricta (`src/config/mod.rs:19`), `config.example.toml` sin secretos, `config.toml` real fuera del repo (`%APPDATA%/vtracker/`).
 
 ---
 

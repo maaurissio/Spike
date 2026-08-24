@@ -1,9 +1,10 @@
-# VTracker
+# VTracker — nombre temporal
+
+> **Aviso:** `VTracker` es un nombre **temporal de desarrollo**. Se elegirá el nombre final antes del release (ver `TASKS.md:Prioridad 6`).
 
 VTracker es una aplicación de terminal para observar el estado de VALORANT, consultar datos autorizados de partidas y jugadores, y presentar estadísticas de forma rápida y con bajo consumo de recursos.
 
-El proyecto incluye un MVP de `watch`: detecta de forma no invasiva los procesos locales
-del cliente/juego y presenta el estado en terminal. No consulta APIs ni accede a memoria.
+El proyecto incluye un MVP de `watch`: detecta de forma no invasiva los procesos locales del cliente/juego y presenta el estado en terminal. No consulta APIs ni accede a memoria.
 
 ## MVP: `watch`
 
@@ -14,20 +15,15 @@ cargo run -- watch --interval 5
 cargo run -- doctor
 ```
 
-En una terminal interactiva el panel se actualiza automáticamente. Para probar estados
-sin ejecutar VALORANT se puede usar `VTRACKER_STATE=closed`, `idle` o `game`.
+En una terminal interactiva el panel se actualiza automáticamente. Para probar estados sin ejecutar VALORANT se puede usar `VTRACKER_STATE=closed`, `idle` o `game`.
 
-El detector de procesos no puede distinguir lobby, selección de agente o partida. Cuando
-el ejecutable del juego está activo muestra “modo no confirmado”; no debe interpretarse
-como una partida en curso.
+El detector de procesos no puede distinguir lobby, selección de agente o partida. Cuando el ejecutable del juego está activo muestra "modo no confirmado"; no debe interpretarse como una partida en curso.
 
-La configuración opcional está en `%APPDATA%\\vtracker\\config.toml`; consulta
-[`config.example.toml`](config.example.toml) para el formato.
-
-Si `log_transitions = true`, los cambios de estado se guardan en
-`%APPDATA%\vtracker\watch.log`.
+La configuración opcional está en `%APPDATA%\vtracker\config.toml`; consulta [`config.example.toml`](config.example.toml) para el formato. Si `log_transitions = true`, los cambios de estado se guardan en `%APPDATA%\vtracker\watch.log`.
 
 `vtracker doctor` revisa la configuración, la consulta de procesos y los procesos Riot/VALORANT detectados. Es un diagnóstico local: no consulta APIs ni obtiene información de una partida.
+
+Consulta la [lista de tareas](TASKS.md) para el trabajo realizado, prioridades y siguiente paso.
 
 ## Configuración y secretos (API) — protegido por diseño
 
@@ -41,7 +37,7 @@ Si `log_transitions = true`, los cambios de estado se guardan en
 2. **Protegido:** `.env`, `.env.local`, `*.log` y `config.toml` real están en `.gitignore:4`. `doctor` nunca imprimirá una key completa (muestra `***` o `no configurada`).
 3. **Donde van los secretos:**
    * `RIOT_API_KEY` y futuras `*_API_KEY` → solo en variable de entorno / `.env` (ver `.env.example:9`)
-   * `config.toml` → solo intervalo, `log_transitions` y futuras opciones no sensibles (ver `config.example.toml:6`)
+   * `config.toml` → solo intervalo, `log_transitions`, `autostart`, `profile` y futuras opciones no sensibles (ver `config.example.toml:6`)
 4. **Estructura futura:**
    ```text
    src/providers/      # traits GameStateSource / capabilities
@@ -50,19 +46,28 @@ Si `log_transitions = true`, los cambios de estado se guardan en
    ```
    Ningún módulo de UI hará HTTP directo; todo pasa por el Request Manager.
 
-Consulta la [lista de tareas](TASKS.md) para el trabajo realizado, prioridades y siguiente paso.
-
 ## Estructura actual
 
 ```text
 src/
 ├── main.rs          # CLI y ciclo principal
 ├── cli/             # Parsing de argumentos y validación
-├── config/          # Configuración y validación
+├── config/          # Configuración y validación (TOML + env)
 ├── diagnostics/     # Comando doctor
 ├── game/            # Estados y detección local de procesos
 ├── ui/              # Renderizado de terminal
 └── watch/           # Transiciones y persistencia de logs
+```
+
+Estructura objetivo (Prioridad 2+):
+
+```text
+src/
+├── autostart/       # Registro en inicio (Windows Run key / Startup folder)
+├── providers/       # capabilities.rs + adaptadores Riot/Tracker
+├── requests/        # manager.rs (dedupe, rate-limit, retry)
+├── cache/           # memory.rs + disk.rs (L1/L2)
+└── analytics/       # combat.rs, aggregates.rs
 ```
 
 ## Procesos observados (MVP local)
@@ -79,18 +84,45 @@ Verificación con `vtracker doctor` y `VTRACKER_STATE` en Windows (`tasklist /FO
 
 Tests: `cargo test` — 43 pruebas para `config`, `cli`, `game::observation_from_process_list`, `diagnostics::find_riot_processes` y `watch`.
 
+## Experiencia de usuario final — visión
+
+Estado objetivo una vez completado el desarrollo (Prioridades 2-5):
+
+1. **Al iniciar el PC / abrir VALORANT** — VTracker (nombre final por definir) se inicia en segundo plano si `autostart = true` en `config.toml` (`src/config/mod.rs:1`). No hace polling innecesario; espera eventos del `Game Engine`.
+2. **Perfil propio** — al arrancar con cliente disponible muestra tu perfil vinculado (`RIOT_ID` configurado en `config.toml` o `.env`) con stats derivadas (K/D, WR, HS%, ADR/ACS si la fuente los expone) calculadas por `Analytics Engine` desde `Raw Data` cacheada.
+3. **Encontrando partida / Agent Select** — al detectar `PreGame`/`AgentSelect` vía `GameStateSource` autorizado (no por procesos), consulta roster del lobby y muestra stats del equipo (capability `RosterSource` + `MatchHistorySource`) con último estado conocido si la API falla.
+4. **En partida (`InMatch`)** — muestra contexto vivo del game actual: mapa, modo, composición y stats agregadas de sesión. Datos crudos separados de métricas derivadas (`Arquitectura-inicial.md:7` pipeline).
+
+La TUI siempre es opcional: `vtracker watch` para modo live, y comandos `player`/`match`/`history` para consultas puntuales.
+
+## Autoinicio (autostart) — diseño previsto
+
+> Implementación en Prioridad 6 (Robustez y distribución). Desactivado por defecto.
+
+* **Windows:** `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run` o carpeta `Startup` (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`). Librería recomendada: [`auto-launch`](https://crates.io/crates/auto-launch) (soporta Windows/macOS/Linux, usa `AutoLaunchBuilder`).
+* **Alternativa Tauri:** `tauri-plugin-autostart` si se migra a Tauri v2 (mismo principio, builder con `args: ["--minimized"]`).
+* **Comportamiento:** `config.toml` tendrá:
+  ```toml
+  [autostart]
+  enabled = false
+  minimized = true   # arranca sin robar foco
+  ```
+  Y CLI: `vtracker autostart enable|disable|status` (gestiona el registro del sistema, nunca silencioso sin consentimiento). `doctor` mostrará `Autostart: habilitado/deshabilitado` sin tocar registro.
+* **Buena práctica:** el autostart lo configura el instalador o un comando explícito del usuario; nunca se activa solo por ejecutar el binario (principio de *least surprise*, MITRE T1547.001 como referencia de mecanismo).
+
 ## Objetivos
 
-- Detectar transiciones relevantes del cliente y de una partida de VALORANT.
-- Mostrar información mediante una interfaz de terminal navegable.
+- Detectar transiciones relevantes del cliente y de una partida de VALORANT sin inyección ni lectura de memoria.
+- Mostrar información mediante una interfaz de terminal navegable y adaptable.
 - Consultar datos desde proveedores intercambiables, como Riot, Tracker u otros que se validen.
 - Calcular métricas a partir de datos de partidas, sin mezclar cálculos con la interfaz ni con las APIs.
 - Reducir uso de red, CPU y memoria mediante eventos, caché y solicitudes centralizadas.
+- Ser configurable y operable: `config.toml`, `doctor` y autostart explícito.
 
 ## Arquitectura resumida
 
 ```text
-                 VTracker
+                 VTracker (nombre temporal)
                      |
    +-----------------+-----------------+
    |                 |                 |
@@ -121,59 +153,70 @@ Los datos originales (*raw data*) se conservan separados de las métricas calcul
 
 Ejemplos de estadísticas previstas: K/D, porcentaje de headshots, win rate, ADR, ACS, KAST, rachas, rendimiento por agente y rendimiento por mapa. Las fórmulas finales dependerán de los campos que exponga cada fuente de datos.
 
-## Principios técnicos
+## Principios técnicos y buenas prácticas aplicadas
 
-- Rust como lenguaje principal: binario nativo, concurrencia segura y uso eficiente de recursos.
-- Tokio para tareas asíncronas.
-- Ratatui y Crossterm para la interfaz de terminal.
-- Reqwest y Serde para HTTP, JSON y modelos tipados.
-- TOML para configuración; Clap para comandos; Tracing para logs.
-- Caché en dos niveles: L1 en memoria y L2 en disco.
-- Request Manager con deduplicación, prioridades, límites de solicitudes, timeout, reintentos, backoff y cancelación.
-- Diseño orientado a eventos para evitar polling y cálculos innecesarios.
+Inspirado en patrones 2026 para TUIs Rust (Elm Architecture / TEA, `ratatui` + `tokio::select!`, component-based):
+
+- **Rust como lenguaje principal:** binario nativo, concurrencia segura y uso eficiente de recursos.
+- **Tokio para tareas asíncronas** y `tracing` para observabilidad.
+- **Ratatui y Crossterm** para la interfaz de terminal.
+- **Reqwest y Serde** para HTTP, JSON y modelos tipados.
+- **TOML para configuración; Clap para comandos; Tracing para logs.**
+- **Caché en dos niveles:** L1 en memoria y L2 en disco (versionado, TTL).
+- **Request Manager** con deduplicación, prioridades, límites, timeout, reintentos, backoff y cancelación.
+- **Diseño orientado a eventos** para evitar polling y cálculos innecesarios.
+- **Separación estricta:** `AppState` solo datos de presentación; I/O y cálculos fuera del renderizado (Elm: Model → Message → Update → View).
+- **Autostart explícito** con `auto-launch` crate, nunca implícito.
+- **Testing primero:** 43 tests unitarios actuales, fixtures para analytics, `cargo fmt`/`clippy` en CI.
+- **Seguridad:** secretos solo en `.env`/env vars, `.gitignore` estricto, `doctor` enmascara claves, `cargo audit` antes de release.
+
+Referencias: Ratatui Elm Architecture, `auto-launch` crate, Riot Developer Portal (RSO/consentimiento), `Arquitectura-inicial.md`.
 
 ## Interfaz prevista
 
 La TUI tendrá las vistas:
 
-- Dashboard
-- Match
-- Team / Player
-- History
-- Settings
+- Dashboard (perfil + estado + resumen sesión)
+- Match (contexto de partida y mapa/modo)
+- Team / Player (roster + stats de equipo con último dato conocido si falla provider)
+- History (filtros, tendencia y desglose por periodo)
+- Settings (configuración, provider, TTL, apariencia, autostart, diagnóstico)
 
 La interfaz debe adaptarse a terminales pequeñas y grandes, sin depender de una resolución fija.
 
 ## Comandos previstos
 
 ```text
-vtracker watch
-vtracker player <riot-id>
-vtracker match [id]
-vtracker history [player]
-vtracker cache <subcomando>
-vtracker config <subcomando>
-vtracker doctor
+vtracker watch [--once] [--interval SEGUNDOS]   # modo live (MVP actual)
+vtracker doctor                                  # diagnóstico local + providers (sin exponer secretos)
+vtracker config show|edit|validate              # ver/editar/validar %APPDATA%\vtracker\config.toml
+vtracker autostart enable|disable|status        # gestionar inicio automático (requiere consentimiento)
+vtracker player <riot-id>                       # perfil autorizado (requiere RSO/opt-in)
+vtracker match [id]                              # detalle de partida
+vtracker history [player]                        # historial propio autorizado
+vtracker cache <subcomando>                      # inspeccionar/limpiar caché L1/L2
 ```
 
 ## Plan inicial
 
-1. Validar fuentes de datos, autenticación, límites de uso y políticas aplicables.
-2. Crear el MVP de `vtracker watch`: configuración, logs, detección de estado y TUI mínima.
-3. Añadir el primer proveedor y la caché.
+1. Validar fuentes de datos, autenticación, límites de uso y políticas aplicables (RSO y opt-in).
+2. Crear el MVP de `vtracker watch`: configuración, logs, detección de estado y TUI mínima. **✓ Hecho**
+3. Añadir el primer proveedor y la caché (con `GameStateSource` desacoplado).
 4. Implementar Analytics Engine y métricas básicas.
-5. Completar navegación, pantallas y diagnóstico.
+5. Completar navegación, pantallas, `config` y `autostart`.
 6. Medir CPU, RAM, tiempos de arranque y rendimiento de caché antes de optimizar.
 
 ## Estado actual
 
-MVP local y Prioridad 1 completados (43 tests, tabla de procesos, `doctor` testeable). Siguiente: **Prioridad 2A — seguridad API** (`.env` ya protegido) y **2B — validar fuente autorizada** antes de implementar `GameStateSource`. No se infiere estado de partida desde procesos locales.
+MVP local y Prioridad 1 completados (43 tests, tabla de procesos, `doctor` testeable, `.env` protegido). Siguiente: **Prioridad 2A — seguridad API** (`.env` ya protegido) y **2B — validar fuente autorizada** antes de implementar `GameStateSource`. No se infiere estado de partida desde procesos locales. Nombre `VTracker` temporal hasta release.
 
 ## Desarrollo
 
 ```powershell
-cargo run
+cargo run -- watch --once
+cargo run -- doctor
 cargo test
 cargo fmt
+cargo check
 cargo clippy
 ```

@@ -1,4 +1,6 @@
-# VTracker — Lista de tareas
+# VTracker — Lista de tareas — nombre temporal
+
+> **Nombre temporal:** `VTracker` es provisional hasta el final del desarrollo. El nombre final se definirá antes del release y se propagará a `Cargo.toml`, `README.md`, `Arquitectura-inicial.md` y docs. Evitar hardcodear el nombre en mensajes de usuario más allá de `VERSION`.
 
 Este documento ordena el trabajo restante. Las integraciones con Riot u otros proveedores solo se implementarán después de confirmar permisos, términos de uso y límites aplicables.
 
@@ -50,7 +52,7 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 - [ ] Mostrar errores recuperables y último estado conocido cuando una fuente falle.
 - [ ] Extender `vtracker doctor` para validar la disponibilidad del proveedor, sin exponer secretos.
 
-## Prioridad 3 — Datos propios e historial
+## Prioridad 3 — Datos propios e historial + Experiencia por fase
 
 - [ ] Definir modelos normalizados de jugador, partida, ronda y resultado.
 - [ ] Implementar una capa de providers por capacidades: perfil, historial y detalle de partida.
@@ -58,6 +60,9 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 - [ ] Implementar caché L2 en disco con versión de esquema y expiración.
 - [ ] Centralizar solicitudes con timeout, deduplicación y reintentos seguros.
 - [ ] Añadir el comando `vtracker history` para consultar el historial propio autorizado.
+- [ ] **Flujo perfil:** al detectar `Idle`/`Cliente disponible`, mostrar perfil propio (Riot ID configurado) con stats cacheadas; si provider falla, mostrar último dato conocido y error recuperable.
+- [ ] **Flujo equipo:** al detectar `PreGame`/`AgentSelect` vía `GameStateSource` autorizado, consultar `RosterSource` y mostrar stats del equipo para esa partida.
+- [ ] **Flujo partida:** al detectar `InMatch`, mostrar stats generales del game en curso (mapa, modo, composición) sin inferir de procesos locales.
 
 ## Prioridad 4 — Estadísticas
 
@@ -68,23 +73,29 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 - [ ] Añadir desgloses por agente, mapa, modo y últimas N partidas.
 - [ ] Cubrir las fórmulas con fixtures y pruebas reproducibles.
 
-## Prioridad 5 — TUI completa
+## Prioridad 5 — TUI completa + Apartado Configuración
 
-- [ ] Añadir Ratatui y Crossterm.
-- [ ] Crear Dashboard con estado, salud de fuentes y resumen de sesión.
-- [ ] Crear vistas Match, Player, History y Settings.
+> **Configuración es requisito explícito del usuario** — debe ser completa antes del release.
+
+- [ ] Añadir Ratatui y Crossterm (Arquitectura Elm/TEA: Model/Message/Update/View).
+- [ ] Crear Dashboard con estado, salud de fuentes y resumen de sesión (perfil propio destacado).
+- [ ] Crear vistas Match, Player, History y **Settings (Configuración)**.
+- [ ] **Settings debe permitir:** ver/editar `config.toml` (intervalo, `log_transitions`, `profile.riot_id`, `profile.region`, `autostart.enabled/minimized`), gestionar `.env` (solo estado `***`/`no configurada`), TTL de caché y apariencia.
+- [ ] Añadir `vtracker config show|edit|validate` y persistencia atómica de `config.toml`.
 - [ ] Añadir navegación por teclado, ayuda y estados de carga/error.
 - [ ] Adaptar layouts a terminales pequeñas y grandes.
-- [ ] Mantener I/O y cálculos fuera del renderizado.
+- [ ] Mantener I/O y cálculos fuera del renderizado; UI solo consume `AppState`.
 
-## Prioridad 6 — Robustez y distribución
+## Prioridad 6 — Robustez, autoinicio y distribución
 
-- [ ] Añadir logs estructurados y niveles configurables.
+- [ ] Añadir logs estructurados y niveles configurables (`tracing`).
 - [ ] Medir arranque, CPU en reposo, memoria y eficacia de caché.
 - [ ] Añadir pruebas de integración para CLI, caché y providers simulados.
-- [ ] Añadir `vtracker cache` y `vtracker config`.
-- [ ] Preparar binarios de release e instrucciones de instalación.
-- [ ] Revisar seguridad de credenciales y privacidad antes de distribuir.
+- [ ] **Autoinicio (autostart):** crear `src/autostart/mod.rs` con crate `auto-launch` (`AutoLaunchBuilder`). En Windows usa Run key / Startup folder (`HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`). Comandos `vtracker autostart enable|disable|status`, `doctor` muestra estado. Desactivado por defecto, requiere consentimiento explícito; nunca auto-registrarse sin acción del usuario. Opcional: iniciar al detectar VALORANT si `autostart.enabled = true`.
+- [ ] Añadir `vtracker cache` (inspeccionar/limpiar L1/L2) y pulir `vtracker config`.
+- [ ] Preparar binarios de release e instrucciones de instalación (`cargo build --release`, instalador que opcionalmente registra autostart).
+- [ ] Revisar seguridad de credenciales y privacidad antes de distribuir (auditoría de que ninguna key se loguea, `cargo audit`, RSO/opt-in validado).
+- [ ] Renombrar `VTracker` al nombre final y propagar a todos los docs y binario.
 
 ## Siguiente tarea recomendada
 
