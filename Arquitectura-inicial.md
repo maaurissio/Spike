@@ -1,0 +1,486 @@
+# VTracker — Arquitectura y especificación inicial
+
+> Estado: borrador de arquitectura.  
+> Alcance: decisión y diseño inicial; **no es una implementación**.  
+> Convención: **Decidido** refleja acuerdos ya tomados. **Propuesta** indica una dirección recomendada que debe validarse antes de construirla.
+
+## 1. Resumen del proyecto
+
+VTracker será una aplicación de terminal (TUI) para observar el estado de VALORANT, consultar datos permitidos de jugadores y partidas, y presentar estadísticas de forma rápida, clara y con un consumo reducido de recursos.
+
+Sus objetivos son:
+
+- Detectar el ciclo de estado de VALORANT y reaccionar ante transiciones relevantes.
+- Consultar datos mediante una capa de proveedores intercambiable.
+- Evitar solicitudes repetidas y trabajo innecesario mediante caché y un gestor central de solicitudes.
+- Separar los datos originales de las métricas calculadas.
+- Ofrecer una TUI navegable para el seguimiento de partidas, equipo/jugadores, historial y configuración.
+- Ser medible y operable: logs, diagnóstico y benchmarks desde el inicio.
+
+### Límites de producto y cumplimiento
+
+**Decidido:** la arquitectura no dependerá de inyección, lectura de memoria ni automatización que interfiera con el juego. El uso de APIs y datos debe validarse contra los términos y políticas vigentes de Riot y de cada proveedor antes de distribuir el producto.
+
+**Pendiente:** Riot ha restringido casos de *scouting* previo de oponentes. Antes de definir una función pública de análisis de rivales, hay que confirmar que el caso de uso, permisos y consentimiento requerido estén permitidos. La primera versión debe centrarse en datos propios, de sesión y/o explícitamente autorizados.
+
+## 2. Decisiones principales
+
+| Tema | Decisión | Motivo |
+|---|---|---|
+| Lenguaje | **Rust** | Binario nativo, concurrencia segura, bajo consumo y gran desempeño en I/O. |
+| Interfaz | **TUI con Ratatui + Crossterm** | Interfaz real de terminal sin el peso de una GUI. |
+| Modelo de ejecución | **Orientado a eventos** | Reducir polling y mantener CPU en reposo cuando no hay cambios. |
+| Datos | **Raw data separado de derived data** | Trazabilidad, recalculabilidad y menor acoplamiento. |
+| Estadísticas | **Analytics Engine dedicado** | Los cálculos no pertenecen a la UI ni a los proveedores. |
+| Integraciones | **Provider Layer** | Evita acoplar el dominio a Riot, Tracker u otro origen concreto. |
+| Caché | **L1 RAM + L2 disco** | Respuestas rápidas y menos solicitudes de red. |
+| Red | **Request Manager centralizado** | Dedupe, prioridades, límites, reintentos y cancelación coherentes. |
+
+### Por qué Rust y no Python o C++
+
+**Decidido: Rust.** Python permitiría iterar rápido, pero añade runtime y un perfil de memoria menos predecible para una herramienta que debe permanecer activa. C++ puede lograr un rendimiento similar, pero aumenta la complejidad y el riesgo de errores de memoria. En VTracker el cuello de botella esperado es el acceso al cliente, a disco y a red, no el cómputo puro; Rust ofrece rendimiento nativo y seguridad sin pagar la complejidad habitual de C++.
+
+## 3. Stack propuesto
+
+| Área | Tecnología | Rol |
+|---|---|---|
+| Lenguaje | Rust (edición vigente) | Núcleo de la aplicación. |
+| Runtime async | Tokio | Tareas asíncronas, canales, temporizadores y cancelación. |
+| HTTP | Reqwest | Solicitudes HTTP de proveedores. |
+| Serialización | Serde + serde_json | Modelos tipados y JSON. |
+| Configuración | TOML + crate `toml` | Archivo de configuración legible. |
+| CLI | Clap | Subcomandos, flags y ayuda. |
+| TUI | Ratatui | Layouts, tablas, gráficos y pantallas. |
+| Terminal/input | Crossterm | Backend de terminal y teclado. |
+| Observabilidad | Tracing + tracing-subscriber | Logs estructurados y diagnóstico. |
+| Errores | `thiserror` + `anyhow` | Errores de dominio tipados y contexto en el borde de la app. |
+
+**Propuesta futura:** usar SQLite solo si el historial persistente, índices o volumen de caché lo justifican. Para la primera fase puede bastar un caché de archivos versionados en disco.
+
+## 4. Arquitectura general
+
+```text
+                               ┌─────────────────────────┐
+                               │        VTRACKER         │
+                               │    Application Core     │
+                               └────────────┬────────────┘
+                                            │
+             ┌──────────────────────────────┼──────────────────────────────┐
+             │                              │                              │
+             ▼                              ▼                              ▼
+      ┌──────────────┐               ┌──────────────┐               ┌──────────────┐
+      │ Game Engine  │               │ Data Engine  │               │  UI Engine   │
+      └──────┬───────┘               └──────┬───────┘               └──────┬───────┘
+             │                              │                              │
+   estado y transición              providers, caché,                   Ratatui
+   del juego                         solicitudes, analytics              AppState
+             │                              │                              │
+             └───────────────┐      ┌──────┴──────┐      ┌───────────────┘
+                             ▼      ▼             ▼      ▼
+                                   Event Bus → AppState → renderizado
+```
+
+### Application Core
+
+Coordina el arranque y apagado, carga de configuración, runtime async, inyección de dependencias, propagación de cancelación y ciclo principal. No debe contener reglas de negocio de estadísticas ni detalles de proveedores.
+
+### Game Engine
+
+Detecta el estado del cliente/juego y traduce cambios en eventos de dominio. Su responsabilidad es saber *qué está ocurriendo*, no consultar o calcular todas las estadísticas.
+
+### Data Engine
+
+Contiene la capa de proveedores, caché, Request Manager, normalización de respuestas y Analytics Engine. Convierte fuentes externas en información de dominio utilizable.
+
+### UI Engine
+
+Mantiene el loop de terminal, entrada de teclado, responsive layout y renderizado de una vista derivada de `AppState`. No realiza HTTP ni cálculos pesados.
+
+## 5. Máquina de estados de VALORANT
+
+**Decidido:** el Game Engine modelará estados explícitos y transiciones. Los nombres exactos deben ajustarse a las señales realmente disponibles durante la investigación técnica.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unknown
+    Unknown --> Idle: cliente detectado
+    Idle --> PreGame: cola / pre-partida detectada
+    PreGame --> AgentSelect: selección de agente
+    AgentSelect --> InMatch: partida iniciada
+    InMatch --> PostMatch: partida finalizada
+    PostMatch --> Idle: resultados procesados
+    Unknown --> ClientClosed: cliente no disponible
+    Idle --> ClientClosed: cliente cerrado
+    PreGame --> ClientClosed: cliente cerrado
+    AgentSelect --> ClientClosed: cliente cerrado
+    InMatch --> ClientClosed: cliente cerrado
+    PostMatch --> ClientClosed: cliente cerrado
+    ClientClosed --> Unknown: reintento / relanzamiento
+```
+
+Estados iniciales previstos:
+
+- `Unknown`: no hay señal fiable aún.
+- `Idle`: cliente disponible, sin partida activa.
+- `PreGame`: contexto de pre-partida detectado.
+- `AgentSelect`: selección de agente / roster disponible cuando la fuente lo permita.
+- `InMatch`: partida en curso.
+- `PostMatch`: partida terminada; momento de recoger y procesar resultados.
+- `ClientClosed`: cliente no accesible.
+
+## 6. Event Bus y eventos
+
+**Decidido:** los cambios relevantes se propagan con eventos, no con pantallas consultando cada componente continuamente. Un watcher puede usar sondeos muy acotados si la fuente no ofrece notificaciones, pero solo para detectar cambios; el resto se activa por eventos.
+
+```text
+Game Engine ──► Event Bus ──► Data workflows ──► AppState ──► TUI
+                    │                 │
+                    ├──► tracing      └──► Cache / Providers / Analytics
+                    └──► lifecycle / cancelación
+```
+
+Eventos candidatos:
+
+| Familia | Eventos |
+|---|---|
+| Ciclo del cliente | `ClientDetected`, `ClientUnavailable`, `GameStateChanged` |
+| Partida | `PreGameDetected`, `AgentSelectStarted`, `MatchStarted`, `MatchEnded` |
+| Datos | `RosterAvailable`, `RawDataLoaded`, `StatsComputed`, `ProviderFailed` |
+| Aplicación | `RefreshRequested`, `ConfigReloaded`, `ShutdownRequested` |
+
+**Propuesta:** emplear eventos de dominio tipados; los errores recuperables viajan como resultados y se reflejan en estado/UI, sin derribar todo el proceso.
+
+## 7. Pipeline de datos y separación de datos
+
+```text
+ Riot / Tracker / futuro proveedor
+               │
+               ▼
+        Provider Layer
+               │
+               ▼
+        Request Manager
+               │
+               ▼
+       Cache L1 / Cache L2
+               │
+               ▼
+     Raw Data normalizado y versionado
+               │
+               ▼
+        Analytics Engine
+               │
+               ▼
+       Derived Data / PlayerStats
+               │
+               ▼
+            AppState → TUI
+```
+
+### Raw data
+
+Datos recibidos de una fuente, conservados con origen, instante de obtención, versión de esquema y caducidad. Ejemplos: respuestas de historial de partidas, rondas, daños, rango, roster o resultados.
+
+### Derived data
+
+Resultados producidos por reglas propias: K/D, win rate, ACS, rachas, desgloses por agente y mapas. Deben guardar metadatos como intervalo de partidas, versión del cálculo y huella/fecha de los datos de origen.
+
+Esta separación permite recalcular métricas cuando cambie una fórmula sin volver a solicitar todo, y ayuda a explicar de dónde proviene cada número.
+
+## 8. Analytics Engine
+
+**Decidido:** Analytics Engine/Stats Engine será el único módulo responsable de transformar datos de partidas en métricas. Proveedores entregan datos normalizados; UI solo presenta resultados.
+
+```text
+MatchData[] → parser/normalizador → calculadoras por partida
+                                      │
+                       ┌──────────────┼──────────────┐
+                       ▼              ▼              ▼
+                    Combat          Results       Performance
+                       │              │              │
+                       └──────────────┴──────────────┘
+                                      │
+                                      ▼
+                                Aggregator
+                                      │
+                                      ▼
+                                 PlayerStats
+```
+
+Métricas previstas (las definiciones exactas deben documentarse por fuente y modo de juego):
+
+| Grupo | Métricas |
+|---|---|
+| Combate | K/D, KDA, HS%, ADR, ACS, KAST, kills/deaths/assists, daño total. |
+| Resultados | victorias, derrotas, WR, rachas, forma reciente. |
+| Contexto | rendimiento por agente, mapa, cola/modo, lado y periodo. |
+| Agregados | totales, promedio, mediana, últimos N partidos y comparativas temporales. |
+
+Fórmulas base ilustrativas:
+
+```text
+K/D  = kills / deaths                         (definir manejo de deaths = 0)
+HS%  = headshot_kills / kills × 100           (si la fuente entrega headshot kills)
+WR   = wins / (wins + losses) × 100
+ADR  = total_damage / total_rounds
+ACS  = suma de combat score / total_rounds    (solo si los campos de fuente lo soportan)
+KAST = rondas con Kill, Assist, Survived o Traded / rondas totales × 100
+```
+
+**Pendiente:** confirmar qué campos expone cada proveedor y fijar definiciones consistentes para KAST, ACS, empates, abandonos, overtime y modos no competitivos. Nunca se deben inventar campos ausentes ni presentar métricas incomparables como equivalentes.
+
+## 9. Caché de dos niveles
+
+**Decidido:** se usará un diseño L1/L2 con TTL por tipo de dato.
+
+```text
+Request → L1 RAM
+             ├─ hit ──► respuesta
+             └─ miss → L2 Disk
+                           ├─ hit ──► promover a L1 → respuesta
+                           └─ miss → Request Manager → Provider → guardar L2/L1
+```
+
+- **L1 (RAM):** objetos recientemente usados, muy baja latencia y capacidad limitada.
+- **L2 (disco):** persistente entre ejecuciones; inicialmente archivos, con migración posible a SQLite.
+- **TTL y política:** cada recurso define duración y estrategia de invalidación. Datos de partida activa y perfil histórico no tienen la misma frescura.
+- **Metadatos:** clave, origen, obtenido en, expiración, versión de esquema, y opcionalmente ETag/huella.
+
+**Propuesta:** servir datos caducados solo como “último dato conocido” cuando el usuario lo vea claramente y sea preferible a una pantalla vacía.
+
+## 10. Request Manager
+
+**Decidido:** toda solicitud remota pasa por un único Request Manager. Ningún módulo de UI o cálculo hace HTTP directamente.
+
+Responsabilidades:
+
+- Dedupe/coalescing: solicitudes idénticas concurrentes comparten una operación.
+- Prioridades: información necesaria para una pantalla o transición antes que prefetch no esencial.
+- Rate limiting: límites por proveedor, endpoint y credencial cuando corresponda.
+- Timeouts: límite explícito por solicitud.
+- Retries: solo para fallos transitorios e idempotentes.
+- Backoff: preferiblemente exponencial con jitter.
+- Cancelación: descartar tareas que ya no interesan al cambiar de pantalla/estado o al cerrar.
+- Métricas: duración, cache hit/miss, reintentos, errores y cuota.
+
+```text
+Intento de consulta
+       │
+       ▼
+¿Caché válida? ── sí ──► responder
+       │ no
+       ▼
+¿Ya hay la misma solicitud? ── sí ──► unirse al resultado en vuelo
+       │ no
+       ▼
+cola priorizada → rate limiter → provider → timeout/retry/backoff → caché → resultado
+```
+
+## 11. Provider Layer y capabilities
+
+La aplicación consulta capacidades, no implementaciones concretas. Así el dominio no depende de una API específica.
+
+```text
+Provider traits/interfaces
+       │
+       ├── RiotProvider
+       ├── TrackerProvider
+       └── FutureProvider
+```
+
+Capacidades posibles:
+
+| Capacidad | Ejemplo de uso |
+|---|---|
+| `GameStateSource` | Consultar señal de estado de cliente/juego. |
+| `RosterSource` | Obtener roster cuando esté autorizado y disponible. |
+| `PlayerProfileSource` | Perfil, identidad o rango. |
+| `MatchHistorySource` | Partidas y resultados. |
+| `MatchDetailSource` | Rondas, daño y eventos necesarios para Analytics. |
+
+**Decidido:** una pantalla pregunta por una capability requerida y recibe un modelo normalizado o una indisponibilidad explicable.  
+**Pendiente:** validar oficialmente las APIs, autenticación, RSO/consentimiento, límites y términos de Riot/Tracker antes de implementar cada adaptador.
+
+## 12. AppState y diseño de TUI
+
+`AppState` es el estado en memoria que la UI consume y que los flujos actualizan. Debe contener solo datos de presentación y operación, no clientes HTTP ni lógica de negocio.
+
+Ejemplos de áreas de estado:
+
+- estado del juego y último cambio;
+- vista activa, foco y tamaño de terminal;
+- roster/match actual y estado de carga;
+- perfiles y estadísticas derivadas;
+- avisos, errores recuperables y salud de proveedores;
+- configuración efectiva y estado de caché.
+
+Pantallas previstas:
+
+| Vista | Propósito |
+|---|---|
+| **Dashboard** | Estado actual, resumen de sesión, señales y accesos rápidos. |
+| **Match** | Contexto de la partida, mapa/modo/estado y datos permitidos. |
+| **Team / Player** | Roster, perfil individual, estadísticas y detalle. |
+| **History** | Historial, filtros, tendencia y desglose por periodo. |
+| **Settings** | Configuración, proveedor, TTL, apariencia y diagnóstico básico. |
+
+Navegación propuesta: pestañas o teclas directas; flechas/`j`/`k` para listas, `Enter` para detalle, `r` para actualizar de forma controlada, `q` para salir y ayuda contextual. Los atajos finales deben ser configurables después del MVP.
+
+La TUI debe adaptarse al tamaño disponible:
+
+- terminal pequeña: columnas esenciales y vistas compactas;
+- terminal grande: detalles, tendencias y tablas completas;
+- nunca depender de una resolución fija.
+
+## 13. Estructura de carpetas Rust propuesta
+
+```text
+vtracker/
+├── Cargo.toml
+├── README.md
+├── config.example.toml
+└── src/
+    ├── main.rs
+    ├── cli/
+    │   └── mod.rs
+    ├── app/
+    │   ├── mod.rs
+    │   ├── lifecycle.rs
+    │   └── state.rs
+    ├── core/
+    │   ├── mod.rs
+    │   ├── player.rs
+    │   ├── match.rs
+    │   └── game_state.rs
+    ├── game/
+    │   ├── mod.rs
+    │   ├── detector.rs
+    │   └── watcher.rs
+    ├── events/
+    │   ├── mod.rs
+    │   └── bus.rs
+    ├── providers/
+    │   ├── mod.rs
+    │   ├── capabilities.rs
+    │   ├── riot.rs
+    │   └── tracker.rs
+    ├── requests/
+    │   ├── mod.rs
+    │   └── manager.rs
+    ├── cache/
+    │   ├── mod.rs
+    │   ├── memory.rs
+    │   └── disk.rs
+    ├── analytics/
+    │   ├── mod.rs
+    │   ├── combat.rs
+    │   ├── performance.rs
+    │   ├── aggregates.rs
+    │   └── calculator.rs
+    ├── ui/
+    │   ├── mod.rs
+    │   ├── terminal.rs
+    │   ├── views/
+    │   │   ├── dashboard.rs
+    │   │   ├── match.rs
+    │   │   ├── player.rs
+    │   │   ├── history.rs
+    │   │   └── settings.rs
+    │   └── components/
+    ├── config/
+    │   └── mod.rs
+    └── diagnostics/
+        └── mod.rs
+```
+
+Es una organización objetivo, no una exigencia para crear todos los módulos vacíos desde el día uno. El MVP debe introducir solo los límites que necesite.
+
+## 14. Ciclo de vida de la aplicación
+
+```text
+Start
+  → cargar configuración
+  → iniciar tracing
+  → inicializar caché
+  → crear Request Manager y proveedores habilitados
+  → iniciar Game Engine y Event Bus
+  → entrar al loop de TUI/watch
+  → reaccionar a eventos y actualizar AppState
+  → cancelar tareas y restaurar terminal al salir
+```
+
+Requisitos de apagado:
+
+- Restaurar correctamente el modo de terminal, incluso ante error.
+- Cancelar solicitudes/tareas que sigan en vuelo.
+- Persistir caché y configuración de forma segura cuando corresponda.
+- Registrar la causa de salida y errores relevantes mediante `tracing`.
+
+## 15. Interfaz de línea de comandos prevista
+
+| Comando | Propósito inicial |
+|---|---|
+| `vtracker watch` | Ejecutar la TUI y observar el estado del juego. |
+| `vtracker player <riot-id>` | Consultar un jugador mediante providers disponibles. |
+| `vtracker match [id]` | Mostrar o abrir detalle de una partida. |
+| `vtracker history [player]` | Mostrar historial y agregados. |
+| `vtracker cache <subcomando>` | Inspeccionar, limpiar selectivamente o diagnosticar caché. |
+| `vtracker config <subcomando>` | Ver/editar/validar configuración. |
+| `vtracker doctor` | Comprobar entorno, cliente, red, proveedores, configuración y caché. |
+
+**Propuesta futura:** `vtracker benchmark` para medir arranque, memoria, CPU inactiva, caché y parsing. No debe convertirse en optimización ficticia: primero métricas reproducibles.
+
+## 16. Estrategia de desarrollo por fases
+
+| Fase | Resultado | Incluye |
+|---|---|---|
+| 0 — Validación | Viabilidad y cumplimiento | Confirmar fuentes permitidas, auth, límites, señales de estado y datos disponibles. |
+| 1 — MVP de detección | `watch` útil y estable | CLI, configuración, tracing, detección de cliente/estado, máquina de estados y TUI mínima. |
+| 2 — Datos base | Perfil/roster/historial normalizados | Primer provider real, Request Manager básico, L1/L2 y AppState. |
+| 3 — Analytics | Métricas reproducibles | Modelos de partida, K/D, WR, HS%, ADR y agregados iniciales. |
+| 4 — TUI completa | Navegación y pantallas | Dashboard, Match, Team/Player, History, Settings, responsive layout. |
+| 5 — Robustez | Operación confiable | Doctor, retries, rate limits, cancelación, tests, benchmarks y observabilidad. |
+| 6 — Extensión | Nuevos proveedores/funciones | Capabilities adicionales solo tras validación de producto y cumplimiento. |
+
+El MVP no debe prometer todas las estadísticas: primero demuestra que detecta el estado correctamente y que puede actualizar la interfaz sin consumo innecesario.
+
+## 17. Principios de optimización
+
+- **Event-driven primero:** no recomputar ni solicitar datos si no cambió el estado relevante.
+- **Polling mínimo y justificado:** si una integración lo exige, usar intervalos adaptativos, backoff y detección de cambios.
+- **Caché antes de red:** buscar L1/L2 antes de programar una solicitud.
+- **Dedupe y cancelación:** no mantener trabajo duplicado o ya irrelevante.
+- **Cálculos incrementales:** recalcular estadísticas solo si cambia el conjunto/huella de partidas.
+- **UI liviana:** renderizar desde `AppState`, no hacer I/O desde componentes visuales.
+- **Medir antes de optimizar:** RAM, CPU idle, latencia de caché, parsing, arranque, solicitudes y errores.
+- **Benchmarks y profiling:** establecer escenarios reproducibles antes de hacer cambios de rendimiento.
+- **Doctor como herramienta de soporte:** diagnosticar configuración, conectividad, acceso a fuentes, caché y salud del entorno.
+
+## 18. Resumen de lo definido
+
+Ya acordado:
+
+- VTracker se construirá en Rust, no Python ni C++.
+- La interfaz será una TUI basada en Ratatui/Crossterm.
+- La arquitectura se divide en Application Core, Game Engine, Data Engine y UI Engine.
+- El Game Engine modela estados explícitos de VALORANT y emite eventos.
+- El flujo de datos es proveedor → caché → raw data → analytics → derived data → AppState → TUI.
+- Analytics Engine calcula métricas y conserva la separación respecto a proveedores y UI.
+- Existirá caché L1 RAM/L2 disco y un Request Manager central.
+- La capa de providers se diseñará por capacidades para admitir Riot, Tracker y futuros orígenes.
+- El desarrollo se enfocará primero en detección fiable y un `watch` mínimo antes de ampliar estadísticas y pantallas.
+
+## 19. Pendientes para la siguiente fase
+
+1. Verificar las fuentes de datos que sean técnicamente disponibles y permitidas, con sus requisitos de autenticación, consentimiento y límites.
+2. Precisar qué señal o interfaz alimentará cada transición de la máquina de estados.
+3. Definir el modelo canónico de jugador, partida, ronda y datos crudos.
+4. Elegir el primer provider concreto y el contrato de sus capabilities.
+5. Fijar definiciones de métricas —en especial ACS/KAST/HS%— según los campos verificables de la fuente.
+6. Diseñar el archivo de configuración, política de TTL e información sensible/secretos.
+7. Acordar la TUI del MVP: layout, navegación, comportamiento sin datos y mensajes de error.
+8. Establecer objetivos de rendimiento medibles para arranque, RAM, CPU idle y latencia.
+
+---
+
+Este documento es la línea base para iniciar la fase de validación y el MVP. Cualquier decisión que dependa de APIs externas o políticas vigentes debe tratarse como pendiente hasta verificarse con documentación oficial actualizada.
