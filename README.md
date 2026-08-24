@@ -153,9 +153,9 @@ Los datos originales (*raw data*) se conservan separados de las métricas calcul
 
 Ejemplos de estadísticas previstas: K/D, porcentaje de headshots, win rate, ADR, ACS, KAST, rachas, rendimiento por agente y rendimiento por mapa. Las fórmulas finales dependerán de los campos que exponga cada fuente de datos.
 
-## Principios técnicos y buenas prácticas aplicadas
+## Principios técnicos, buenas prácticas y conformidad
 
-Inspirado en patrones 2026 para TUIs Rust (Elm Architecture / TEA, `ratatui` + `tokio::select!`, component-based):
+Inspirado en patrones 2026 para TUIs Rust (Elm Architecture / TEA, `ratatui` + `tokio::select!`, component-based) y en **sistema integrado ISO 9001/14001/27001** (ver `docs/ISO.md`):
 
 - **Rust como lenguaje principal:** binario nativo, concurrencia segura y uso eficiente de recursos.
 - **Tokio para tareas asíncronas** y `tracing` para observabilidad.
@@ -168,9 +168,11 @@ Inspirado en patrones 2026 para TUIs Rust (Elm Architecture / TEA, `ratatui` + `
 - **Separación estricta:** `AppState` solo datos de presentación; I/O y cálculos fuera del renderizado (Elm: Model → Message → Update → View).
 - **Autostart explícito** con `auto-launch` crate, nunca implícito.
 - **Testing primero:** 43 tests unitarios actuales, fixtures para analytics, `cargo fmt`/`clippy` en CI.
-- **Seguridad:** secretos solo en `.env`/env vars, `.gitignore` estricto, `doctor` enmascara claves, `cargo audit` antes de release.
+- **Seguridad (ISO 27001):** secretos solo en `.env`/env vars, `.gitignore` estricto, `doctor` enmascara claves (`***`), `cargo audit`+SBOM futuro, controles 8.25-8.29.
+- **Calidad (ISO 9001):** control documental (`TASKS.md`/`Arquitectura-inicial.md`), trazabilidad Raw/Derived, `watch.log` como registro, medición antes de optimizar.
+- **Ambiental (ISO 14001):** green coding — event-driven, L1/L2 para evitar red, `minimized` en autostart, binario Rust ligero; medición de CPU idle/mem en `docs/BENCHMARKS.md` futuro.
 
-Referencias: Ratatui Elm Architecture, `auto-launch` crate, Riot Developer Portal (RSO/consentimiento), `Arquitectura-inicial.md`.
+Referencias: Ratatui Elm Architecture, `auto-launch` crate, Riot Developer Portal (RSO/consentimiento), `Arquitectura-inicial.md:20-21`, `docs/ISO.md`.
 
 ## Interfaz prevista
 
@@ -206,9 +208,11 @@ vtracker cache <subcomando>                      # inspeccionar/limpiar caché L
 5. Completar navegación, pantallas, `config` y `autostart`.
 6. Medir CPU, RAM, tiempos de arranque y rendimiento de caché antes de optimizar.
 
-## Estado actual
+## Estado actual y conformidad
 
 MVP local y Prioridad 1 completados (43 tests, tabla de procesos, `doctor` testeable, `.env` protegido). Siguiente: **Prioridad 2A — seguridad API** (`.env` ya protegido) y **2B — validar fuente autorizada** antes de implementar `GameStateSource`. No se infiere estado de partida desde procesos locales. Nombre `VTracker` temporal hasta release.
+
+**Compromiso ISO:** se adoptan principios **ISO 9001 (Calidad) + ISO 14001 (Ambiental) + ISO 27001 (Seguridad)** como sistema integrado PHVA desde el inicio (ver `docs/ISO.md` y `Arquitectura-inicial.md:21`). No es burocracia vacía: tests + `clippy`/`fmt` (calidad), `cargo` eficiente + caché (ambiental), `.env` + `doctor` enmascarado + RSO (seguridad). Certificación formal opcional a medio plazo.
 
 ## Desarrollo
 

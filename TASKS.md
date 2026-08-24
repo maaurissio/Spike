@@ -86,16 +86,19 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 - [ ] Adaptar layouts a terminales pequeñas y grandes.
 - [ ] Mantener I/O y cálculos fuera del renderizado; UI solo consume `AppState`.
 
-## Prioridad 6 — Robustez, autoinicio y distribución
+## Prioridad 6 — Robustez, autoinicio y distribución + ISO
 
 - [ ] Añadir logs estructurados y niveles configurables (`tracing`).
-- [ ] Medir arranque, CPU en reposo, memoria y eficacia de caché.
+- [ ] Medir arranque, CPU en reposo, memoria y eficacia de caché (evidencia ISO 9001/14001).
 - [ ] Añadir pruebas de integración para CLI, caché y providers simulados.
 - [ ] **Autoinicio (autostart):** crear `src/autostart/mod.rs` con crate `auto-launch` (`AutoLaunchBuilder`). En Windows usa Run key / Startup folder (`HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`). Comandos `vtracker autostart enable|disable|status`, `doctor` muestra estado. Desactivado por defecto, requiere consentimiento explícito; nunca auto-registrarse sin acción del usuario. Opcional: iniciar al detectar VALORANT si `autostart.enabled = true`.
 - [ ] Añadir `vtracker cache` (inspeccionar/limpiar L1/L2) y pulir `vtracker config`.
 - [ ] Preparar binarios de release e instrucciones de instalación (`cargo build --release`, instalador que opcionalmente registra autostart).
 - [ ] Revisar seguridad de credenciales y privacidad antes de distribuir (auditoría de que ninguna key se loguea, `cargo audit`, RSO/opt-in validado).
 - [ ] Renombrar `VTracker` al nombre final y propagar a todos los docs y binario.
+- [ ] **ISO 9001 (Calidad):** mantener control documental (`TASKS.md`, `docs/ISO.md`), trazabilidad Raw/Derived, `cargo test`/`clippy`/`fmt` como inspección y `watch.log` como registro. Ver `docs/ISO.md:1`.
+- [ ] **ISO 14001 (Ambiental):** medir y documentar impacto (CPU idle, memoria, binario, red evitada por caché) en `docs/BENCHMARKS.md`; política de green coding (event-driven, L1/L2). Ver `docs/ISO.md:2`.
+- [ ] **ISO 27001 (Seguridad):** mantener SGSI proporcional (8 controles clave 8.25-8.29/8.32/8.8/5.9), SoA ligero, `RISK.md`, `cargo audit`+SBOM, `doctor` sin exponer secretos. Ver `docs/ISO.md:3`. Certificación formal opcional a medio plazo.
 
 ## Siguiente tarea recomendada
 

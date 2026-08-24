@@ -503,7 +503,20 @@ Ya acordado:
 - **Autostart:** usar `auto-launch`/`tauri-plugin-autostart` como referencia; nunca auto-registrar sin `Config::autostart.enabled` explícito; respetar Run key vs Startup folder (MITRE T1547.001).
 - **Seguridad:** `.env` en `.gitignore`, `dotenvy` solo en runtime, `doctor` enmascara (`***`), `cargo audit`, validar RSO/opt-in antes de mostrar datos de otro jugador (política Riot: datos personales solo con consentimiento).
 - **Config:** TOML versionado, validación estricta (`src/config/mod.rs:19`), `config.example.toml` sin secretos, `config.toml` real fuera del repo (`%APPDATA%/vtracker/`).
+- **Calidad/Ambiental/Seguridad de la información:** ver `docs/ISO.md` — sistema integrado ISO 9001/14001/27001 proporcional a VSE.
+
+## 21. Sistema Integrado de Gestión — ISO 9001 / 14001 / 27001 (compromiso)
+
+> **Decidido:** VTracker (nombre temporal) adopta principios ISO 9001 (Calidad), ISO 14001 (Ambiental) e ISO 27001 (Seguridad) como **sistema integrado PHVA**, proporcional a un proyecto pequeño. Detalle completo en `docs/ISO.md`. La certificación formal es objetivo a medio plazo, no requisito para el MVP.
+
+| Norma | Enfoque en VTracker | Práctica clave |
+|---|---|---|
+| **ISO 9001:2015 SGC** | Calidad repetible (ISO 90003 + ISO/IEC 29110 VSEs) | `TASKS.md` como registro de riesgos, 43 tests + `cargo fmt/clippy` como inspección, Raw/Derived separados para trazabilidad, `watch.log` como registro. |
+| **ISO 14001:2015 SGA** | Green coding — minimizar energía (CPU/mem/red) | Rust event-driven, caché L1/L2, `minimized=true`, medir arranque/CPU idle/binario antes de optimizar (`docs/BENCHMARKS.md` futuro). |
+| **ISO 27001:2022 SGSI** | CIA de secretos y datos de jugadores (93 controles, 8 clave: 8.25-8.29, 8.32, 8.8, 5.9) | `.env` en `.gitignore:7`, `dotenvy` runtime, `doctor` enmascara `***`, `cargo audit`+SBOM futuro, RSO/opt-in obligatorio. SoA y `docs/RISK.md` ligero. |
+
+**Integración PHVA:** Planificar (`TASKS.md`/`Arquitectura`) → Hacer (`src/` + tests) → Verificar (`doctor` + `cargo audit` + benchmarks) → Actuar (nuevos tests/fixes). Documentación viva versionada.
 
 ---
 
-Este documento es la línea base para iniciar la fase de validación y el MVP. Cualquier decisión que dependa de APIs externas o políticas vigentes debe tratarse como pendiente hasta verificarse con documentación oficial actualizada.
+Este documento es la línea base para iniciar la fase de validación y el MVP. Cualquier decisión que dependa de APIs externas o políticas vigentes debe tratarse como pendiente hasta verificarse con documentación oficial actualizada. Ver `docs/ISO.md` para el SGC/SGA/SGSI completo.
