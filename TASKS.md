@@ -26,14 +26,29 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 
 > Evidencia P1 (2026-08-24): `vtracker watch --once` probado con `VTRACKER_STATE=closed|idle|game` y `doctor` real detectó `RiotClientServices.exe`/`RiotClientCrashHandler.exe` en `Idle` (ver `README.md:Procesos observados`). Lógica cubierta por 43 tests (`cargo test`) en `config`, `cli`, `game` y `diagnostics`; `src/game/mod.rs:95` expone `observation_from_process_list` testeable.
 
-## Prioridad 2 — Fuente de estado y datos
+## Prioridad 2 — Fuente de estado y datos (API) — ¿cuándo entra la API?
 
-- [ ] Validar la documentación, autenticación, consentimiento, límites y políticas del primer proveedor.
-- [ ] Crear una interfaz `GameStateSource` para que el resto de la app no dependa de un proveedor concreto.
-- [ ] Implementar el primer adaptador autorizado para estado de cliente/partida.
+> La API entra AQUÍ, después de cerrar Prioridad 1. Ya está planificada con estructura segura.
+
+### 2A — Seguridad y secretos (hacer PRIMERO, antes de pedir cualquier key)
+
+- [x] Proteger secretos en repo: `.env` en `.gitignore` (`/.gitignore:4`), `.env.example` como plantilla y `config.example.toml` documentado sin secretos.
+- [ ] Crear `.env` local desde `.env.example` (`Copy-Item .env.example .env`) y nunca commitear claves reales.
+- [ ] Cargar secretos solo desde variables de entorno en runtime (no hardcodear). `doctor` debe mostrar `***` o `no configurada`, nunca el valor.
+- [ ] Documentar flujo de secretos en `README.md` y `Arquitectura-inicial.md:10` (límites de producto y cumplimiento).
+
+### 2B — Diseño de proveedores (sin implementar red hasta validar)
+
+- [ ] Validar la documentación, autenticación, consentimiento, límites y políticas del primer proveedor (Riot Developer Portal).
+- [ ] Crear una interfaz `GameStateSource` (`src/providers/capabilities.rs`) para que el resto de la app no dependa de un proveedor concreto.
+- [ ] Definir estructura `src/providers/`, `src/requests/manager.rs`, `src/cache/` según `Arquitectura-inicial.md:11`.
+
+### 2C — Implementación autorizada (solo tras validar 2B)
+
+- [ ] Implementar el primer adaptador autorizado para estado de cliente/partida (requiere `RIOT_API_KEY` en `.env`).
 - [ ] Modelar estados `Lobby`, `PreGame`, `AgentSelect`, `InMatch` y `PostMatch` solo si la fuente los entrega de forma fiable.
 - [ ] Mostrar errores recuperables y último estado conocido cuando una fuente falle.
-- [ ] Crear `vtracker doctor` para validar la disponibilidad del proveedor, sin exponer secretos.
+- [ ] Extender `vtracker doctor` para validar la disponibilidad del proveedor, sin exponer secretos.
 
 ## Prioridad 3 — Datos propios e historial
 
@@ -73,4 +88,6 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 
 ## Siguiente tarea recomendada
 
-Investigar y validar una fuente autorizada que distinga con fiabilidad lobby, selección de agente y partida real. No se debe inferir ese estado a partir de procesos locales.
+1. **Ahora (seguridad):** crear tu `.env` local desde `.env.example` — sin poner claves reales aún.
+2. **Siguiente (2B):** validar fuente autorizada + diseñar `GameStateSource`/`providers` sin implementar red.
+3. **Después (2C):** solo entonces implementar adaptador con `RIOT_API_KEY` protegida. No inferir estado de procesos locales.

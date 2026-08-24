@@ -1,5 +1,18 @@
+# VTracker — Ejemplo de configuración local
+# Ubicación real: %APPDATA%\vtracker\config.toml (Windows) o $XDG_CONFIG_HOME/vtracker/config.toml
+# Copia este archivo a esa ruta si quieres personalizar. Nunca pongas secretos aquí.
+
 # Intervalo de comprobación entre 1 y 60 segundos.
 interval_seconds = 3
 
 # Guarda cada cambio de estado en %APPDATA%\vtracker\watch.log.
 log_transitions = false
+
+# Futuro (Prioridad 2+): sección de proveedores y caché.
+# Los secretos (API keys) NO van aquí; van en `.env` (ver `.env.example`).
+# [providers]
+# riot_api_key_env = "RIOT_API_KEY"   # nombre de la variable de entorno a leer
+# region = "americas"
+
+# [cache]
+# ttl_seconds = 300

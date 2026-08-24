@@ -29,6 +29,27 @@ Si `log_transitions = true`, los cambios de estado se guardan en
 
 `vtracker doctor` revisa la configuración, la consulta de procesos y los procesos Riot/VALORANT detectados. Es un diagnóstico local: no consulta APIs ni obtiene información de una partida.
 
+## Configuración y secretos (API) — protegido por diseño
+
+> **La API se implementa en Prioridad 2** (`TASKS.md:29`). Antes de pedir cualquier key ya está preparada la protección.
+
+1. **Plantilla:** copia `.env.example` a `.env` (nunca commitees `.env`):
+   ```powershell
+   Copy-Item .env.example .env
+   # edita .env y pega tu RIOT_API_KEY solo cuando valides el provider
+   ```
+2. **Protegido:** `.env`, `.env.local`, `*.log` y `config.toml` real están en `.gitignore:4`. `doctor` nunca imprimirá una key completa (muestra `***` o `no configurada`).
+3. **Donde van los secretos:**
+   * `RIOT_API_KEY` y futuras `*_API_KEY` → solo en variable de entorno / `.env` (ver `.env.example:9`)
+   * `config.toml` → solo intervalo, `log_transitions` y futuras opciones no sensibles (ver `config.example.toml:6`)
+4. **Estructura futura:**
+   ```text
+   src/providers/      # traits GameStateSource / capabilities
+   src/requests/       # Request Manager central (dedupe, rate-limit, backoff)
+   src/cache/          # L1 RAM + L2 disco
+   ```
+   Ningún módulo de UI hará HTTP directo; todo pasa por el Request Manager.
+
 Consulta la [lista de tareas](TASKS.md) para el trabajo realizado, prioridades y siguiente paso.
 
 ## Estructura actual
@@ -146,7 +167,7 @@ vtracker doctor
 
 ## Estado actual
 
-La base Rust ya está creada. El siguiente paso es validar cómo obtener de forma permitida y fiable el estado de VALORANT antes de implementar detectores y proveedores.
+MVP local y Prioridad 1 completados (43 tests, tabla de procesos, `doctor` testeable). Siguiente: **Prioridad 2A — seguridad API** (`.env` ya protegido) y **2B — validar fuente autorizada** antes de implementar `GameStateSource`. No se infiere estado de partida desde procesos locales.
 
 ## Desarrollo
 
