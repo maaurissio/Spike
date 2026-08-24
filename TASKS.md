@@ -12,6 +12,7 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 - [x] Añadir configuración de intervalo y `--once`.
 - [x] Añadir `vtracker doctor` para diagnosticar procesos y configuración.
 - [x] Añadir pruebas del motor de transiciones.
+- [x] Separar el MVP en módulos de configuración, detección, observación, diagnóstico y UI.
 
 ## Prioridad 1 — Base fiable
 

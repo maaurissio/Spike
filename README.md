@@ -31,6 +31,18 @@ Si `log_transitions = true`, los cambios de estado se guardan en
 
 Consulta la [lista de tareas](TASKS.md) para el trabajo realizado, prioridades y siguiente paso.
 
+## Estructura actual
+
+```text
+src/
+├── main.rs          # CLI y ciclo principal
+├── config/          # Configuración y validación
+├── diagnostics/     # Comando doctor
+├── game/            # Estados y detección local de procesos
+├── ui/              # Renderizado de terminal
+└── watch/           # Transiciones y persistencia de logs
+```
+
 ## Objetivos
 
 - Detectar transiciones relevantes del cliente y de una partida de VALORANT.
