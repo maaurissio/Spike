@@ -1,4 +1,4 @@
-use std::env;
+use std::{env, fmt::Write};
 
 use crate::{
     VERSION,
@@ -6,24 +6,57 @@ use crate::{
     game::{detect, process_list},
 };
 
-pub fn doctor() {
-    println!("VTRACKER DOCTOR  ·  v{VERSION}\n────────────────────────────────────────");
-    println!("Sistema         {}", env::consts::OS);
-    println!("Detector        procesos locales (sin acceso a memoria)");
+pub fn find_riot_processes(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter(|line| {
+            let line = line.to_lowercase();
+            line.contains("valorant") || line.contains("riotclient") || line.contains("riot client")
+        })
+        .take(8)
+        .map(|line| line.trim_matches('"').to_string())
+        .collect()
+}
+
+pub fn build_report() -> String {
+    build_report_inner(env::var_os("VTRACKER_STATE").is_some())
+}
+
+pub(crate) fn build_report_inner(simulation_active: bool) -> String {
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "VTRACKER DOCTOR  ·  v{VERSION}\n────────────────────────────────────────"
+    );
+    let _ = writeln!(out, "Sistema         {}", env::consts::OS);
+    let _ = writeln!(
+        out,
+        "Detector        procesos locales (sin acceso a memoria)"
+    );
     match config_path() {
         Some(path) if path.exists() => match Config::load() {
-            Ok(_) => println!("Configuración   válida: {}", path.display()),
-            Err(error) => println!("Configuración   inválida: {error}"),
+            Ok(_) => {
+                let _ = writeln!(out, "Configuración   válida: {}", path.display());
+            }
+            Err(error) => {
+                let _ = writeln!(out, "Configuración   inválida: {error}");
+            }
         },
-        Some(path) => println!(
-            "Configuración   no encontrada (opcional): {}",
-            path.display()
-        ),
-        None => println!("Configuración   APPDATA no está disponible"),
+        Some(path) => {
+            let _ = writeln!(
+                out,
+                "Configuración   no encontrada (opcional): {}",
+                path.display()
+            );
+        }
+        None => {
+            let _ = writeln!(out, "Configuración   APPDATA no está disponible");
+        }
     }
     let (config, _) = Config::effective();
-    println!("Intervalo       {} s", config.interval.as_secs());
-    println!(
+    let _ = writeln!(out, "Intervalo       {} s", config.interval.as_secs());
+    let _ = writeln!(
+        out,
         "Log transiciones {}",
         if config.log_transitions {
             "activo"
@@ -33,44 +66,131 @@ pub fn doctor() {
     );
     let process_query_ok = match process_list() {
         Ok(processes) => {
-            let matches: Vec<_> = processes
-                .lines()
-                .filter(|line| {
-                    let line = line.to_lowercase();
-                    line.contains("valorant")
-                        || line.contains("riotclient")
-                        || line.contains("riot client")
-                })
-                .take(8)
-                .collect();
-            println!("Consulta        correcta");
+            let matches = find_riot_processes(&processes);
+            let _ = writeln!(out, "Consulta        correcta");
             if matches.is_empty() {
-                println!("Procesos Riot   no detectados");
+                let _ = writeln!(out, "Procesos Riot   no detectados");
             } else {
-                println!("Procesos Riot   detectados:");
+                let _ = writeln!(out, "Procesos Riot   detectados:");
                 for process in matches {
-                    println!("  - {}", process.trim_matches('"'));
+                    let _ = writeln!(out, "  - {process}");
                 }
             }
             true
         }
         Err(error) => {
-            println!("Consulta        falló: {error}");
+            let _ = writeln!(out, "Consulta        falló: {error}");
             false
         }
     };
-    if env::var_os("VTRACKER_STATE").is_some() {
-        println!("Simulación      activa mediante VTRACKER_STATE (el estado mostrado no es real)");
+    if simulation_active {
+        let _ = writeln!(
+            out,
+            "Simulación      activa mediante VTRACKER_STATE (el estado mostrado no es real)"
+        );
     }
-    println!("Estado actual   {}", detect().state);
-    println!("────────────────────────────────────────");
+    let _ = writeln!(out, "Estado actual   {}", detect().state);
+    let _ = writeln!(out, "────────────────────────────────────────");
     if process_query_ok {
-        println!(
+        let _ = writeln!(
+            out,
             "Resultado: el detector de procesos está listo. No puede distinguir lobby, selección o partida real; esa capacidad requiere una fuente autorizada adicional."
         );
     } else {
-        println!(
+        let _ = writeln!(
+            out,
             "Resultado: no fue posible consultar procesos. Ejecuta el comando en una consola normal y revisa sus permisos."
         );
+    }
+    out
+}
+
+pub fn doctor() {
+    print!("{}", build_report());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_riot_processes_case_insensitive() {
+        let input = "\"RiotClientServices.exe\",\"123\",\"Console\",\"1\",\"10 K\"\n\"chrome.exe\",\"456\",\"Console\",\"1\",\"10 K\"\n\"VALORANT-Win64-Shipping.exe\",\"789\",\"Console\",\"1\",\"100 K\"";
+        let found = find_riot_processes(input);
+        assert_eq!(found.len(), 2);
+        assert!(found[0].contains("RiotClientServices"));
+        assert!(found[1].contains("VALORANT"));
+    }
+
+    #[test]
+    fn finds_riot_client_with_space() {
+        let input = "\"Riot Client Services\",\"123\"";
+        let found = find_riot_processes(input);
+        assert_eq!(found.len(), 1);
+    }
+
+    #[test]
+    fn limits_to_eight_matches() {
+        let input = (0..20)
+            .map(|i| format!("\"valorant-{i}.exe\",\"{i}\""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let found = find_riot_processes(&input);
+        assert_eq!(found.len(), 8);
+    }
+
+    #[test]
+    fn returns_empty_when_no_match() {
+        let input = "\"chrome.exe\",\"123\"\n\"explorer.exe\",\"456\"";
+        let found = find_riot_processes(input);
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn report_contains_expected_sections() {
+        let report = build_report();
+        assert!(report.contains("VTRACKER DOCTOR"));
+        assert!(report.contains("Sistema"));
+        assert!(report.contains("Detector"));
+        assert!(report.contains("Intervalo"));
+        assert!(report.contains("Log transiciones"));
+        assert!(report.contains("Consulta"));
+        assert!(report.contains("Estado actual"));
+        assert!(report.contains("Resultado:"));
+    }
+
+    #[test]
+    fn report_mentions_limitations() {
+        let report = build_report();
+        assert!(report.contains("No puede distinguir lobby"));
+    }
+
+    #[test]
+    fn report_shows_simulation_when_env_set() {
+        let report = build_report_inner(true);
+        assert!(report.contains("Simulación"));
+        assert!(report.contains("VTRACKER_STATE"));
+        let report_no_sim = build_report_inner(false);
+        assert!(!report_no_sim.contains("Simulación"));
+    }
+
+    #[test]
+    fn build_report_respects_env_var() {
+        // Verifica que build_report() lee realmente la variable de entorno.
+        // Se usa serialización manual para evitar carreras con otros tests que tocan VTRACKER_STATE.
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let original = std::env::var_os("VTRACKER_STATE");
+        unsafe { std::env::set_var("VTRACKER_STATE", "idle") };
+        let with_sim = build_report();
+        if let Some(val) = original {
+            unsafe { std::env::set_var("VTRACKER_STATE", val) };
+        } else {
+            unsafe { std::env::remove_var("VTRACKER_STATE") };
+        }
+        let without_sim = build_report();
+        assert!(with_sim.contains("Simulación"));
+        assert!(!without_sim.contains("Simulación"));
     }
 }

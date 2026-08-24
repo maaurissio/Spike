@@ -36,12 +36,27 @@ Consulta la [lista de tareas](TASKS.md) para el trabajo realizado, prioridades y
 ```text
 src/
 ├── main.rs          # CLI y ciclo principal
+├── cli/             # Parsing de argumentos y validación
 ├── config/          # Configuración y validación
 ├── diagnostics/     # Comando doctor
 ├── game/            # Estados y detección local de procesos
 ├── ui/              # Renderizado de terminal
 └── watch/           # Transiciones y persistencia de logs
 ```
+
+## Procesos observados (MVP local)
+
+Verificación con `vtracker doctor` y `VTRACKER_STATE` en Windows (`tasklist /FO CSV /NH`):
+
+| Estado mostrado | Señal | Procesos típicos | `client_found` | `game_found` |
+|---|---|---|---|---|
+| `Cliente cerrado` | `tasklist` sin coincidencias | *(ninguno Riot/VALORANT)* | false | false |
+| `Cliente disponible` | `RiotClientServices` o `valorant` | `RiotClientServices.exe`, `RiotClientCrashHandler.exe` | true | false |
+| `Cliente y juego abiertos (modo no confirmado)` | `VALORANT-Win64-Shipping` | `VALORANT-Win64-Shipping.exe` + procesos cliente | true | true |
+
+> El detector (`src/game/mod.rs:75`) solo distingue estas 3 señales. No infiere `Lobby`/`AgentSelect`/`InMatch`; para eso se requiere una fuente autorizada (ver `TASKS.md`).
+
+Tests: `cargo test` — 43 pruebas para `config`, `cli`, `game::observation_from_process_list`, `diagnostics::find_riot_processes` y `watch`.
 
 ## Objetivos
 

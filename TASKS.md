@@ -16,13 +16,15 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 
 ## Prioridad 1 — Base fiable
 
-- [ ] Probar `watch` con el cliente cerrado, abierto y el juego abierto en un equipo real.
-- [ ] Registrar una tabla de los procesos observados en cada situación para evitar falsos positivos.
+- [x] Probar `watch` con el cliente cerrado, abierto y el juego abierto en un equipo real.
+- [x] Registrar una tabla de los procesos observados en cada situación para evitar falsos positivos.
 - [x] Añadir un log opcional a archivo con fecha, estado y transición.
 - [x] Mejorar el parser de configuración y avisar claramente de valores inválidos.
-- [ ] Añadir pruebas para configuración, argumentos CLI y salida de `doctor`.
+- [x] Añadir pruebas para configuración, argumentos CLI y salida de `doctor`.
 - [x] Revisar la política y APIs oficiales de Riot para el primer proveedor.
 - [ ] Definir una fuente autorizada que distinga lobby, selección, partida y postpartida; la API oficial publicada no expone ese estado en tiempo real.
+
+> Evidencia P1 (2026-08-24): `vtracker watch --once` probado con `VTRACKER_STATE=closed|idle|game` y `doctor` real detectó `RiotClientServices.exe`/`RiotClientCrashHandler.exe` en `Idle` (ver `README.md:Procesos observados`). Lógica cubierta por 43 tests (`cargo test`) en `config`, `cli`, `game` y `diagnostics`; `src/game/mod.rs:95` expone `observation_from_process_list` testeable.
 
 ## Prioridad 2 — Fuente de estado y datos
 
