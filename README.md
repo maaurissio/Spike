@@ -2,7 +2,34 @@
 
 VTracker es una aplicación de terminal para observar el estado de VALORANT, consultar datos autorizados de partidas y jugadores, y presentar estadísticas de forma rápida y con bajo consumo de recursos.
 
-El proyecto está en una fase inicial de diseño. Este repositorio todavía no implementa las integraciones ni la TUI final.
+El proyecto incluye un MVP de `watch`: detecta de forma no invasiva los procesos locales
+del cliente/juego y presenta el estado en terminal. No consulta APIs ni accede a memoria.
+
+## MVP: `watch`
+
+```powershell
+cargo run -- watch
+cargo run -- watch --once
+cargo run -- watch --interval 5
+cargo run -- doctor
+```
+
+En una terminal interactiva el panel se actualiza automáticamente. Para probar estados
+sin ejecutar VALORANT se puede usar `VTRACKER_STATE=closed`, `idle` o `game`.
+
+El detector de procesos no puede distinguir lobby, selección de agente o partida. Cuando
+el ejecutable del juego está activo muestra “modo no confirmado”; no debe interpretarse
+como una partida en curso.
+
+La configuración opcional está en `%APPDATA%\\vtracker\\config.toml`; consulta
+[`config.example.toml`](config.example.toml) para el formato.
+
+Si `log_transitions = true`, los cambios de estado se guardan en
+`%APPDATA%\vtracker\watch.log`.
+
+`vtracker doctor` revisa la configuración, la consulta de procesos y los procesos Riot/VALORANT detectados. Es un diagnóstico local: no consulta APIs ni obtiene información de una partida.
+
+Consulta la [lista de tareas](TASKS.md) para el trabajo realizado, prioridades y siguiente paso.
 
 ## Objetivos
 
