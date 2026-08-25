@@ -63,6 +63,8 @@ Degradación: si (1) responde 404 a mitad de partida → silenciosamente se espe
 
 ## 5. Visualización — RoundTimeline
 
+> **⚠️ CONCEPTUAL — NO es el diseño final.** El arte ASCII y las reglas visuales de esta sección son exploratorios (validan el concepto del usuario). Lo vinculante: el modelo de datos (§2), las rutas de datos (§3) y las reglas de negocio. El render final se decide en implementación (P5).
+
 Concepto del usuario (prototipo validado): kills apilados hacia arriba, muertes hacia abajo, una columna por ronda.
 
 ```

@@ -1,5 +1,7 @@
 # DESIGN-UI — Especificación de interfaz (TUI)
 
+> **⚠️ CONCEPTUAL — NO es el diseño final.** Todos los mockups, layouts, colores y navegación de este documento son **exploratorios**: sirven para validar requisitos, flujos y casos borde antes de implementar. El diseño final se definirá durante la implementación de Prioridad 5 (con Ratatui real, pruebas en pantalla y feedback del usuario). Nada de aquí es vinculante visualmente; lo vinculante son los requisitos y reglas de comportamiento.
+
 > Estado: en refinamiento (pre-código). Define las vistas, layouts adaptativos y navegación. Principios base en `Arquitectura-inicial.md:12` (Elm/TEA, `AppState` solo presentación). Specs relacionados: `SPEC-ROUNDS.md`, `DECISIONS.md`.
 
 ## 1. Vistas

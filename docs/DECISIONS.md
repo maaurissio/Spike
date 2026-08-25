@@ -44,8 +44,8 @@
 
 ## ADR-009 — Documentación distribuida en specs
 **Contexto:** README y Arquitectura-inicial no deben colapsar con detalle de features.
-**Decisión:** los detalles viven en `docs/` (`SPEC-ROUNDS.md`, `DESIGN-UI.md`, `ISO.md`, este archivo). README mantiene visión general + índice; Arquitectura mantiene decisiones estructurales.
-**Consecuencias:** cada feature tiene su spec navegable; el código referencia specs por ruta.
+**Decisión:** los detalles viven en `docs/` (`SPEC-ROUNDS.md`, `DESIGN-UI.md`, `ISO.md`, este archivo). README mantiene visión general + índice; Arquitectura mantiene decisiones estructurales. **Todo mockup/diseño de UI en los specs es CONCEPTUAL y exploratorio — no es el diseño final**; lo vinculante son los requisitos, modelos de datos y reglas de comportamiento. El diseño visual final se define en implementación (P5).
+**Consecuencias:** cada feature tiene su spec navegable; el código referencia specs por ruta; ninguna decisión visual queda cerrada antes de probar en pantalla real.
 
 ## ADR-010 — Sistema integrado ISO 9001/14001/27001 proporcional
 **Contexto:** el proyecto quiere calidad auditable, impacto ambiental medido y seguridad de la información desde el inicio, sin burocracia de gran empresa.
