@@ -4,6 +4,7 @@ mod cli;
 mod config;
 mod diagnostics;
 mod game;
+mod providers;
 mod ui;
 mod watch;
 

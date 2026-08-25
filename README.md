@@ -55,6 +55,7 @@ src/
 ├── config/          # Configuración y validación (TOML + env)
 ├── diagnostics/     # Comando doctor
 ├── game/            # Estados y detección local de procesos
+├── providers/       # GameStateSource trait + Process/Mock (desacoplado)
 ├── ui/              # Renderizado de terminal
 └── watch/           # Transiciones y persistencia de logs
 ```
@@ -64,7 +65,7 @@ Estructura objetivo (Prioridad 2+):
 ```text
 src/
 ├── autostart/       # Registro en inicio (Windows Run key / Startup folder)
-├── providers/       # capabilities.rs + adaptadores Riot/Tracker
+├── providers/       # capabilities.rs + riot.rs/tracker.rs (autorizados)
 ├── requests/        # manager.rs (dedupe, rate-limit, retry)
 ├── cache/           # memory.rs + disk.rs (L1/L2)
 └── analytics/       # combat.rs, aggregates.rs
@@ -82,7 +83,7 @@ Verificación con `vtracker doctor` y `VTRACKER_STATE` en Windows (`tasklist /FO
 
 > El detector (`src/game/mod.rs:75`) solo distingue estas 3 señales. No infiere `Lobby`/`AgentSelect`/`InMatch`; para eso se requiere una fuente autorizada (ver `TASKS.md`).
 
-Tests: `cargo test` — 43 pruebas para `config`, `cli`, `game::observation_from_process_list`, `diagnostics::find_riot_processes` y `watch`.
+Tests: `cargo test` — 58 pruebas para `config`, `cli`, `game`, `diagnostics`, `providers` (`GamePhase`, `Mock`/`Process`, fallback) y `watch`.
 
 ## Experiencia de usuario final — visión
 
@@ -167,7 +168,7 @@ Inspirado en patrones 2026 para TUIs Rust (Elm Architecture / TEA, `ratatui` + `
 - **Diseño orientado a eventos** para evitar polling y cálculos innecesarios.
 - **Separación estricta:** `AppState` solo datos de presentación; I/O y cálculos fuera del renderizado (Elm: Model → Message → Update → View).
 - **Autostart explícito** con `auto-launch` crate, nunca implícito.
-- **Testing primero:** 43 tests unitarios actuales, fixtures para analytics, `cargo fmt`/`clippy` en CI.
+- **Testing primero:** 58 tests unitarios actuales, fixtures para analytics, `cargo fmt`/`clippy` en CI.
 - **Seguridad (ISO 27001):** secretos solo en `.env`/env vars, `.gitignore` estricto, `doctor` enmascara claves (`***`), `cargo audit`+SBOM futuro, controles 8.25-8.29.
 - **Calidad (ISO 9001):** control documental (`TASKS.md`/`Arquitectura-inicial.md`), trazabilidad Raw/Derived, `watch.log` como registro, medición antes de optimizar.
 - **Ambiental (ISO 14001):** green coding — event-driven, L1/L2 para evitar red, `minimized` en autostart, binario Rust ligero; medición de CPU idle/mem en `docs/BENCHMARKS.md` futuro.
@@ -210,7 +211,7 @@ vtracker cache <subcomando>                      # inspeccionar/limpiar caché L
 
 ## Estado actual y conformidad
 
-MVP local y Prioridad 1 completados (43 tests, tabla de procesos, `doctor` testeable, `.env` protegido). Siguiente: **Prioridad 2A — seguridad API** (`.env` ya protegido) y **2B — validar fuente autorizada** antes de implementar `GameStateSource`. No se infiere estado de partida desde procesos locales. Nombre `VTracker` temporal hasta release.
+MVP local y Prioridad 1 completados (58 tests, tabla de procesos, `doctor` testeable, `.env` protegido, `GameStateSource` desacoplado con `Process`/`Mock` y `resolve_with_fallback`). Siguiente: **validar fuente autorizada (Riot docs)** y luego implementar adaptador Riot (`src/providers/riot.rs`) tras `2B`. No se infiere estado de partida desde procesos locales. Nombre `VTracker` temporal hasta release.
 
 **Compromiso ISO:** se adoptan principios **ISO 9001 (Calidad) + ISO 14001 (Ambiental) + ISO 27001 (Seguridad)** como sistema integrado PHVA desde el inicio (ver `docs/ISO.md` y `Arquitectura-inicial.md:21`). No es burocracia vacía: tests + `clippy`/`fmt` (calidad), `cargo` eficiente + caché (ambiental), `.env` + `doctor` enmascarado + RSO (seguridad). Certificación formal opcional a medio plazo.
 

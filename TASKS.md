@@ -42,14 +42,15 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 ### 2B — Diseño de proveedores (sin implementar red hasta validar)
 
 - [ ] Validar la documentación, autenticación, consentimiento, límites y políticas del primer proveedor (Riot Developer Portal).
-- [ ] Crear una interfaz `GameStateSource` (`src/providers/capabilities.rs`) para que el resto de la app no dependa de un proveedor concreto.
-- [ ] Definir estructura `src/providers/`, `src/requests/manager.rs`, `src/cache/` según `Arquitectura-inicial.md:11`.
+- [x] Crear una interfaz `GameStateSource` (`src/providers/capabilities.rs`) para que el resto de la app no dependa de un proveedor concreto.
+- [x] Definir estructura `src/providers/` con `mod.rs`, `capabilities.rs`, `process.rs`, `mock.rs` según `Arquitectura-inicial.md:11`.
+- [x] Modelar estados `Lobby`, `PreGame`, `AgentSelect`, `InMatch` y `PostMatch` + `GamePhase` y `Confidence` solo para fuentes autorizadas; `GameOpen` preserva honestidad de detección por procesos.
+- [x] Implementar `ProcessGameStateSource` (wrapper honesto de `game::detect`) y `MockGameStateSource` para validar TUI sin red.
+- [x] Resolver con `resolve_with_fallback` y mostrar último estado conocido cuando una fuente falle (retryable → fallback, auth → no fallback).
 
 ### 2C — Implementación autorizada (solo tras validar 2B)
 
 - [ ] Implementar el primer adaptador autorizado para estado de cliente/partida (requiere `RIOT_API_KEY` en `.env`).
-- [ ] Modelar estados `Lobby`, `PreGame`, `AgentSelect`, `InMatch` y `PostMatch` solo si la fuente los entrega de forma fiable.
-- [ ] Mostrar errores recuperables y último estado conocido cuando una fuente falle.
 - [ ] Extender `vtracker doctor` para validar la disponibilidad del proveedor, sin exponer secretos.
 
 ## Prioridad 3 — Datos propios e historial + Experiencia por fase
@@ -102,6 +103,6 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 
 ## Siguiente tarea recomendada
 
-1. **Ahora (seguridad):** crear tu `.env` local desde `.env.example` — sin poner claves reales aún.
-2. **Siguiente (2B):** validar fuente autorizada + diseñar `GameStateSource`/`providers` sin implementar red.
-3. **Después (2C):** solo entonces implementar adaptador con `RIOT_API_KEY` protegida. No inferir estado de procesos locales.
+1. **Hecho (2B — diseño):** `GameStateSource` + `GamePhase`/`ProviderError`/`StateInfo` + `ProcessGameStateSource`/`MockGameStateSource` + `resolve_with_fallback` (58 tests, `src/providers/*`).
+2. **Ahora:** validar documentación/autenticación/límites del primer proveedor (Riot Developer Portal, RSO/opt-in) — única tarea pendiente de 2B.
+3. **Después (2C):** implementar `src/providers/riot.rs` con `RIOT_API_KEY` protegida y extender `doctor` sin exponer secretos. No inferir estado de procesos locales.
