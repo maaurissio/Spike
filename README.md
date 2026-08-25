@@ -40,6 +40,42 @@ Consulta la [lista de tareas](TASKS.md) para el trabajo realizado, prioridades y
 
 Lectura solo-lectura (sin inyección ni memoria); el password del lockfile vive solo en memoria y `doctor` lo enmascara (`***`). `RIOT_API_KEY` en `.env` queda **opcional** para mejoras futuras.
 
+### Fuentes consultadas en la investigación (2026-08-24)
+
+> Se listan **todas** las fuentes revisadas durante la investigación, incluidas las que no fue posible acceder completamente (403/404/bloqueo) — quedan como referencia y para reintentar.
+
+**Documentación técnica de la API del cliente (accedidas):**
+
+* **Valorant API Docs (techchrism)** — <https://valapidocs.techchrism.me/> — documentación no oficial de los endpoints internos del cliente: `Local Help`, `Local WebSocket` (`wss://riot:{password}@127.0.0.1:{port}`), `Entitlements Token`, `Pre-Game Match`, `Current Game Match` (`glz-{region}-1.{shard}.a.pvp.net/core-game/v1/matches/{id}`), `Match Details` (`pd.{shard}.a.pvp.net/match-details/v1/matches/{id}` con `roundResults[]` y `playerStats[].kills`), `Match History`, `Sessions`. Fuente principal de esta investigación.
+* **Riot Developer Portal — VALORANT** — <https://developer.riotgames.com/docs/valorant> — política oficial: RSO, opt-in de datos personales, casos de uso aprobados (accesible vía resultados de búsqueda; la página raíz `/docs/riot-games` devolvió 404).
+* **VAL-MATCH-V1 / endpoints oficiales** — <https://developer.riotgames.com/apis> — índice oficial (Account, Content, Match, Ranked, Status); referenciado vía perfiles de terceros.
+
+**Proyectos de la comunidad (accedidos, evidencia de que la Local Client API funciona):**
+
+* **VALORANT-rank-yoinker (vRY)** — <https://github.com/zayKenyon/VALORANT-rank-yoinker> (563★, desarrollo finalizado) — lee lockfile + WebSocket local para ranks/skins en vivo; respeta streamer mode por política de Riot.
+* **Vantage** — <https://github.com/ccjakje/vantage> + `DOCUMENTATION.md` — tracker Rust/Tauri con CLI y roadmap de overlays; su doc detalla lockfile, servidores (`127.0.0.1`, `glz`, `pd`), por qué funcionan perfiles privados, y **per-round stats vía PD `/match-details`**. Su fase "Tab Overlay (per-round stats)" valida nuestro requisito de rondas.
+* **ValorantClientAPI (RumbleMike)** — <https://github.com/HeyM1ke/ValorantClientAPI> (414★) — investigación pionera de la API in-game/cliente; Docs con GettingStarted, PlayerID, CompetitiveHistory, MatchHistory.
+* **Valorant-Overlay (LuqmanKareem)** — <https://github.com/LuqmanKareem/Valorant-Overlay> — killfeed en vivo vía **OCR** (MSS + OpenCV + Tesseract); evidencia de que NO existe API para kills en vivo (por eso lo descartamos).
+* **valorant-api.com** — <https://valorant-api.com/> — assets/contenido (agentes, mapas, armas) no oficial; útil para iconos futuros.
+* **HenrikDev API (no oficial)** — <https://docs.henrikdev.xyz/valorant/api-reference/match> — `/valorant/v4/match/{region}/{matchId}` con `rounds[]`/`player_stats[]`; alternativa con key propia (Basic instantánea). No requerida con Local Client API.
+* **valorant-mcp** — <https://pypi.org/project/valorant-mcp/> — referencia de tooling sobre Henrik API (timeline narrativo por ronda).
+* **yasuo.js** — <https://docs.yasuo.gg/api/val-match> — wrapper de VAL-MATCH-V1; útil como referencia de modelos (`roundResults`, `teams`, `players`).
+
+**Foros y discusiones (acceso parcial/bloqueado):**
+
+* **Reddit r/VALORANT** — hilo *"Live game data API and/or overlay system for OBS"* (<https://www.reddit.com/r/VALORANT/comments/10d53ny/>) — menciona herramientas que leen datos en vivo (Logitech/Touch Portal); Reddit bloqueó el fetch directo (acceso parcial vía buscador).
+* **Reddit** — hilo sobre el programa de performance por jugador — confirma que el **lockfile** solo existe con VALORANT abierto y contiene credenciales del servidor local (no la contraseña Riot).
+* **DeepWiki vRY** — <https://deepwiki.com/zayKenyon/VALORANT-rank-yoinker/3.2-lockfile-and-local-api> — análisis del flujo lockfile → REST local → WebSocket → GLZ/PD.
+* **Stack Overflow** — etiquetas `valorant+api` — devolvió 403 al fetch directo; no accesible en esta sesión.
+* **Búsqueda DuckDuckGo** — <https://duckduckgo.com/html/?q=valorant+in-game+live+round+kills+local+api+lockfile+overlay+reddit> — usada para descubrir vRY/Vantage/Valorant-Overlay y la doc del WebSocket local.
+* **Google** — búsqueda directa bloqueada (redirect JS); se usó DuckDuckGo como alternativa.
+
+**Conclusiones de la investigación** (detalle en `Arquitectura-inicial.md:20`):
+
+1. La Local Client API (lockfile) cubre fases reales, roster, perfil, historial y rondas **sin API key ni RSO**.
+2. `match-details` entrega el desglose por ronda **post-partida** (`PostGameDetails: null` en vivo).
+3. Los kills dentro de la ronda en curso **no están expuestos por ninguna API** — solo OCR (frágil) o lectura de memoria (descartada por principios).
+
 ## Configuración y secretos (API) — protegido por diseño
 
 > **La API se implementa en Prioridad 2** (`TASKS.md:29`). Antes de pedir cualquier key ya está preparada la protección.
