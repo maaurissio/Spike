@@ -299,11 +299,13 @@ Capacidades posibles:
 
 | Capacidad | Ejemplo de uso |
 |---|---|
-| `GameStateSource` | Consultar señal de estado de cliente/juego. |
-| `RosterSource` | Obtener roster cuando esté autorizado y disponible. |
-| `PlayerProfileSource` | Perfil, identidad o rango. |
-| `MatchHistorySource` | Partidas y resultados. |
-| `MatchDetailSource` | Rondas, daño y eventos necesarios para Analytics. |
+| `GameStateSource` | Consultar señal de estado de cliente/juego. **Implementado** (`src/providers/capabilities.rs`) con `GamePhase` fino/grueso. |
+| `LiveMatchSource` | Roster en vivo (Pre-Game/Current Game, GLZ vía tokens locales): ranks, nivel, agente de las 10 personas. |
+| `PlayerProfileSource` | Perfil, identidad o rango (PD vía tokens locales; API oficial opcional). |
+| `MatchHistorySource` | Partidas y resultados (PD `match-history`/`competitive-updates`). |
+| `MatchDetailSource` | **Rondas** (`roundResults[]`: kills/deaths/resultado por ronda) para Analytics — post-partida. |
+
+**Decisión 2026-08-24 (agilización):** la fuente primaria es la **Local Client API** de VALORANT — lockfile (`%LocalAppData%\Riot Games\Riot Client\Config\lockfile`) + REST local (`127.0.0.1:{port}`) + WebSocket (`wss://riot:{password}@127.0.0.1:{port}`) + servidores GLZ/PD con los tokens locales. **No requiere API key de producción ni RSO** para: fases reales (`Lobby/PreGame/AgentSelect/InMatch/PostMatch` event-driven), roster en vivo, perfil propio, historial y rondas post-partida. La API oficial (`RIOT_API_KEY`) queda opcional para mejoras. La lectura es solo-lectura (sin inyección ni memoria), misma técnica que herramientas consolidadas (vRY, Vantage); el password del lockfile vive solo en memoria y `doctor` lo enmascara.
 
 **Decidido:** una pantalla pregunta por una capability requerida y recibe un modelo normalizado o una indisponibilidad explicable.  
 **Pendiente:** validar oficialmente las APIs, autenticación, RSO/consentimiento, límites y términos de Riot/Tracker antes de implementar cada adaptador.
@@ -496,7 +498,23 @@ Ya acordado:
 9. Establecer objetivos de rendimiento medibles para arranque, RAM, CPU idle y latencia (benchmarks reproducibles antes de optimizar).
 10. Planificar renombrado de `VTracker` al nombre final y propagación a `Cargo.toml`/binario/docs antes del release.
 
-## 20. Buenas prácticas y referencias aplicadas (2026)
+## 20. Fuentes de datos — investigación 2026-08-24 (Local Client API)
+
+Verificado contra `valapidocs.techchrism.me` (documentación de la API interna del cliente), repos de la comunidad (vRY 563★, Vantage, RumbleMike/ValorantClientAPI) y foros:
+
+| Dato | Fuente | Disponibilidad |
+|---|---|---|
+| Fase real (Lobby/PreGame/AgentSelect/InMatch/PostMatch) | REST local + WebSocket local (eventos) | **En vivo**, event-driven |
+| Roster de las 10 personas (ranks, nivel, agente, perfiles privados incluidos) | `glz-{region}-1.{shard}.a.pvp.net` Pre-Game/Current Game con tokens locales | **En vivo** |
+| Perfil propio, MMR, historial | `pd.{shard}.a.pvp.net` con tokens locales | En vivo/post |
+| **Desglose por ronda** (`roundResults[]`: `roundNum`, `winningTeam`, `roundResult`, `playerStats[].kills`) | `pd.../match-details/v1/matches/{id}` | **Post-partida** |
+| Kills en vivo dentro de la ronda actual | No expuesto por ninguna API | ❌ Solo OCR del killfeed (frágil) o lectura de memoria (descartada por principios) |
+
+**Decisión de producto:** el tracker de rondas se actualiza **al terminar la partida** (tabla `Ronda | Resultado | Kills | ¿Moriste?`); si `match-details` llegara a responder a mitad de partida se muestra progreso incremental, con degradación elegante si responde 404. No se implementa OCR ni lectura de memoria.
+
+**Autenticación local:** lockfile `name:pid:port:password:protocol` → Basic Auth `riot:{password}` (certificado self-signed) → `/entitlements-token` → bearer + entitlement JWT para GLZ/PD. El password nunca se persiste ni loguea.
+
+## 21. Buenas prácticas y referencias aplicadas (2026)
 
 - **TUI Rust:** Elm/TEA (Model/Message/Update/View) con `ratatui` + `tokio::select!`; separar dominio de presentación; `cargo fmt`/`clippy`/`test` en cada cambio (ver `README.md:Principios técnicos`).
 - **Event-driven:** polling mínimo, caché antes de red, dedupe y cancelación de requests, cálculos incrementales.
@@ -505,7 +523,7 @@ Ya acordado:
 - **Config:** TOML versionado, validación estricta (`src/config/mod.rs:19`), `config.example.toml` sin secretos, `config.toml` real fuera del repo (`%APPDATA%/vtracker/`).
 - **Calidad/Ambiental/Seguridad de la información:** ver `docs/ISO.md` — sistema integrado ISO 9001/14001/27001 proporcional a VSE.
 
-## 21. Sistema Integrado de Gestión — ISO 9001 / 14001 / 27001 (compromiso)
+## 22. Sistema Integrado de Gestión — ISO 9001 / 14001 / 27001 (compromiso)
 
 > **Decidido:** VTracker (nombre temporal) adopta principios ISO 9001 (Calidad), ISO 14001 (Ambiental) e ISO 27001 (Seguridad) como **sistema integrado PHVA**, proporcional a un proyecto pequeño. Detalle completo en `docs/ISO.md`. La certificación formal es objetivo a medio plazo, no requisito para el MVP.
 

@@ -28,42 +28,48 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 
 > Evidencia P1 (2026-08-24): `vtracker watch --once` probado con `VTRACKER_STATE=closed|idle|game` y `doctor` real detectó `RiotClientServices.exe`/`RiotClientCrashHandler.exe` en `Idle` (ver `README.md:Procesos observados`). Lógica cubierta por 43 tests (`cargo test`) en `config`, `cli`, `game` y `diagnostics`; `src/game/mod.rs:95` expone `observation_from_process_list` testeable.
 
-## Prioridad 2 — Fuente de estado y datos (API) — ¿cuándo entra la API?
+## Prioridad 2 — Fuente de estado y datos — Local Client API primero (agilizado)
 
-> La API entra AQUÍ, después de cerrar Prioridad 1. Ya está planificada con estructura segura.
+> **Investigación 2026-08-24 (ver `docs/ISO.md` refs y `Arquitectura-inicial.md:22`):** la **Local Client API** de VALORANT (lockfile en `%LocalAppData%\Riot Games\Riot Client\Config\lockfile` + `wss://riot:{password}@127.0.0.1:{port}`) da tokens (entitlement/bearer) para GLZ/PD **sin API key de producción y sin RSO**. Esto desbloquea la experiencia completa (fases reales, roster, perfil, historial, rondas) sin esperar aprobación de Riot. La API oficial pasa a ser opcional/mejora posterior.
 
-### 2A — Seguridad y secretos (hacer PRIMERO, antes de pedir cualquier key)
+### 2A — Seguridad y secretos (ajustado a lockfile)
 
 - [x] Proteger secretos en repo: `.env` en `.gitignore` (`/.gitignore:4`), `.env.example` como plantilla y `config.example.toml` documentado sin secretos.
-- [ ] Crear `.env` local desde `.env.example` (`Copy-Item .env.example .env`) y nunca commitear claves reales.
-- [ ] Cargar secretos solo desde variables de entorno en runtime (no hardcodear). `doctor` debe mostrar `***` o `no configurada`, nunca el valor.
-- [ ] Documentar flujo de secretos en `README.md` y `Arquitectura-inicial.md:10` (límites de producto y cumplimiento).
+- [ ] **Lockfile:** leer `%LocalAppData%\Riot Games\Riot Client\Config\lockfile` (`name:pid:port:password:protocol`); password **solo en memoria**, nunca logueado ni persistido (`doctor` muestra `***`).
+- [ ] `RIOT_API_KEY` en `.env` queda **opcional** (solo para mejoras con API oficial futura).
+- [ ] Documentar flujo de secretos en `README.md` y `Arquitectura-inicial.md:10` (límites de producto y cumplimiento; solo-lectura, sin inyección ni memoria).
 
-### 2B — Diseño de proveedores (sin implementar red hasta validar)
+### 2B — Diseño de proveedores (hecho para interfaces; fuentes locales siguientes)
 
-- [ ] Validar la documentación, autenticación, consentimiento, límites y políticas del primer proveedor (Riot Developer Portal).
 - [x] Crear una interfaz `GameStateSource` (`src/providers/capabilities.rs`) para que el resto de la app no dependa de un proveedor concreto.
 - [x] Definir estructura `src/providers/` con `mod.rs`, `capabilities.rs`, `process.rs`, `mock.rs` según `Arquitectura-inicial.md:11`.
-- [x] Modelar estados `Lobby`, `PreGame`, `AgentSelect`, `InMatch` y `PostMatch` + `GamePhase` y `Confidence` solo para fuentes autorizadas; `GameOpen` preserva honestidad de detección por procesos.
+- [x] Modelar estados `Lobby`, `PreGame`, `AgentSelect`, `InMatch` y `PostMatch` + `GamePhase` y `Confidence`; `GameOpen` preserva honestidad de detección por procesos.
 - [x] Implementar `ProcessGameStateSource` (wrapper honesto de `game::detect`) y `MockGameStateSource` para validar TUI sin red.
 - [x] Resolver con `resolve_with_fallback` y mostrar último estado conocido cuando una fuente falle (retryable → fallback, auth → no fallback).
+- [x] Investigar fuentes: Local Client API (lockfile + WebSocket + GLZ/PD) cubre fases reales, roster, perfil, historial y rondas; documentado en `Arquitectura-inicial.md:22`.
 
-### 2C — Implementación autorizada (solo tras validar 2B)
+### 2C — Implementación Local Client (nueva ruta, sin API key)
 
-- [ ] Implementar el primer adaptador autorizado para estado de cliente/partida (requiere `RIOT_API_KEY` en `.env`).
-- [ ] Extender `vtracker doctor` para validar la disponibilidad del proveedor, sin exponer secretos.
+- [ ] **`src/providers/lockfile.rs`:** parsear lockfile (puerto/password), con tests sobre contenido simulado.
+- [ ] **`src/providers/local.rs` (`LocalClientSource`):** implementa `GameStateSource` — detecta fase real vía endpoints locales (`/help`, sessions) y WebSocket (`wss://127.0.0.1:{port}`) para transiciones `Lobby→PreGame→AgentSelect→InMatch→PostMatch` event-driven (sin polling).
+- [ ] **Capability `LiveMatchSource`:** `Pre-Game Match` y `Current Game Match` (GLZ) → roster con ranks/nivel/agente de las 10 personas (incluye perfiles privados) para stats de equipo en Agent Select/partida.
+- [ ] **Capability `MatchDetailSource`:** `pd.{shard}.a.pvp.net/match-details/v1/matches/{id}` post-partida → `roundResults[]` con kills/deaths/resultado **por ronda** (desglose completo en `PostMatch`/`History`). Opcional: intentar polling durante partida y degradar con elegancia si aún no está disponible.
+- [ ] **Capability `PlayerProfileSource`:** perfil propio + historial (`match-history`, `competitive-updates`, `mmr`) con tokens locales.
+- [ ] Extender `vtracker doctor` para validar lockfile + local API + proveedor, sin exponer secretos.
+- [ ] API oficial Riot (`RIOT_API_KEY`) queda como mejora opcional posterior (leaderboards, contenido); no bloquea nada.
 
 ## Prioridad 3 — Datos propios e historial + Experiencia por fase
 
-- [ ] Definir modelos normalizados de jugador, partida, ronda y resultado.
-- [ ] Implementar una capa de providers por capacidades: perfil, historial y detalle de partida.
+- [ ] Definir modelos normalizados de jugador, partida, **ronda** (`Round { round_num, winning_team, round_result, players: Vec<PlayerRoundStat { puuid, kills, deaths, score, damage }> }`) y resultado.
+- [ ] Implementar una capa de providers por capacidades: perfil, historial, detalle de partida y rondas.
 - [ ] Implementar caché L1 en memoria con TTL.
 - [ ] Implementar caché L2 en disco con versión de esquema y expiración.
 - [ ] Centralizar solicitudes con timeout, deduplicación y reintentos seguros.
-- [ ] Añadir el comando `vtracker history` para consultar el historial propio autorizado.
-- [ ] **Flujo perfil:** al detectar `Idle`/`Cliente disponible`, mostrar perfil propio (Riot ID configurado) con stats cacheadas; si provider falla, mostrar último dato conocido y error recuperable.
-- [ ] **Flujo equipo:** al detectar `PreGame`/`AgentSelect` vía `GameStateSource` autorizado, consultar `RosterSource` y mostrar stats del equipo para esa partida.
-- [ ] **Flujo partida:** al detectar `InMatch`, mostrar stats generales del game en curso (mapa, modo, composición) sin inferir de procesos locales.
+- [ ] Añadir el comando `vtracker history` para consultar el historial propio (tokens locales).
+- [ ] **Flujo perfil:** al detectar `Idle`, mostrar perfil propio con stats cacheadas; si provider falla, último dato conocido y error recuperable.
+- [ ] **Flujo equipo:** al detectar `PreGame`/`AgentSelect` vía `LocalClientSource`, consultar `LiveMatchSource` y mostrar ranks/WR del equipo en vivo.
+- [ ] **Flujo partida:** al detectar `InMatch`, mostrar contexto (mapa, modo, composición) en vivo.
+- [ ] **Flujo rondas (requisito explícito):** al terminar cada ronda (o al terminar la partida si la fuente no entrega antes), mostrar kills/muertes propias por ronda — tabla `Ronda | Resultado | Kills | ¿Moriste?` desde `MatchDetailSource` + `analytics` (fixture de 5 rondas para tests).
 
 ## Prioridad 4 — Estadísticas
 
@@ -103,6 +109,7 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 
 ## Siguiente tarea recomendada
 
-1. **Hecho (2B — diseño):** `GameStateSource` + `GamePhase`/`ProviderError`/`StateInfo` + `ProcessGameStateSource`/`MockGameStateSource` + `resolve_with_fallback` (58 tests, `src/providers/*`).
-2. **Ahora:** validar documentación/autenticación/límites del primer proveedor (Riot Developer Portal, RSO/opt-in) — única tarea pendiente de 2B.
-3. **Después (2C):** implementar `src/providers/riot.rs` con `RIOT_API_KEY` protegida y extender `doctor` sin exponer secretos. No inferir estado de procesos locales.
+1. **Hecho (2B — diseño):** `GameStateSource` + `GamePhase`/`ProviderError`/`StateInfo` + `Process`/`Mock` + `resolve_with_fallback` (58 tests).
+2. **Ahora (2C — Local Client):** `src/providers/lockfile.rs` → `LocalClientSource` con WebSocket para fases reales → `LiveMatchSource` (roster en vivo) → `MatchDetailSource` (rondas post-partida). **Sin API key ni RSO.**
+3. **Después:** analytics por ronda (kills/muertes por ronda, fixture de 5 rondas) y vista en `PostMatch`/`History`.
+4. **Opcional:** API oficial Riot con `RIOT_API_KEY` solo para mejoras (leaderboards/contenido).

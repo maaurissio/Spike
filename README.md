@@ -25,6 +25,21 @@ La configuración opcional está en `%APPDATA%\vtracker\config.toml`; consulta [
 
 Consulta la [lista de tareas](TASKS.md) para el trabajo realizado, prioridades y siguiente paso.
 
+## Fuentes de datos — Local Client API (agilizado)
+
+**Investigación 2026-08-24** (ver `Arquitectura-inicial.md:20`): VALORANT expone una **API local** cuando corre — lockfile en `%LocalAppData%\Riot Games\Riot Client\Config\lockfile` + REST en `127.0.0.1:{port}` + WebSocket `wss://riot:{password}@127.0.0.1:{port}` — y con sus tokens se accede a GLZ/PD. **No se necesita API key de producción ni RSO** para la experiencia principal:
+
+| Dato | Fuente | Cuándo |
+|---|---|---|
+| Fase real (`Lobby`/`PreGame`/`AgentSelect`/`InMatch`/`PostMatch`) | REST + WebSocket local | En vivo, event-driven |
+| Roster 10 jugadores (ranks, nivel, agente — privados incluidos) | GLZ Pre-Game/Current Game | En vivo |
+| Perfil propio, MMR, historial | PD con tokens locales | En vivo/post |
+| **Desglose por ronda** (`roundResults[]`: kills/deaths/resultado por ronda) | PD `match-details` | Al terminar la partida |
+
+> **Rondas:** al finalizar la partida el tracker muestra la tabla `Ronda | Resultado | Kills | ¿Moriste?` por cada ronda jugada. Si `match-details` respondiera a mitad de partida se muestra progreso incremental; si no, degrada con elegancia. No se usa OCR ni lectura de memoria.
+
+Lectura solo-lectura (sin inyección ni memoria); el password del lockfile vive solo en memoria y `doctor` lo enmascara (`***`). `RIOT_API_KEY` en `.env` queda **opcional** para mejoras futuras.
+
 ## Configuración y secretos (API) — protegido por diseño
 
 > **La API se implementa en Prioridad 2** (`TASKS.md:29`). Antes de pedir cualquier key ya está preparada la protección.
@@ -91,8 +106,9 @@ Estado objetivo una vez completado el desarrollo (Prioridades 2-5):
 
 1. **Al iniciar el PC / abrir VALORANT** — VTracker (nombre final por definir) se inicia en segundo plano si `autostart = true` en `config.toml` (`src/config/mod.rs:1`). No hace polling innecesario; espera eventos del `Game Engine`.
 2. **Perfil propio** — al arrancar con cliente disponible muestra tu perfil vinculado (`RIOT_ID` configurado en `config.toml` o `.env`) con stats derivadas (K/D, WR, HS%, ADR/ACS si la fuente los expone) calculadas por `Analytics Engine` desde `Raw Data` cacheada.
-3. **Encontrando partida / Agent Select** — al detectar `PreGame`/`AgentSelect` vía `GameStateSource` autorizado (no por procesos), consulta roster del lobby y muestra stats del equipo (capability `RosterSource` + `MatchHistorySource`) con último estado conocido si la API falla.
-4. **En partida (`InMatch`)** — muestra contexto vivo del game actual: mapa, modo, composición y stats agregadas de sesión. Datos crudos separados de métricas derivadas (`Arquitectura-inicial.md:7` pipeline).
+3. **Encontrando partida / Agent Select** — al detectar `PreGame`/`AgentSelect` vía **Local Client API** (lockfile, sin API key), consulta el roster en vivo y muestra ranks/WR del equipo.
+4. **En partida (`InMatch`)** — contexto vivo del game actual: mapa, modo, composición.
+5. **Al terminar la partida (`PostMatch`)** — desglose **por ronda**: `Ronda | Resultado | Kills | ¿Moriste?` (ej.: 5 rondas — moriste en 1, 2 y 5; mataste 2 en 1, 3, 4 y 5), desde `match-details` + Analytics.
 
 La TUI siempre es opcional: `vtracker watch` para modo live, y comandos `player`/`match`/`history` para consultas puntuales.
 
@@ -211,7 +227,7 @@ vtracker cache <subcomando>                      # inspeccionar/limpiar caché L
 
 ## Estado actual y conformidad
 
-MVP local y Prioridad 1 completados (58 tests, tabla de procesos, `doctor` testeable, `.env` protegido, `GameStateSource` desacoplado con `Process`/`Mock` y `resolve_with_fallback`). Siguiente: **validar fuente autorizada (Riot docs)** y luego implementar adaptador Riot (`src/providers/riot.rs`) tras `2B`. No se infiere estado de partida desde procesos locales. Nombre `VTracker` temporal hasta release.
+MVP local y Prioridad 1 completados (58 tests, tabla de procesos, `doctor` testeable, `.env` protegido, `GameStateSource` desacoplado con `Process`/`Mock` y `resolve_with_fallback`). **Agilizado:** la fuente primaria será la **Local Client API** (lockfile + WebSocket + GLZ/PD) — fases reales en vivo, roster, perfil, historial y rondas post-partida **sin API key ni RSO**. Siguiente: `src/providers/lockfile.rs` → `LocalClientSource`. Nombre `VTracker` temporal hasta release.
 
 **Compromiso ISO:** se adoptan principios **ISO 9001 (Calidad) + ISO 14001 (Ambiental) + ISO 27001 (Seguridad)** como sistema integrado PHVA desde el inicio (ver `docs/ISO.md` y `Arquitectura-inicial.md:21`). No es burocracia vacía: tests + `clippy`/`fmt` (calidad), `cargo` eficiente + caché (ambiental), `.env` + `doctor` enmascarado + RSO (seguridad). Certificación formal opcional a medio plazo.
 
