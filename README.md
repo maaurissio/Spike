@@ -25,6 +25,16 @@ La configuración opcional está en `%APPDATA%\vtracker\config.toml`; consulta [
 
 Consulta la [lista de tareas](TASKS.md) para el trabajo realizado, prioridades y siguiente paso.
 
+## Documentación
+
+| Documento | Contenido |
+|---|---|
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Registro de decisiones (ADRs): fuente primaria, alcance, reglas |
+| [`docs/SPEC-ROUNDS.md`](docs/SPEC-ROUNDS.md) | Spec del tracking de rondas: modelo, reglas, timeline, casos borde |
+| [`docs/DESIGN-UI.md`](docs/DESIGN-UI.md) | Spec de interfaz: vista LIVE MATCH, PostMatch, layouts adaptativos |
+| [`docs/ISO.md`](docs/ISO.md) | Sistema integrado ISO 9001/14001/27001 proporcional |
+| [`Arquitectura-inicial.md`](Arquitectura-inicial.md) | Arquitectura estructural y decisiones base |
+
 ## Fuentes de datos — Local Client API (agilizado)
 
 **Investigación 2026-08-24** (ver `Arquitectura-inicial.md:20`): VALORANT expone una **API local** cuando corre — lockfile en `%LocalAppData%\Riot Games\Riot Client\Config\lockfile` + REST en `127.0.0.1:{port}` + WebSocket `wss://riot:{password}@127.0.0.1:{port}` — y con sus tokens se accede a GLZ/PD. **No se necesita API key de producción ni RSO** para la experiencia principal:
