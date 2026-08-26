@@ -35,7 +35,7 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 ### 2A — Seguridad y secretos (ajustado a lockfile)
 
 - [x] Proteger secretos en repo: `.env` en `.gitignore` (`/.gitignore:4`), `.env.example` como plantilla y `config.example.toml` documentado sin secretos.
-- [ ] **Lockfile:** leer `%LocalAppData%\Riot Games\Riot Client\Config\lockfile` (`name:pid:port:password:protocol`); password **solo en memoria**, nunca logueado ni persistido (`doctor` muestra `***`).
+- [x] **Lockfile:** leer `%LocalAppData%\Riot Games\Riot Client\Config\lockfile` (`name:pid:port:password:protocol`); password **solo en memoria**, nunca logueado ni persistido (`doctor` muestra solo `auth=presente/ausente`).
 - [ ] `RIOT_API_KEY` en `.env` queda **opcional** (solo para mejoras con API oficial futura).
 - [ ] Documentar flujo de secretos en `README.md` y `Arquitectura-inicial.md:10` (límites de producto y cumplimiento; solo-lectura, sin inyección ni memoria).
 
@@ -50,7 +50,7 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 
 ### 2C — Implementación Local Client (nueva ruta, sin API key)
 
-- [ ] **`src/providers/lockfile.rs`:** parsear lockfile (puerto/password), con tests sobre contenido simulado.
+- [x] **`src/providers/lockfile.rs`:** parsear lockfile (puerto/password), con tests sobre contenido simulado.
 - [ ] **`src/providers/local.rs` (`LocalClientSource`):** implementa `GameStateSource` — detecta fase real vía endpoints locales (`/help`, sessions) y WebSocket (`wss://127.0.0.1:{port}`) para transiciones `Lobby→PreGame→AgentSelect→InMatch→PostMatch` event-driven (sin polling).
 - [ ] **Capability `LiveMatchSource`:** `Pre-Game Match` y `Current Game Match` (GLZ) → roster con ranks/nivel/agente de las 10 personas (incluye perfiles privados) para stats de equipo en Agent Select/partida.
 - [ ] **Capability `MatchDetailSource`:** `pd.{shard}.a.pvp.net/match-details/v1/matches/{id}` post-partida → `roundResults[]` con kills/deaths/resultado **por ronda** (desglose completo en `PostMatch`/`History`). Opcional: intentar polling durante partida y degradar con elegancia si aún no está disponible.

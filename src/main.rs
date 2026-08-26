@@ -12,11 +12,14 @@ use std::{env, io, thread, time::Instant};
 
 use cli::Command;
 use config::Config;
-use game::detect;
+use providers::{GameStateSource, ProcessGameStateSource};
 use ui::{draw_watch, print_help};
 use watch::{Watcher, log_transition};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[cfg(test)]
+mod test_support;
 
 fn main() {
     let raw_args: Vec<String> = env::args().skip(1).collect();
@@ -30,11 +33,9 @@ fn main() {
     match command {
         Command::Help => {
             print_help();
-            return;
         }
         Command::Doctor => {
             diagnostics::doctor();
-            return;
         }
         Command::Watch(wargs) => {
             let (mut config, config_warning) = Config::effective();
@@ -47,7 +48,6 @@ fn main() {
                 config.interval = std::time::Duration::from_secs(seconds);
             }
             run_watch(config, wargs.once);
-            return;
         }
     }
 }
@@ -56,8 +56,21 @@ fn run_watch(config: Config, once: bool) {
     let interactive = io::IsTerminal::is_terminal(&io::stdout());
     let started = Instant::now();
     let mut watcher = Watcher::default();
+    let source = ProcessGameStateSource::new();
     loop {
-        let observation = detect();
+        debug_assert!(
+            source.is_available(),
+            "{} provider should be available",
+            source.name()
+        );
+        let info = match source.fetch() {
+            Ok(info) => info,
+            Err(error) => {
+                eprintln!("Advertencia: proveedor {} falló: {error}", source.name());
+                providers::StateInfo::unknown(source.name())
+            }
+        };
+        let observation = info.observation();
         let transition = watcher.observe(observation.clone());
         if config.log_transitions
             && let Some(transition) = transition
@@ -65,7 +78,7 @@ fn run_watch(config: Config, once: bool) {
         {
             eprintln!("Advertencia: no se pudo guardar el log: {error}");
         }
-        draw_watch(&watcher, &observation, started, interactive);
+        draw_watch(&watcher, &info, started, interactive);
         if once || !interactive {
             break;
         }

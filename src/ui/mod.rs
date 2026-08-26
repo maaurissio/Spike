@@ -4,7 +4,7 @@ use std::{
     time::{Instant, SystemTime},
 };
 
-use crate::{VERSION, game::Observation, watch::Watcher};
+use crate::{VERSION, providers::StateInfo, watch::Watcher};
 
 fn timestamp(time: SystemTime) -> String {
     match time.elapsed() {
@@ -19,30 +19,33 @@ fn clear_terminal() {
         print!("\x1B[2J\x1B[H");
     }
 }
-pub fn draw_watch(
-    watcher: &Watcher,
-    observation: &Observation,
-    started: Instant,
-    interactive: bool,
-) {
+pub fn draw_watch(watcher: &Watcher, info: &StateInfo, started: Instant, interactive: bool) {
     if interactive {
         clear_terminal();
     }
     println!("VTRACKER WATCH  ·  MVP  ·  v{VERSION}\n────────────────────────────────────────");
     println!(
-        "Estado          {}\nFuente          {}\nCliente         {}\nJuego           {}\nSesión          {} s\nTransiciones    {}",
+        "Estado          {}\nFase            {}\nDetalle fase    {}\nConfianza       {}\nFuente          {}\nCliente         {}\nJuego           {}\nMuestra         {}\nSesión          {} s\nTransiciones    {}",
         watcher.state,
-        observation.source,
-        if observation.client_found {
+        info.phase,
+        if info.phase.is_fine_grained() {
+            "confirmada"
+        } else {
+            "gruesa"
+        },
+        info.confidence,
+        info.source,
+        if info.client_found {
             "detectado"
         } else {
             "no detectado"
         },
-        if observation.game_found {
+        if info.game_found {
             "en ejecución"
         } else {
             "no detectado"
         },
+        timestamp(info.at),
         started.elapsed().as_secs(),
         watcher.transitions.len()
     );

@@ -1,9 +1,7 @@
-use std::{
-    fmt,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{fmt, time::SystemTime};
 
 use crate::game::GameState;
+use crate::game::Observation;
 
 /// Fase enriquecida del cliente/juego.
 /// Solo un `GameStateSource` autorizado debe retornar `Lobby`/`PreGame`/`AgentSelect`/`InMatch`/`PostMatch`.
@@ -54,6 +52,14 @@ impl GamePhase {
     }
 }
 
+pub const FINE_GRAINED_PHASES: &[GamePhase] = &[
+    GamePhase::Lobby,
+    GamePhase::PreGame,
+    GamePhase::AgentSelect,
+    GamePhase::InMatch,
+    GamePhase::PostMatch,
+];
+
 impl fmt::Display for GamePhase {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.label())
@@ -68,6 +74,13 @@ pub enum Confidence {
     Unknown,
 }
 
+pub const CONFIDENCE_LEVELS: &[Confidence] = &[
+    Confidence::High,
+    Confidence::Medium,
+    Confidence::Low,
+    Confidence::Unknown,
+];
+
 impl fmt::Display for Confidence {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
@@ -80,6 +93,7 @@ impl fmt::Display for Confidence {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProviderError {
     NotConfigured(String),
@@ -92,6 +106,7 @@ pub enum ProviderError {
     Unknown(String),
 }
 
+#[cfg(test)]
 impl ProviderError {
     pub fn is_retryable(&self) -> bool {
         matches!(
@@ -153,11 +168,24 @@ impl StateInfo {
         }
     }
 
-    pub fn timestamp_secs(&self) -> u64 {
-        self.at
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
+    pub fn observation(&self) -> Observation {
+        Observation {
+            state: self.coarse,
+            client_found: self.client_found,
+            game_found: self.game_found,
+            source: self.source,
+        }
+    }
+
+    pub fn unknown(source: &'static str) -> Self {
+        Self::new(
+            GamePhase::Unknown,
+            GameState::Unknown,
+            Confidence::Unknown,
+            source,
+            false,
+            false,
+        )
     }
 }
 

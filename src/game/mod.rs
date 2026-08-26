@@ -150,9 +150,7 @@ mod tests {
 
     #[test]
     fn detect_respects_vtracker_state_env() {
-        use std::sync::{Mutex, OnceLock};
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _guard = crate::test_support::env_lock();
         let original = std::env::var_os("VTRACKER_STATE");
         unsafe { std::env::set_var("VTRACKER_STATE", "closed") };
         assert_eq!(detect().state, GameState::ClientClosed);

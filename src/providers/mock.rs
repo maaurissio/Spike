@@ -145,10 +145,11 @@ mod tests {
 
     #[test]
     fn mock_confidence_and_source() {
-        let mock =
-            MockGameStateSource::new(vec![GamePhase::Lobby]).with_confidence(Confidence::Medium);
+        let mock = MockGameStateSource::new(vec![GamePhase::Lobby])
+            .with_name("mock-ui")
+            .with_confidence(Confidence::Medium);
         let info = mock.fetch().unwrap();
         assert_eq!(info.confidence, Confidence::Medium);
-        assert_eq!(info.source, "mock");
+        assert_eq!(info.source, "mock-ui");
     }
 }

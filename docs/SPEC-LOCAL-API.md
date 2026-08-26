@@ -42,20 +42,21 @@ Autenticación: `Authorization: Basic {base64("riot:{password}")}` + aceptar cer
 | Endpoint | Método | Qué devuelve | Cuándo existe |
 |---|---|---|---|
 | `/help` | GET | Lista de endpoints locales (para descubrir `entitlements`, `sessions`) | Siempre que haya lockfile |
-| `/entitlements-token` | GET | `{ accessToken, entitlementsJwt, issuer }` — **tokens** para GLZ/PD | Siempre |
-| `/sessions` | GET | Sesión local (versión del cliente, región) | Siempre |
+| `/entitlements/v1/token` | GET | `{ accessToken, token, issuer, subject }` — **tokens** para GLZ/PD (`token` es el entitlement JWT) | Siempre |
+| `/product-session/v1/external-sessions` | GET | Sesión local (versión del cliente, región/shard en argumentos de arranque) | Siempre |
+| `/riotclient/region-locale` | GET | Región y locale del Riot Client | Siempre |
 | `wss://127.0.0.1:{port}` | WSS | Eventos en vivo (`OnJsonApiDoc`, `OnJsonPvpMatch`...) | Siempre |
 
-**Versión del cliente (`X-Riot-ClientVersion`):** se obtiene de `/sessions` o del log `%LocalAppData%\VALORANT\Saved\Logs\ShooterGame.log` o de `https://dash.valorant-api.com/endpoints/version`. El `X-Riot-ClientPlatform` es fijo base64 del JSON `{"platformType":"PC","platformOS":"Windows",...}` — Vantage lo hardcodea y funciona.
+**Versión del cliente (`X-Riot-ClientVersion`):** se obtiene de `/product-session/v1/external-sessions` o del log `%LocalAppData%\VALORANT\Saved\Logs\ShooterGame.log` o de `https://dash.valorant-api.com/endpoints/version`. El `X-Riot-ClientPlatform` es fijo base64 del JSON `{"platformType":"PC","platformOS":"Windows",...}` — Vantage lo hardcodea y funciona.
 
 ## 3. Tokens para GLZ y PD
 
-De `/entitlements-token`:
+De `/entitlements/v1/token`:
 * `accessToken` → header `Authorization: Bearer {accessToken}`
-* `entitlementsJwt` → header `X-Riot-Entitlements-JWT: {entitlementsJwt}`
+* `token` → header `X-Riot-Entitlements-JWT: {token}`
 * Siempre acompañados de `X-Riot-ClientVersion` y `X-Riot-ClientPlatform`.
 
-**Duración:** corta (minutos). Ante `401/403` se refrescan releyendo `/entitlements-token`. Nunca se persisten.
+**Duración:** corta (la documentación comunitaria indica alrededor de 1 hora). Ante `401/403` se refrescan releyendo `/entitlements/v1/token`. Nunca se persisten.
 
 ## 4. GLZ — partida en vivo (sin API key)
 
@@ -127,10 +128,11 @@ Suscribirse a eventos vía `/help` → `OnJsonApiDoc` y filtrar `OnJsonApiDoc` /
 ```
 1. ¿Existe lockfile?  no → ClientClosed (mensaje: "Abre VALORANT")
 2. Leer port/password → Basic Auth
-3. GET 127.0.0.1:{port}/entitlements-token → accessToken + entitlementsJwt
-4. GET 127.0.0.1:{port}/sessions → ClientVersion + región
-5. Con tokens → GLZ Pre-Game/Current Game (si hay partida) + PD (perfil/historial)
-6. Ante 401/403 → repetir 3 (refresh). Ante ConnectionRefused → volver a 1.
+3. GET 127.0.0.1:{port}/entitlements/v1/token → accessToken + token(entitlement)
+4. GET 127.0.0.1:{port}/product-session/v1/external-sessions → ClientVersion + argumentos de arranque
+5. GET 127.0.0.1:{port}/riotclient/region-locale → región/locale cuando esté disponible
+6. Con tokens → GLZ Pre-Game/Current Game (si hay partida) + PD (perfil/historial)
+7. Ante 401/403 → repetir 3 (refresh). Ante ConnectionRefused → volver a 1.
 ```
 
 El password del lockfile y los tokens **solo en memoria**; `doctor` los comprueba como `presente/ausente (*** )`.
@@ -152,7 +154,7 @@ El password del lockfile y los tokens **solo en memoria**; `doctor` los comprueb
 * **Región** en el log: `https://glz-eu-1.eu.a.pvp.net` → región `eu`. Alternativa: `PUT /riot/geo` con tokens de `Cookie Reauth`.
 * **Shard:** tabla `na→na/latam/br`, `eu→eu`, `ap→ap`, `kr→kr`, `pbe→na`. También deducible del mismo URL del log.
 * **ClientPlatform (base64):** `ew0KCSJwbGF0Zm9ybVR5cGUiOiAiUEMiLA0KCSJwbGF0Zm9ybU9TIjogIldpbmRvd3MiLA0KCSJwbGF0Zm9ybU9TVmVyc2lvbiI6ICIxMC4wLjE5MDQyLjEuMjU2LjY0Yml0IiwNCgkicGxhdGZvcm1DaGlwc2V0IjogIlVua25vd24iDQp9` funciona en todos los casos (Vantage).
-* **ClientVersion:** de `/sessions` o `https://dash.valorant-api.com/endpoints/version`.
+* **ClientVersion:** de `/product-session/v1/external-sessions` o `https://dash.valorant-api.com/endpoints/version`.
 
 ## 10. Modelos normalizados (contrato interno)
 
@@ -168,7 +170,7 @@ Todo GLZ/PD se normaliza a modelos propios, versionados y con caché L1/L2 (`Arq
 |---|---|---|
 | Lockfile no existe | Cliente cerrado | `ClientClosed`, mensaje humano |
 | `ConnectionRefused` / certificado | VALORANT recién cerrado o antivirus | Reintentar con backoff |
-| `401/403` GLZ/PD | Tokens expirados | Refrescar vía `/entitlements-token` |
+| `401/403` GLZ/PD | Tokens expirados | Refrescar vía `/entitlements/v1/token` |
 | `404` match-details a mitad de partida | Aún no hay rondas | Mostrar "disponible al terminar la partida" |
 | `429` PD/GLZ | Rate limit (raro en local) | Backoff exponencial, servir caché |
 

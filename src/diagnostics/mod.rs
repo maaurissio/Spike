@@ -4,6 +4,10 @@ use crate::{
     VERSION,
     config::{Config, config_path},
     game::{detect, process_list},
+    providers::{
+        capabilities::{CONFIDENCE_LEVELS, FINE_GRAINED_PHASES},
+        lockfile,
+    },
 };
 
 pub fn find_riot_processes(output: &str) -> Vec<String> {
@@ -64,6 +68,17 @@ pub(crate) fn build_report_inner(simulation_active: bool) -> String {
             "desactivado"
         }
     );
+    write_lockfile_status(&mut out);
+    let _ = writeln!(
+        out,
+        "Fases finas     {} planificadas para proveedor local autorizado",
+        FINE_GRAINED_PHASES.len()
+    );
+    let _ = writeln!(
+        out,
+        "Confianza       {} niveles soportados",
+        CONFIDENCE_LEVELS.len()
+    );
     let process_query_ok = match process_list() {
         Ok(processes) => {
             let matches = find_riot_processes(&processes);
@@ -91,6 +106,37 @@ pub(crate) fn build_report_inner(simulation_active: bool) -> String {
     }
     let _ = writeln!(out, "Estado actual   {}", detect().state);
     let _ = writeln!(out, "────────────────────────────────────────");
+    write_detector_result(&mut out, process_query_ok);
+    out
+}
+
+fn write_lockfile_status(out: &mut String) {
+    match lockfile::read_default() {
+        Ok(lockfile) => {
+            let auth = if lockfile.has_password() {
+                "presente"
+            } else {
+                "ausente"
+            };
+            let _ = writeln!(
+                out,
+                "Lockfile API    detectado: {} pid={} port={} protocol={} auth={auth}",
+                lockfile.name, lockfile.pid, lockfile.port, lockfile.protocol
+            );
+        }
+        Err(lockfile::LockfileError::MissingLocalAppData) => {
+            let _ = writeln!(out, "Lockfile API    LOCALAPPDATA no está disponible");
+        }
+        Err(lockfile::LockfileError::NotFound(_)) => {
+            let _ = writeln!(out, "Lockfile API    no encontrado (Riot Client cerrado)");
+        }
+        Err(error) => {
+            let _ = writeln!(out, "Lockfile API    {error}");
+        }
+    }
+}
+
+fn write_detector_result(out: &mut String, process_query_ok: bool) {
     if process_query_ok {
         let _ = writeln!(
             out,
@@ -102,7 +148,6 @@ pub(crate) fn build_report_inner(simulation_active: bool) -> String {
             "Resultado: no fue posible consultar procesos. Ejecuta el comando en una consola normal y revisa sus permisos."
         );
     }
-    out
 }
 
 pub fn doctor() {
@@ -160,8 +205,9 @@ mod tests {
     }
 
     #[test]
-    fn report_mentions_limitations() {
-        let report = build_report();
+    fn successful_report_result_mentions_limitations() {
+        let mut report = String::new();
+        write_detector_result(&mut report, true);
         assert!(report.contains("No puede distinguir lobby"));
     }
 
@@ -178,9 +224,7 @@ mod tests {
     fn build_report_respects_env_var() {
         // Verifica que build_report() lee realmente la variable de entorno.
         // Se usa serialización manual para evitar carreras con otros tests que tocan VTRACKER_STATE.
-        use std::sync::{Mutex, OnceLock};
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _guard = crate::test_support::env_lock();
         let original = std::env::var_os("VTRACKER_STATE");
         unsafe { std::env::set_var("VTRACKER_STATE", "idle") };
         let with_sim = build_report();

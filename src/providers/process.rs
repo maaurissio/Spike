@@ -53,9 +53,7 @@ mod tests {
     #[test]
     fn process_source_maps_game_state_to_phase() {
         // Usa VTRACKER_STATE para simular sin depender de procesos reales.
-        use std::sync::{Mutex, OnceLock};
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _guard = crate::test_support::env_lock();
         let original = std::env::var_os("VTRACKER_STATE");
 
         unsafe { std::env::set_var("VTRACKER_STATE", "idle") };
@@ -84,9 +82,7 @@ mod tests {
 
     #[test]
     fn process_source_never_returns_fine_grained_without_provider() {
-        use std::sync::{Mutex, OnceLock};
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _guard = crate::test_support::env_lock();
         let original = std::env::var_os("VTRACKER_STATE");
         for val in ["closed", "idle", "game", "unknown_value"] {
             unsafe { std::env::set_var("VTRACKER_STATE", val) };
