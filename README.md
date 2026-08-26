@@ -31,6 +31,7 @@ Consulta la [lista de tareas](TASKS.md) para el trabajo realizado, prioridades y
 |---|---|
 | [`docs/SPEC-LOCAL-API.md`](docs/SPEC-LOCAL-API.md) | Contrato pre-código de la Local Client API (lockfile, GLZ/PD, WebSocket) |
 | [`docs/API-2026.md`](docs/API-2026.md) | **Vigencia 2026** de todas las fuentes: Riot Oficial, Henrik v4, Valorant-API.com y Local (rate limits, opt-in, endpoints) |
+| [`docs/AGENTS.md`](docs/AGENTS.md) | Roster completo 2026: 29 agentes, 4 roles (8/7/7/7), UUIDs vigentes, estrategia de mapeo dinámico |
 | [`docs/TRACKERS.md`](docs/TRACKERS.md) | Cómo funcionan los trackers vigentes (Tracker.gg/Overwolf, Blitz, Instalock, Vantage) y qué adopta VTracker |
 | [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) | RAM/cache sin BD + mínimo CPU: `moka`/`cache-rs`/`CacheKit`, dirty-flag Ratatui, perfil release |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | Registro de decisiones (ADRs) |
