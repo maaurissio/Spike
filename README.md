@@ -29,10 +29,14 @@ Consulta la [lista de tareas](TASKS.md) para el trabajo realizado, prioridades y
 
 | Documento | Contenido |
 |---|---|
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Registro de decisiones (ADRs): fuente primaria, alcance, reglas |
-| [`docs/SPEC-ROUNDS.md`](docs/SPEC-ROUNDS.md) | Spec del tracking de rondas: modelo, reglas, timeline, casos borde |
-| [`docs/DESIGN-UI.md`](docs/DESIGN-UI.md) | Spec de interfaz: vista LIVE MATCH, PostMatch, layouts adaptativos |
-| [`docs/ISO.md`](docs/ISO.md) | Sistema integrado ISO 9001/14001/27001 proporcional |
+| [`docs/SPEC-LOCAL-API.md`](docs/SPEC-LOCAL-API.md) | Contrato pre-código de la Local Client API (lockfile, GLZ/PD, WebSocket) |
+| [`docs/API-2026.md`](docs/API-2026.md) | **Vigencia 2026** de todas las fuentes: Riot Oficial, Henrik v4, Valorant-API.com y Local (rate limits, opt-in, endpoints) |
+| [`docs/TRACKERS.md`](docs/TRACKERS.md) | Cómo funcionan los trackers vigentes (Tracker.gg/Overwolf, Blitz, Instalock, Vantage) y qué adopta VTracker |
+| [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) | RAM/cache sin BD + mínimo CPU: `moka`/`cache-rs`/`CacheKit`, dirty-flag Ratatui, perfil release |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Registro de decisiones (ADRs) |
+| [`docs/SPEC-ROUNDS.md`](docs/SPEC-ROUNDS.md) | Spec del tracking de rondas |
+| [`docs/DESIGN-UI.md`](docs/DESIGN-UI.md) | Spec de interfaz: LIVE MATCH, PostMatch, layouts adaptativos |
+| [`docs/ISO.md`](docs/ISO.md) | Sistema integrado ISO 9001/14001/27001 |
 | [`Arquitectura-inicial.md`](Arquitectura-inicial.md) | Arquitectura estructural y decisiones base |
 
 ## Fuentes de datos — Local Client API (agilizado)

@@ -62,9 +62,9 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 
 - [ ] Definir modelos normalizados de jugador, partida, **ronda** (`Round { round_num, winning_team, round_result, players: Vec<PlayerRoundStat { puuid, kills, deaths, score, damage }> }`) y resultado.
 - [ ] Implementar una capa de providers por capacidades: perfil, historial, detalle de partida y rondas.
-- [ ] Implementar caché L1 en memoria con TTL.
-- [ ] Implementar caché L2 en disco con versión de esquema y expiración.
-- [ ] Centralizar solicitudes con timeout, deduplicación y reintentos seguros.
+- [ ] Implementar caché L1 en memoria con TTL (`moka`/`cache-rs` TinyLFU/LRU; ver `docs/PERFORMANCE.md:2.2` — TTLs 10s-900s, `get_with` anti-stampede).
+- [ ] Implementar caché L2 en disco con versión de esquema y expiración (solo si aporta valor; v1 puede ser solo RAM).
+- [ ] Centralizar solicitudes con timeout, deduplicación y reintentos seguros (Requests Manager `dedupe`/backoff/bounded channels).
 - [ ] Añadir el comando `vtracker history` para consultar el historial propio (tokens locales).
 - [ ] **Flujo perfil:** al detectar `Idle`, mostrar perfil propio con stats cacheadas; si provider falla, último dato conocido y error recuperable.
 - [ ] **Flujo equipo:** al detectar `PreGame`/`AgentSelect` vía `LocalClientSource`, consultar `LiveMatchSource` y mostrar ranks/WR del equipo en vivo.
@@ -84,7 +84,7 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 
 > **Configuración es requisito explícito del usuario** — debe ser completa antes del release.
 
-- [ ] Añadir Ratatui y Crossterm (Arquitectura Elm/TEA: Model/Message/Update/View).
+- [ ] Añadir Ratatui y Crossterm (Elm/TEA; patrones dirty-flag, widgets pre-construidos y canales acotados ver `docs/PERFORMANCE.md:3.1`).
 - [ ] Crear Dashboard con estado, salud de fuentes y resumen de sesión (perfil propio destacado).
 - [ ] Crear vistas Match, Player, History y **Settings (Configuración)**.
 - [ ] **Settings debe permitir:** ver/editar `config.toml` (intervalo, `log_transitions`, `profile.riot_id`, `profile.region`, `autostart.enabled/minimized`), gestionar `.env` (solo estado `***`/`no configurada`), TTL de caché y apariencia.
