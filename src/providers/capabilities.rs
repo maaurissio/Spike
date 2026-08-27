@@ -1,7 +1,6 @@
 use std::{fmt, time::SystemTime};
 
 use crate::game::GameState;
-use crate::game::Observation;
 
 /// Fase enriquecida del cliente/juego.
 /// Solo un `GameStateSource` autorizado debe retornar `Lobby`/`PreGame`/`AgentSelect`/`InMatch`/`PostMatch`.
@@ -165,15 +164,6 @@ impl StateInfo {
             client_found,
             game_found,
             at: SystemTime::now(),
-        }
-    }
-
-    pub fn observation(&self) -> Observation {
-        Observation {
-            state: self.coarse,
-            client_found: self.client_found,
-            game_found: self.game_found,
-            source: self.source,
         }
     }
 

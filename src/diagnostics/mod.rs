@@ -180,6 +180,30 @@ fn write_local_source_status(out: &mut String) {
                 let _ = writeln!(out, "WebSocket local no verificado: {error}");
             }
         }
+        match source.sample_websocket_events(3) {
+            Ok(events) => {
+                let mut phases = events
+                    .iter()
+                    .filter_map(|event| event.phase_hint())
+                    .map(|phase| phase.label())
+                    .collect::<Vec<_>>();
+                phases.sort_unstable();
+                phases.dedup();
+                let _ = writeln!(
+                    out,
+                    "WebSocket eventos {} (solo metadatos); fases observadas: {}",
+                    events.len(),
+                    if phases.is_empty() {
+                        "ninguna en la ventana de muestra".into()
+                    } else {
+                        phases.join(", ")
+                    }
+                );
+            }
+            Err(error) => {
+                let _ = writeln!(out, "WebSocket eventos no muestreados: {error}");
+            }
+        }
     }
 }
 
@@ -205,7 +229,7 @@ fn write_detector_result(out: &mut String, process_query_ok: bool) {
     if process_query_ok {
         let _ = writeln!(
             out,
-            "Resultado: el detector de procesos está listo. No puede distinguir lobby, selección o partida real; esa capacidad requiere una fuente autorizada adicional."
+            "Resultado: la detección local está lista. Las fases finas solo se muestran cuando el WebSocket local aporta una URI reciente e inequívoca; en otro caso se conserva el estado por procesos."
         );
     } else {
         let _ = writeln!(
@@ -273,7 +297,7 @@ mod tests {
     fn successful_report_result_mentions_limitations() {
         let mut report = String::new();
         write_detector_result(&mut report, true);
-        assert!(report.contains("No puede distinguir lobby"));
+        assert!(report.contains("URI reciente e inequívoca"));
     }
 
     #[test]

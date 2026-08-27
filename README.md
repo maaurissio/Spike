@@ -4,7 +4,7 @@
 
 VTracker es una aplicación de terminal para observar el estado de VALORANT, consultar datos autorizados de partidas y jugadores, y presentar estadísticas de forma rápida y con bajo consumo de recursos.
 
-El proyecto incluye un MVP de `watch`: detecta de forma no invasiva los procesos locales del cliente/juego y presenta el estado en terminal. Si Riot Client está abierto, comprueba su API local en `127.0.0.1` usando el lockfile; no accede a memoria ni automatiza el juego.
+El proyecto incluye un MVP de `watch`: detecta de forma no invasiva los procesos locales del cliente/juego y presenta el estado en terminal. Si Riot Client está abierto, comprueba su API local en `127.0.0.1` usando el lockfile y escucha metadatos del WebSocket local; no accede a memoria ni automatiza el juego.
 
 ## MVP: `watch`
 
@@ -17,11 +17,11 @@ cargo run -- doctor
 
 En una terminal interactiva el panel se actualiza automáticamente. Para probar estados sin ejecutar VALORANT se puede usar `VTRACKER_STATE=closed`, `idle` o `game`.
 
-El detector de procesos no puede distinguir lobby, selección de agente o partida. Cuando el ejecutable del juego está activo muestra "modo no confirmado"; no debe interpretarse como una partida en curso.
+El detector de procesos por sí solo no puede distinguir lobby, selección de agente o partida. El proveedor local puede elevar la confianza cuando recibe una URI conocida del WebSocket; si no recibe una reciente, el panel conserva el estado honesto de procesos y muestra "modo no confirmado".
 
 La configuración opcional está en `%APPDATA%\vtracker\config.toml`; consulta [`config.example.toml`](config.example.toml) para el formato. Si `log_transitions = true`, los cambios de estado se guardan en `%APPDATA%\vtracker\watch.log`.
 
-`vtracker doctor` revisa la configuración, la consulta de procesos y los procesos Riot/VALORANT detectados. Es un diagnóstico local: no consulta APIs ni obtiene información de una partida.
+`vtracker doctor` revisa la configuración, la consulta de procesos, el lockfile y —cuando el cliente está abierto— los endpoints locales base y el handshake WAMP. Solo informa estado y metadatos seguros; no imprime credenciales, tokens ni payloads de eventos.
 
 Consulta la [lista de tareas](TASKS.md) para el trabajo realizado, prioridades y siguiente paso.
 
@@ -46,7 +46,7 @@ Consulta la [lista de tareas](TASKS.md) para el trabajo realizado, prioridades y
 
 | Dato | Fuente | Cuándo |
 |---|---|---|
-| Fase real (`Lobby`/`PreGame`/`AgentSelect`/`InMatch`/`PostMatch`) | REST + WebSocket local | En vivo, event-driven |
+| Fase (`Lobby`/`PreGame`/`AgentSelect`/`InMatch`/`PostMatch`) | WebSocket local | En vivo, event-driven; mapeo de URIs aún en validación |
 | Roster 10 jugadores (ranks, nivel, agente — privados incluidos) | GLZ Pre-Game/Current Game | En vivo |
 | Perfil propio, MMR, historial | PD con tokens locales | En vivo/post |
 | **Desglose por ronda** (`roundResults[]`: kills/deaths/resultado por ronda) | PD `match-details` | Al terminar la partida |
@@ -147,9 +147,9 @@ Verificación con `vtracker doctor` y `VTRACKER_STATE` en Windows (`tasklist /FO
 | `Cliente disponible` | `RiotClientServices` o `valorant` | `RiotClientServices.exe`, `RiotClientCrashHandler.exe` | true | false |
 | `Cliente y juego abiertos (modo no confirmado)` | `VALORANT-Win64-Shipping` | `VALORANT-Win64-Shipping.exe` + procesos cliente | true | true |
 
-> El detector (`src/game/mod.rs:75`) solo distingue estas 3 señales. No infiere `Lobby`/`AgentSelect`/`InMatch`; para eso se requiere una fuente autorizada (ver `TASKS.md`).
+> El detector (`src/game/mod.rs:75`) solo distingue estas 3 señales. `LocalClientSource` añade fases finas solo tras un evento WebSocket inequívoco y las descarta después de 15 segundos sin actualización, para no presentar una fase antigua como actual.
 
-Tests: `cargo test` — 58 pruebas para `config`, `cli`, `game`, `diagnostics`, `providers` (`GamePhase`, `Mock`/`Process`, fallback) y `watch`.
+Tests: `cargo test` — 92 pruebas para `config`, `cli`, `game`, `diagnostics`, `providers` (lockfile, REST local, WAMP, expiración de fase, `GamePhase`, `Mock`/`Process`, fallback), `analytics`, `cache` y `watch`.
 
 ## Experiencia de usuario final — visión
 
@@ -235,7 +235,7 @@ Inspirado en patrones 2026 para TUIs Rust (Elm Architecture / TEA, `ratatui` + `
 - **Diseño orientado a eventos** para evitar polling y cálculos innecesarios.
 - **Separación estricta:** `AppState` solo datos de presentación; I/O y cálculos fuera del renderizado (Elm: Model → Message → Update → View).
 - **Autostart explícito** con `auto-launch` crate, nunca implícito.
-- **Testing primero:** 58 tests unitarios actuales, fixtures para analytics, `cargo fmt`/`clippy` en CI.
+- **Testing primero:** 92 tests unitarios actuales, fixtures para analytics, `cargo fmt`/`clippy` en CI.
 - **Seguridad (ISO 27001):** secretos solo en `.env`/env vars, `.gitignore` estricto, `doctor` enmascara claves (`***`), `cargo audit`+SBOM futuro, controles 8.25-8.29.
 - **Calidad (ISO 9001):** control documental (`TASKS.md`/`Arquitectura-inicial.md`), trazabilidad Raw/Derived, `watch.log` como registro, medición antes de optimizar.
 - **Ambiental (ISO 14001):** green coding — event-driven, L1/L2 para evitar red, `minimized` en autostart, binario Rust ligero; medición de CPU idle/mem en `docs/BENCHMARKS.md` futuro.
@@ -279,7 +279,7 @@ vtracker cache <subcomando>                      # inspeccionar/limpiar caché L
 
 ## Estado actual y conformidad
 
-MVP local y Prioridad 1 completados (86 tests, tabla de procesos, `doctor` testeable, `.env` protegido, `GameStateSource` desacoplado con `Process`/`Mock` y fallback). **Implementado:** `LocalClientSource` lee el lockfile y valida `GET /help`, entitlements, sesión externa, región/locale y el handshake/suscripción WAMP, exclusivamente en `127.0.0.1`; los tokens nunca se imprimen ni persisten. Los modelos de rondas y `analytics` ya calculan K/D, KDA, win rate, HS%, ADR y ACS con datos normalizados. **Siguiente:** conectar el stream WAMP persistente para habilitar fases finas; después GLZ/PD para roster, historial y rondas post-partida. Nombre `VTracker` temporal hasta release.
+MVP local y Prioridad 1 completados (88 tests, tabla de procesos, `doctor` testeable, `.env` protegido, `GameStateSource` desacoplado con `Process`/`Mock` y fallback). **Implementado:** `LocalClientSource` lee el lockfile y valida `GET /help`, entitlements, sesión externa, región/locale y el handshake/suscripción WAMP, exclusivamente en `127.0.0.1`; su listener persistente acepta solo URIs de fase inequívocas y descarta payloads. Los tokens nunca se imprimen ni persisten. Los modelos de rondas y `analytics` ya calculan K/D, KDA, win rate, HS%, ADR y ACS con datos normalizados. **Siguiente:** validar las transiciones observadas de fase y después GLZ/PD para roster, historial y rondas post-partida. Nombre `VTracker` temporal hasta release.
 
 **Compromiso ISO:** se adoptan principios **ISO 9001 (Calidad) + ISO 14001 (Ambiental) + ISO 27001 (Seguridad)** como sistema integrado PHVA desde el inicio (ver `docs/ISO.md` y `Arquitectura-inicial.md:21`). No es burocracia vacía: tests + `clippy`/`fmt` (calidad), `cargo` eficiente + caché (ambiental), `.env` + `doctor` enmascarado + RSO (seguridad). Certificación formal opcional a medio plazo.
 

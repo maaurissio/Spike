@@ -7,31 +7,37 @@ use std::{
 
 use crate::{
     config::config_path,
-    game::{GameState, Observation},
+    game::GameState,
+    providers::{StateInfo, capabilities::GamePhase},
 };
 
 #[derive(Debug)]
 pub struct Transition {
-    pub from: GameState,
-    pub to: GameState,
+    pub from: GamePhase,
+    pub to: GamePhase,
     pub at: SystemTime,
 }
 #[derive(Default)]
 pub struct Watcher {
     pub state: GameState,
+    pub phase: GamePhase,
     pub transitions: Vec<Transition>,
 }
 impl Watcher {
-    pub fn observe(&mut self, observation: Observation) -> Option<Transition> {
-        if observation.state == self.state {
+    /// Registra cambios del estado grueso o de una fase local confirmada.
+    /// Así `AgentSelect → PostMatch` no se pierde por pertenecer ambos al
+    /// cliente abierto.
+    pub fn observe(&mut self, info: &StateInfo) -> Option<Transition> {
+        if info.coarse == self.state && info.phase == self.phase {
             return None;
         }
         let transition = Transition {
-            from: self.state,
-            to: observation.state,
+            from: self.phase,
+            to: info.phase,
             at: SystemTime::now(),
         };
-        self.state = observation.state;
+        self.state = info.coarse;
+        self.phase = info.phase;
         self.transitions.push(Transition {
             from: transition.from,
             to: transition.to,
@@ -70,39 +76,57 @@ pub fn log_transition(transition: &Transition) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn observation(state: GameState) -> Observation {
-        Observation {
-            state,
-            client_found: false,
-            game_found: false,
-            source: "test",
-        }
+    use crate::providers::capabilities::Confidence;
+
+    fn info(state: GameState, phase: GamePhase) -> StateInfo {
+        StateInfo::new(phase, state, Confidence::High, "test", false, false)
     }
+
     #[test]
     fn only_records_actual_state_changes() {
         let mut watcher = Watcher::default();
         assert!(
             watcher
-                .observe(observation(GameState::ClientClosed))
+                .observe(&info(GameState::ClientClosed, GamePhase::ClientClosed))
                 .is_some()
         );
         assert!(
             watcher
-                .observe(observation(GameState::ClientClosed))
+                .observe(&info(GameState::ClientClosed, GamePhase::ClientClosed))
                 .is_none()
         );
-        assert!(watcher.observe(observation(GameState::GameOpen)).is_some());
+        assert!(
+            watcher
+                .observe(&info(GameState::GameOpen, GamePhase::GameOpen))
+                .is_some()
+        );
         assert_eq!(watcher.transitions.len(), 2);
     }
+
+    #[test]
+    fn records_fine_grained_transition_without_coarse_change() {
+        let mut watcher = Watcher::default();
+        watcher.observe(&info(GameState::Idle, GamePhase::AgentSelect));
+
+        let transition = watcher
+            .observe(&info(GameState::Idle, GamePhase::PostMatch))
+            .unwrap();
+
+        assert_eq!(transition.from, GamePhase::AgentSelect);
+        assert_eq!(transition.to, GamePhase::PostMatch);
+        assert_eq!(watcher.transitions.len(), 2);
+    }
+
     #[test]
     fn retains_only_recent_transitions() {
         let mut watcher = Watcher::default();
         for index in 0..12 {
-            watcher.observe(observation(if index % 2 == 0 {
-                GameState::Idle
+            let (state, phase) = if index % 2 == 0 {
+                (GameState::Idle, GamePhase::Idle)
             } else {
-                GameState::GameOpen
-            }));
+                (GameState::GameOpen, GamePhase::GameOpen)
+            };
+            watcher.observe(&info(state, phase));
         }
         assert_eq!(watcher.transitions.len(), 8);
     }

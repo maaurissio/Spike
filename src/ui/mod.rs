@@ -27,7 +27,7 @@ pub fn draw_watch(watcher: &Watcher, info: &StateInfo, started: Instant, interac
     println!(
         "Estado          {}\nFase            {}\nDetalle fase    {}\nConfianza       {}\nFuente          {}\nCliente         {}\nJuego           {}\nMuestra         {}\nSesión          {} s\nTransiciones    {}",
         watcher.state,
-        info.phase,
+        watcher.phase,
         if info.phase.is_fine_grained() {
             "confirmada"
         } else {
@@ -58,7 +58,7 @@ pub fn draw_watch(watcher: &Watcher, info: &StateInfo, started: Instant, interac
         );
     }
     println!(
-        "────────────────────────────────────────\nSolo se observan procesos del sistema; no se accede a memoria ni se automatiza el juego."
+        "────────────────────────────────────────\nSolo se observan procesos y metadatos del cliente local; no se accede a memoria ni se automatiza el juego."
     );
     if interactive {
         println!("Actualización automática. Ctrl+C para salir.");

@@ -77,6 +77,7 @@ fn run_watch(config: Config, once: bool) {
     let mut watcher = Watcher::default();
     let fallback = ProcessGameStateSource::new();
     let local = LocalClientSource::new();
+    local.start_event_listener();
     loop {
         debug_assert!(fallback.is_available());
         let info = match resolve_with_fallback(&local, &fallback) {
@@ -86,8 +87,7 @@ fn run_watch(config: Config, once: bool) {
                 providers::StateInfo::unknown(fallback.name())
             }
         };
-        let observation = info.observation();
-        let transition = watcher.observe(observation.clone());
+        let transition = watcher.observe(&info);
         if config.log_transitions
             && let Some(transition) = transition
             && let Err(error) = log_transition(&transition)

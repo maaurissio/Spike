@@ -24,7 +24,7 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 - [x] Mejorar el parser de configuración y avisar claramente de valores inválidos.
 - [x] Añadir pruebas para configuración, argumentos CLI y salida de `doctor`.
 - [x] Revisar la política y APIs oficiales de Riot para el primer proveedor.
-- [ ] Definir una fuente autorizada que distinga lobby, selección, partida y postpartida; la API oficial publicada no expone ese estado en tiempo real.
+- [x] Definir `LocalClientSource` de solo lectura para fases finas vía WebSocket local; faltan observaciones de transición reales para validar todo el mapeo.
 
 > Evidencia P1 (2026-08-24): `vtracker watch --once` probado con `VTRACKER_STATE=closed|idle|game` y `doctor` real detectó `RiotClientServices.exe`/`RiotClientCrashHandler.exe` en `Idle` (ver `README.md:Procesos observados`). Lógica cubierta por 43 tests (`cargo test`) en `config`, `cli`, `game` y `diagnostics`; `src/game/mod.rs:95` expone `observation_from_process_list` testeable.
 
@@ -53,7 +53,8 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 - [x] **`src/providers/lockfile.rs`:** parsear lockfile (puerto/password), con tests sobre contenido simulado.
 - [x] **`src/providers/local.rs` (`LocalClientSource`, base):** implementa `GameStateSource`, lee el lockfile, valida `/help`, entitlements, sesión externa y región/locale con Basic Auth en memoria; usa HTTPS local con timeout y degrada al detector de procesos sin exponer secretos.
 - [x] **WebSocket local (contrato):** handshake TLS, subprotocolo WAMP y suscripción `OnJsonApiEvent` verificados contra un cliente VALORANT real el 2026-08-26, sin guardar payloads ni credenciales.
-- [ ] **`LocalClientSource` (fases reales):** consumir el stream persistente y mapear eventos observados a transiciones `Lobby→PreGame→AgentSelect→InMatch→PostMatch` event-driven (sin polling).
+- [x] **`LocalClientSource` (stream):** consumir `OnJsonApiEvent` en un listener persistente de solo lectura; los payloads se descartan y solo URIs inequívocas actualizan estado.
+- [ ] **`LocalClientSource` (fases reales):** observar y validar las URIs de transición para completar el mapeo `Lobby→PreGame→AgentSelect→InMatch→PostMatch` event-driven (sin polling). El listener ya expira la fase tras 15 s sin evento para evitar estados obsoletos.
 - [ ] **Capability `LiveMatchSource`:** `Pre-Game Match` y `Current Game Match` (GLZ) → roster con ranks/nivel/agente de las 10 personas (incluye perfiles privados) para stats de equipo en Agent Select/partida.
 - [ ] **Capability `MatchDetailSource`:** `pd.{shard}.a.pvp.net/match-details/v1/matches/{id}` post-partida → `roundResults[]` con kills/deaths/resultado **por ronda** (desglose completo en `PostMatch`/`History`). Opcional: intentar polling durante partida y degradar con elegancia si aún no está disponible.
 - [ ] **Capability `PlayerProfileSource`:** perfil propio + historial (`match-history`, `competitive-updates`, `mmr`) con tokens locales.
@@ -111,7 +112,7 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 
 ## Siguiente tarea recomendada
 
-1. **Hecho (2B — diseño):** `GameStateSource` + `GamePhase`/`ProviderError`/`StateInfo` + `Process`/`Mock` + `resolve_with_fallback` (58 tests).
+1. **Hecho (2B — diseño):** `GameStateSource` + `GamePhase`/`ProviderError`/`StateInfo` + `Process`/`Mock` + `resolve_with_fallback` (92 tests globales).
 2. **Ahora (2C — Local Client):** `src/providers/lockfile.rs` → `LocalClientSource` con WebSocket para fases reales → `LiveMatchSource` (roster en vivo) → `MatchDetailSource` (rondas post-partida). **Sin API key ni RSO.**
 3. **Después:** analytics por ronda (kills/muertes por ronda, fixture de 5 rondas) y vista en `PostMatch`/`History`.
 4. **Opcional:** API oficial Riot con `RIOT_API_KEY` solo para mejoras (leaderboards/contenido).
