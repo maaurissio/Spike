@@ -165,6 +165,15 @@ fn write_local_source_status(out: &mut String) {
                     info.locale.as_deref().unwrap_or("no informado"),
                 );
             }
+            Err(ProviderError::EndpointUnavailable {
+                endpoint,
+                status: 404,
+            }) => {
+                let _ = writeln!(
+                    out,
+                    "API local      endpoint de sesión no disponible fuera de partida: {endpoint} (HTTP 404)"
+                );
+            }
             Err(error) => {
                 let _ = writeln!(out, "API local      endpoints base no verificados: {error}");
             }
@@ -215,8 +224,17 @@ fn write_local_source_result(out: &mut String, result: Result<StateInfo, Provide
         Ok(info) => {
             let _ = writeln!(
                 out,
-                "Proveedor local correcto: fase={} confianza={}",
-                info.phase, info.confidence
+                "Proveedor local correcto: fase={} detalle={} confianza={} fuente={} cliente={} juego={}",
+                info.phase,
+                if info.phase.is_fine_grained() {
+                    "fino"
+                } else {
+                    "grueso"
+                },
+                info.confidence,
+                info.source,
+                if info.client_found { "sí" } else { "no" },
+                if info.game_found { "sí" } else { "no" },
             );
         }
         Err(error) => {

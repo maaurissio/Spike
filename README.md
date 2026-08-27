@@ -149,7 +149,7 @@ Verificación con `vtracker doctor` y `VTRACKER_STATE` en Windows (`tasklist /FO
 
 > El detector (`src/game/mod.rs:75`) solo distingue estas 3 señales. `LocalClientSource` añade fases finas solo tras un evento WebSocket inequívoco y las descarta después de 15 segundos sin actualización, para no presentar una fase antigua como actual.
 
-Tests: `cargo test` — 92 pruebas para `config`, `cli`, `game`, `diagnostics`, `providers` (lockfile, REST local, WAMP, expiración de fase, `GamePhase`, `Mock`/`Process`, fallback), `analytics`, `cache` y `watch`.
+Tests: `cargo test` — 102 pruebas para `config`, `cli`, `game`, `diagnostics`, `providers` (lockfile, REST local, WAMP, partidas silenciosas, `MatchDetailSource` postpartida, `GamePhase`, `Mock`/`Process`, fallback), `analytics`, `cache`, `watch` y UI.
 
 ## Experiencia de usuario final — visión
 
@@ -235,7 +235,7 @@ Inspirado en patrones 2026 para TUIs Rust (Elm Architecture / TEA, `ratatui` + `
 - **Diseño orientado a eventos** para evitar polling y cálculos innecesarios.
 - **Separación estricta:** `AppState` solo datos de presentación; I/O y cálculos fuera del renderizado (Elm: Model → Message → Update → View).
 - **Autostart explícito** con `auto-launch` crate, nunca implícito.
-- **Testing primero:** 92 tests unitarios actuales, fixtures para analytics, `cargo fmt`/`clippy` en CI.
+- **Testing primero:** 102 tests unitarios actuales, fixtures para analytics y postpartida, `cargo fmt`/`clippy` en CI.
 - **Seguridad (ISO 27001):** secretos solo en `.env`/env vars, `.gitignore` estricto, `doctor` enmascara claves (`***`), `cargo audit`+SBOM futuro, controles 8.25-8.29.
 - **Calidad (ISO 9001):** control documental (`TASKS.md`/`Arquitectura-inicial.md`), trazabilidad Raw/Derived, `watch.log` como registro, medición antes de optimizar.
 - **Ambiental (ISO 14001):** green coding — event-driven, L1/L2 para evitar red, `minimized` en autostart, binario Rust ligero; medición de CPU idle/mem en `docs/BENCHMARKS.md` futuro.

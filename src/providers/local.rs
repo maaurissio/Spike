@@ -26,6 +26,7 @@ use crate::{
     providers::{
         capabilities::{Confidence, GamePhase, GameStateSource, ProviderError, StateInfo},
         lockfile::{self, Lockfile, LockfileError},
+        match_detail::MatchDetailRequest,
     },
 };
 
@@ -65,6 +66,16 @@ impl LocalWsEvent {
             None
         }
     }
+
+    pub(crate) fn match_id(&self) -> Option<String> {
+        let (_, id) = self.uri.split_once("/matches/")?;
+        let id = id.split('/').next()?;
+        (!id.is_empty()
+            && id
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '-'))
+        .then(|| id.to_owned())
+    }
 }
 
 /// Tokens locales que nunca se serializan, imprimen ni persisten.
@@ -97,10 +108,11 @@ pub struct LocalClientSource {
     event_phase: Arc<Mutex<Option<EventPhase>>>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct EventPhase {
     phase: GamePhase,
     observed_at: Instant,
+    match_id: Option<String>,
 }
 
 impl LocalClientSource {
@@ -157,10 +169,10 @@ impl LocalClientSource {
             loop {
                 match socket.read() {
                     Ok(Message::Text(payload)) => {
-                        if let Some(phase) =
-                            parse_wamp_event(payload.as_str()).and_then(|event| event.phase_hint())
+                        if let Some(event) = parse_wamp_event(payload.as_str())
+                            && let Some(phase) = event.phase_hint()
                         {
-                            self.set_event_phase(phase);
+                            self.set_event_phase(phase, event.match_id());
                         }
                     }
                     Ok(Message::Close(_)) => break,
@@ -177,11 +189,13 @@ impl LocalClientSource {
         }
     }
 
-    fn set_event_phase(&self, phase: GamePhase) {
+    fn set_event_phase(&self, phase: GamePhase, match_id: Option<String>) {
         if let Ok(mut current) = self.event_phase.lock() {
+            let previous_match_id = current.as_ref().and_then(|event| event.match_id.clone());
             *current = Some(EventPhase {
                 phase,
                 observed_at: Instant::now(),
+                match_id: match_id.or(previous_match_id),
             });
         }
     }
@@ -192,12 +206,59 @@ impl LocalClientSource {
         }
     }
 
-    fn event_phase(&self) -> Option<GamePhase> {
+    fn event_phase(&self, game_running: bool) -> Option<GamePhase> {
         let mut current = self.event_phase.lock().ok()?;
-        if current.is_some_and(|event| event.observed_at.elapsed() > EVENT_PHASE_TTL) {
+        if current
+            .as_ref()
+            .is_some_and(|event| event.phase == GamePhase::InMatch)
+        {
+            if game_running {
+                return Some(GamePhase::InMatch);
+            }
+            *current = None;
+            return None;
+        }
+        if current
+            .as_ref()
+            .is_some_and(|event| event.observed_at.elapsed() > EVENT_PHASE_TTL)
+        {
             *current = None;
         }
-        current.map(|event| event.phase)
+        current.as_ref().map(|event| event.phase)
+    }
+
+    fn event_match_id(&self) -> Option<String> {
+        let mut current = self.event_phase.lock().ok()?;
+        if current
+            .as_ref()
+            .is_some_and(|event| event.observed_at.elapsed() > EVENT_PHASE_TTL)
+        {
+            *current = None;
+        }
+        current.as_ref().and_then(|event| event.match_id.clone())
+    }
+
+    /// Construye el contexto efímero para una única consulta post-partida.
+    /// No realiza la consulta remota: esa responsabilidad es de `MatchDetailSource`.
+    pub(crate) fn match_detail_request(&self) -> Result<MatchDetailRequest, ProviderError> {
+        let match_id = self.event_match_id().ok_or_else(|| {
+            ProviderError::NotConfigured("no hay un identificador de partida reciente".into())
+        })?;
+        let lockfile = self
+            .read_lockfile()
+            .map_err(|error| ProviderError::NotConfigured(error.to_string()))?;
+        self.check_health(&lockfile)?;
+        let tokens = self.tokens_from(&lockfile)?;
+        let sessions = self.json_from(&lockfile, EXTERNAL_SESSIONS_ENDPOINT)?;
+        let session = valorant_session_info(&sessions)?;
+        Ok(MatchDetailRequest {
+            match_id,
+            shard: session.shard,
+            client_version: session.client_version,
+            access_token: tokens.access_token,
+            entitlement_token: tokens.entitlement_token,
+            own_puuid: session.own_puuid,
+        })
     }
 
     pub(crate) fn inspect_api(&self) -> Result<LocalApiInfo, ProviderError> {
@@ -248,8 +309,12 @@ impl LocalClientSource {
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(ProviderError::Unauthorized(
                 "la Local Client API rechazó las credenciales del lockfile".into(),
             )),
+            StatusCode::NOT_FOUND => Err(ProviderError::EndpointUnavailable {
+                endpoint: endpoint.into(),
+                status: StatusCode::NOT_FOUND.as_u16(),
+            }),
             status => Err(ProviderError::Unavailable(format!(
-                "la Local Client API respondió HTTP {status}"
+                "la Local Client API respondió HTTP {status} en {endpoint}"
             ))),
         }
         .map(|_| response)
@@ -373,6 +438,71 @@ fn optional_text(value: &Value, field: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct ValorantSessionInfo {
+    shard: String,
+    client_version: String,
+    own_puuid: String,
+}
+
+fn valorant_session_info(value: &Value) -> Result<ValorantSessionInfo, ProviderError> {
+    let sessions = value
+        .as_object()
+        .ok_or_else(|| ProviderError::Parse("sesiones locales inválidas".into()))?;
+    let session = sessions
+        .values()
+        .find(|session| session.get("productId").and_then(Value::as_str) == Some("valorant"))
+        .and_then(Value::as_object)
+        .ok_or_else(|| ProviderError::Unavailable("no hay una sesión VALORANT activa".into()))?;
+    let client_version = session
+        .get("version")
+        .and_then(Value::as_str)
+        .filter(|version| !version.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| ProviderError::Parse("versión de sesión ausente".into()))?;
+    let arguments = session
+        .get("launchConfiguration")
+        .and_then(Value::as_object)
+        .and_then(|configuration| configuration.get("arguments"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| ProviderError::Parse("argumentos de sesión ausentes".into()))?;
+    let shard = arguments
+        .iter()
+        .filter_map(Value::as_str)
+        .find_map(shard_from_argument)
+        .ok_or_else(|| ProviderError::Parse("shard no informado por la sesión".into()))?;
+    let own_puuid = arguments
+        .iter()
+        .filter_map(Value::as_str)
+        .find_map(|argument| argument.strip_prefix("-ares-puuid="))
+        .filter(|puuid| {
+            !puuid.is_empty()
+                && puuid
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
+        })
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| ProviderError::Parse("puuid no informado por la sesión".into()))?;
+    Ok(ValorantSessionInfo {
+        shard,
+        client_version,
+        own_puuid,
+    })
+}
+
+fn shard_from_argument(argument: &str) -> Option<String> {
+    let value = argument
+        .strip_prefix("-ares-shard=")
+        .or_else(|| argument.strip_prefix("-ares-deployment="))
+        .or_else(|| argument.strip_prefix("-ares-region="))?
+        .to_ascii_lowercase();
+    match value.as_str() {
+        "na" | "pbe" | "eu" | "ap" | "kr" => Some(value),
+        "latam" | "la1" | "la2" | "br" => Some("na".into()),
+        _ => None,
+    }
+}
+
 pub(crate) fn parse_wamp_event(payload: &str) -> Option<LocalWsEvent> {
     let message = serde_json::from_str::<Value>(payload).ok()?;
     let values = message.as_array()?;
@@ -419,10 +549,11 @@ impl GameStateSource for LocalClientSource {
         };
 
         self.check_health(&lockfile)?;
-        if let Some(phase) = self.event_phase() {
+        let coarse = game::detect().state;
+        if let Some(phase) = self.event_phase(coarse == GameState::GameOpen) {
             return Ok(state_from_event_phase(phase));
         }
-        Ok(state_after_health(game::detect().state))
+        Ok(state_after_health(coarse))
     }
 }
 
@@ -512,6 +643,35 @@ mod tests {
     }
 
     #[test]
+    fn missing_endpoint_reports_its_safe_route() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 2048];
+            let size = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..size]);
+            assert!(request.starts_with("GET /entitlements/v1/token HTTP/1.1"));
+            stream
+                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+        });
+        let path = temp_lockfile(&format!("riot:1:{port}:secret:http"));
+        let source = LocalClientSource::with_lockfile_path(Some(path.clone()));
+        let lockfile = source.read_lockfile().unwrap();
+
+        let error = source.tokens_from(&lockfile).unwrap_err();
+
+        assert!(matches!(
+            error,
+            ProviderError::EndpointUnavailable { endpoint, status: 404 }
+                if endpoint == ENTITLEMENTS_ENDPOINT
+        ));
+        server.join().unwrap();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn missing_lockfile_means_client_closed() {
         let path = std::env::temp_dir().join("vtracker-lockfile-that-does-not-exist");
         let source = LocalClientSource::with_lockfile_path(Some(path));
@@ -564,6 +724,7 @@ mod tests {
         assert!(event.uri.contains("core-game"));
         assert_eq!(event.event_type.as_deref(), Some("Update"));
         assert_eq!(event.phase_hint(), Some(GamePhase::InMatch));
+        assert_eq!(event.match_id().as_deref(), Some("id"));
         assert!(parse_wamp_event("[0, {}]").is_none());
     }
 
@@ -599,11 +760,11 @@ mod tests {
     #[test]
     fn ambiguous_events_do_not_change_phase_state() {
         let source = LocalClientSource::with_lockfile_path(Some(PathBuf::from("unused")));
-        assert_eq!(source.event_phase(), None);
-        source.set_event_phase(GamePhase::PreGame);
-        assert_eq!(source.event_phase(), Some(GamePhase::PreGame));
+        assert_eq!(source.event_phase(false), None);
+        source.set_event_phase(GamePhase::PreGame, None);
+        assert_eq!(source.event_phase(false), Some(GamePhase::PreGame));
         source.clear_event_phase();
-        assert_eq!(source.event_phase(), None);
+        assert_eq!(source.event_phase(false), None);
     }
 
     #[test]
@@ -613,9 +774,50 @@ mod tests {
             *phase = Some(EventPhase {
                 phase: GamePhase::InMatch,
                 observed_at: Instant::now() - EVENT_PHASE_TTL - Duration::from_secs(1),
+                match_id: None,
             });
         }
 
-        assert_eq!(source.event_phase(), None);
+        assert_eq!(source.event_phase(false), None);
+    }
+
+    #[test]
+    fn retains_match_id_across_follow_up_phase_events() {
+        let source = LocalClientSource::with_lockfile_path(Some(PathBuf::from("unused")));
+        source.set_event_phase(GamePhase::InMatch, Some("match-1".into()));
+        source.set_event_phase(GamePhase::PostMatch, None);
+
+        assert_eq!(source.event_match_id().as_deref(), Some("match-1"));
+    }
+
+    #[test]
+    fn parses_valorant_session_shard_and_version() {
+        let info = valorant_session_info(&serde_json::json!({
+            "session": {
+                "productId": "valorant",
+                "version": "1.2.3",
+                "launchConfiguration": {"arguments": ["-ares-deployment=la2", "-ares-puuid=player-1"]}
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(info.shard, "na");
+        assert_eq!(info.client_version, "1.2.3");
+        assert_eq!(info.own_puuid, "player-1");
+    }
+
+    #[test]
+    fn in_match_phase_survives_quiet_websocket_while_game_process_is_running() {
+        let source = LocalClientSource::with_lockfile_path(Some(PathBuf::from("unused")));
+        if let Ok(mut phase) = source.event_phase.lock() {
+            *phase = Some(EventPhase {
+                phase: GamePhase::InMatch,
+                observed_at: Instant::now() - EVENT_PHASE_TTL - Duration::from_secs(1),
+                match_id: Some("match-1".into()),
+            });
+        }
+
+        assert_eq!(source.event_phase(true), Some(GamePhase::InMatch));
+        assert_eq!(source.event_phase(false), None);
     }
 }

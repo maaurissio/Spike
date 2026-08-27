@@ -17,8 +17,24 @@ pub enum GameMode {
 }
 
 impl GameMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "desconocido",
+            Self::Unrated => "normal",
+            Self::Competitive => "competitivo",
+            Self::Custom => "personalizada",
+            Self::Swiftplay => "swiftplay",
+            Self::Deathmatch => "deathmatch",
+            Self::TeamDeathmatch => "team deathmatch",
+            Self::Escalation => "escalation",
+        }
+    }
+
     pub fn supports_round_timeline(self) -> bool {
-        matches!(self, Self::Unrated | Self::Competitive | Self::Custom)
+        matches!(
+            self,
+            Self::Unrated | Self::Competitive | Self::Custom | Self::Swiftplay
+        )
     }
 }
 
@@ -36,6 +52,19 @@ pub enum RoundResult {
     Surrendered,
     TimerExpired,
     Unknown,
+}
+
+impl RoundResult {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Eliminated => "eliminación",
+            Self::Detonated => "detonada",
+            Self::Defused => "desactivada",
+            Self::Surrendered => "rendición",
+            Self::TimerExpired => "tiempo",
+            Self::Unknown => "sin dato",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -220,7 +249,8 @@ mod tests {
 
     #[test]
     fn rejects_non_round_modes_and_gaps() {
-        assert!(MatchRounds::new("match".into(), GameMode::Swiftplay, vec![round(1)]).is_err());
+        assert!(MatchRounds::new("match".into(), GameMode::Deathmatch, vec![round(1)]).is_err());
+        assert!(MatchRounds::new("match".into(), GameMode::Swiftplay, vec![round(1)]).is_ok());
         assert!(MatchRounds::new("match".into(), GameMode::Custom, vec![round(2)]).is_err());
     }
 }

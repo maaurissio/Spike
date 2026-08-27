@@ -56,7 +56,7 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 - [x] **`LocalClientSource` (stream):** consumir `OnJsonApiEvent` en un listener persistente de solo lectura; los payloads se descartan y solo URIs inequívocas actualizan estado.
 - [ ] **`LocalClientSource` (fases reales):** observar y validar las URIs de transición para completar el mapeo `Lobby→PreGame→AgentSelect→InMatch→PostMatch` event-driven (sin polling). El listener ya expira la fase tras 15 s sin evento para evitar estados obsoletos.
 - [ ] **Capability `LiveMatchSource`:** `Pre-Game Match` y `Current Game Match` (GLZ) → roster con ranks/nivel/agente de las 10 personas (incluye perfiles privados) para stats de equipo en Agent Select/partida.
-- [ ] **Capability `MatchDetailSource`:** `pd.{shard}.a.pvp.net/match-details/v1/matches/{id}` post-partida → `roundResults[]` con kills/deaths/resultado **por ronda** (desglose completo en `PostMatch`/`History`). Opcional: intentar polling durante partida y degradar con elegancia si aún no está disponible.
+- [x] **Capability `MatchDetailSource`:** al entrar a `PostMatch`, usa el ID de una URI local reciente y ejecuta un único `GET` a `pd.{shard}.a.pvp.net/match-details/v1/matches/{id}` con tokens efímeros; normaliza `roundResults[]` con kills/deaths/resultado por ronda y no imprime secretos/IDs. Falta la vista PostMatch/History. No hace polling durante partida.
 - [ ] **Capability `PlayerProfileSource`:** perfil propio + historial (`match-history`, `competitive-updates`, `mmr`) con tokens locales.
 - [x] Extender `vtracker doctor` para validar lockfile + salud de la Local Client API/proveedor, sin exponer secretos.
 - [ ] API oficial Riot (`RIOT_API_KEY`) queda como mejora opcional posterior (leaderboards, contenido); no bloquea nada.
@@ -72,7 +72,7 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 - [ ] **Flujo perfil:** al detectar `Idle`, mostrar perfil propio con stats cacheadas; si provider falla, último dato conocido y error recuperable.
 - [ ] **Flujo equipo:** al detectar `PreGame`/`AgentSelect` vía `LocalClientSource`, consultar `LiveMatchSource` y mostrar ranks/WR del equipo en vivo.
 - [ ] **Flujo partida:** al detectar `InMatch`, mostrar contexto (mapa, modo, composición) en vivo.
-- [ ] **Flujo rondas (requisito explícito):** al terminar cada ronda (o al terminar la partida si la fuente no entrega antes), mostrar kills/muertes propias por ronda — tabla `Ronda | Resultado | Kills | ¿Moriste?` desde `MatchDetailSource` + `analytics` (fixture de 5 rondas para tests).
+- [x] **Flujo rondas postpartida:** al terminar la partida, mostrar kills/muertes propias por ronda — tabla `Ronda | Resultado | Kills | Muertes` desde `MatchDetailSource`, sin mostrar IDs ni datos de otros jugadores. El timeline en vivo por frontera de ronda queda pendiente.
 
 ## Prioridad 4 — Estadísticas
 
@@ -112,7 +112,7 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 
 ## Siguiente tarea recomendada
 
-1. **Hecho (2B — diseño):** `GameStateSource` + `GamePhase`/`ProviderError`/`StateInfo` + `Process`/`Mock` + `resolve_with_fallback` (92 tests globales).
+1. **Hecho (2B — diseño):** `GameStateSource` + `GamePhase`/`ProviderError`/`StateInfo` + `Process`/`Mock` + `resolve_with_fallback` (102 tests globales).
 2. **Ahora (2C — Local Client):** `src/providers/lockfile.rs` → `LocalClientSource` con WebSocket para fases reales → `LiveMatchSource` (roster en vivo) → `MatchDetailSource` (rondas post-partida). **Sin API key ni RSO.**
 3. **Después:** analytics por ronda (kills/muertes por ronda, fixture de 5 rondas) y vista en `PostMatch`/`History`.
 4. **Opcional:** API oficial Riot con `RIOT_API_KEY` solo para mejoras (leaderboards/contenido).

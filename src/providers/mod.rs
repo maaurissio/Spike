@@ -5,6 +5,7 @@
 pub mod capabilities;
 pub mod local;
 pub mod lockfile;
+pub mod match_detail;
 #[cfg(test)]
 pub mod mock;
 pub mod process;
@@ -12,6 +13,7 @@ pub mod process;
 pub use capabilities::ProviderError;
 pub use capabilities::{GameStateSource, StateInfo};
 pub use local::LocalClientSource;
+pub(crate) use match_detail::MatchDetailSource;
 #[cfg(test)]
 pub use mock::MockGameStateSource;
 pub use process::ProcessGameStateSource;

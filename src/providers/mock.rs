@@ -1,7 +1,6 @@
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
-    time::SystemTime,
 };
 
 use crate::game::GameState;
@@ -94,7 +93,6 @@ impl GameStateSource for MockGameStateSource {
                     source: self.name,
                     client_found,
                     game_found,
-                    at: SystemTime::now(),
                 })
             }
             Err(e) => Err(e),

@@ -11,12 +11,13 @@ mod providers;
 mod ui;
 mod watch;
 
-use std::{env, io, thread, time::Instant};
+use std::{env, io, thread};
 
 use cli::{Command, ConfigCommand};
 use config::Config;
 use providers::{
-    GameStateSource, LocalClientSource, ProcessGameStateSource, resolve_with_fallback,
+    GameStateSource, LocalClientSource, MatchDetailSource, ProcessGameStateSource,
+    capabilities::GamePhase, match_detail::CompletedMatch, resolve_with_fallback,
 };
 use ui::{draw_watch, print_help};
 use watch::{Watcher, log_transition};
@@ -73,10 +74,11 @@ fn main() {
 
 fn run_watch(config: Config, once: bool) {
     let interactive = io::IsTerminal::is_terminal(&io::stdout());
-    let started = Instant::now();
     let mut watcher = Watcher::default();
     let fallback = ProcessGameStateSource::new();
     let local = LocalClientSource::new();
+    let match_details = MatchDetailSource::new();
+    let mut completed_match = None;
     local.start_event_listener();
     loop {
         debug_assert!(fallback.is_available());
@@ -88,16 +90,34 @@ fn run_watch(config: Config, once: bool) {
             }
         };
         let transition = watcher.observe(&info);
-        if config.log_transitions
-            && let Some(transition) = transition
-            && let Err(error) = log_transition(&transition)
-        {
-            eprintln!("Advertencia: no se pudo guardar el log: {error}");
+        if let Some(transition) = transition.as_ref() {
+            if config.log_transitions
+                && let Err(error) = log_transition(transition)
+            {
+                eprintln!("Advertencia: no se pudo guardar el log: {error}");
+            }
+            if transition.to == GamePhase::PostMatch {
+                completed_match = fetch_postmatch_once(&local, &match_details);
+            } else {
+                completed_match = None;
+            }
         }
-        draw_watch(&watcher, &info, started, interactive);
+        draw_watch(&info, completed_match.as_ref(), interactive);
         if once || !interactive {
             break;
         }
         thread::sleep(config.interval);
     }
+}
+
+/// Tras una transición local confirmada a postpartida, realiza como máximo una
+/// consulta GET. Los fallos no revelan URL, IDs ni tokens en la vista de jugador.
+fn fetch_postmatch_once(
+    local: &LocalClientSource,
+    source: &MatchDetailSource,
+) -> Option<CompletedMatch> {
+    local
+        .match_detail_request()
+        .and_then(|request| source.fetch_completed(&request))
+        .ok()
 }

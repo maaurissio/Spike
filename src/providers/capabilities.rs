@@ -1,4 +1,4 @@
-use std::{fmt, time::SystemTime};
+use std::fmt;
 
 use crate::game::GameState;
 
@@ -97,6 +97,7 @@ impl fmt::Display for Confidence {
 pub enum ProviderError {
     NotConfigured(String),
     Unavailable(String),
+    EndpointUnavailable { endpoint: String, status: u16 },
     Unauthorized(String),
     RateLimited(String),
     Network(String),
@@ -124,6 +125,12 @@ impl fmt::Display for ProviderError {
         match self {
             Self::NotConfigured(msg) => write!(f, "no configurado: {msg}"),
             Self::Unavailable(msg) => write!(f, "no disponible: {msg}"),
+            Self::EndpointUnavailable { endpoint, status } => {
+                write!(
+                    f,
+                    "endpoint local no disponible: {endpoint} (HTTP {status})"
+                )
+            }
             Self::Unauthorized(msg) => write!(f, "no autorizado: {msg}"),
             Self::RateLimited(msg) => write!(f, "rate limited: {msg}"),
             Self::Network(msg) => write!(f, "error de red: {msg}"),
@@ -144,7 +151,6 @@ pub struct StateInfo {
     pub source: &'static str,
     pub client_found: bool,
     pub game_found: bool,
-    pub at: SystemTime,
 }
 
 impl StateInfo {
@@ -163,7 +169,6 @@ impl StateInfo {
             source,
             client_found,
             game_found,
-            at: SystemTime::now(),
         }
     }
 
@@ -233,6 +238,13 @@ mod tests {
         assert!(ProviderError::Network("x".into()).is_retryable());
         assert!(ProviderError::RateLimited("x".into()).is_retryable());
         assert!(!ProviderError::Unauthorized("x".into()).is_retryable());
+        assert!(
+            !ProviderError::EndpointUnavailable {
+                endpoint: "/session".into(),
+                status: 404,
+            }
+            .is_retryable()
+        );
         assert!(!ProviderError::Parse("x".into()).is_retryable());
     }
 
