@@ -149,7 +149,7 @@ Verificación con `vtracker doctor` y `VTRACKER_STATE` en Windows (`tasklist /FO
 
 > El detector (`src/game/mod.rs:75`) solo distingue estas 3 señales. `LocalClientSource` añade fases finas solo tras un evento WebSocket inequívoco y las descarta después de 15 segundos sin actualización, para no presentar una fase antigua como actual.
 
-Tests: `cargo test` — 102 pruebas para `config`, `cli`, `game`, `diagnostics`, `providers` (lockfile, REST local, WAMP, partidas silenciosas, `MatchDetailSource` postpartida, `GamePhase`, `Mock`/`Process`, fallback), `analytics`, `cache`, `watch` y UI.
+Tests: `cargo test` — 138 pruebas para `config`, `cli`, `game`, `diagnostics`, `providers` (lockfile, REST local, WAMP, contexto propio en vivo, perfil/MMR, historial, postpartida y agregados por modo/mapa/agente), `analytics`, `cache`, `watch` y TUI.
 
 ## Experiencia de usuario final — visión
 
@@ -158,8 +158,8 @@ Estado objetivo una vez completado el desarrollo (Prioridades 2-5):
 1. **Al iniciar el PC / abrir VALORANT** — VTracker (nombre final por definir) se inicia en segundo plano si `autostart = true` en `config.toml` (`src/config/mod.rs:1`). No hace polling innecesario; espera eventos del `Game Engine`.
 2. **Perfil propio** — al arrancar con cliente disponible muestra tu perfil vinculado (`RIOT_ID` configurado en `config.toml` o `.env`) con stats derivadas (K/D, WR, HS%, ADR/ACS si la fuente los expone) calculadas por `Analytics Engine` desde `Raw Data` cacheada.
 3. **Encontrando partida / Agent Select** — al detectar `PreGame`/`AgentSelect` vía **Local Client API** (lockfile, sin API key), consulta el roster en vivo y muestra ranks/WR del equipo.
-4. **En partida (`InMatch`)** — contexto vivo del game actual: mapa, modo, composición.
-5. **Al terminar la partida (`PostMatch`)** — desglose **por ronda**: `Ronda | Resultado | Kills | ¿Moriste?` (ej.: 5 rondas — moriste en 1, 2 y 5; mataste 2 en 1, 3, 4 y 5), desde `match-details` + Analytics.
+4. **En partida (`InMatch`)** — contexto vivo propio del game actual: mapa, modo y agente. No se muestra composición ni perfiles de otros jugadores.
+5. **Al terminar la partida (`PostMatch`)** — en modos con rondas, desglose `Ronda | Resultado | Kills | Muertes`; en Deathmatch, Team Deathmatch o Escalation, resumen propio final de K/D/A y puntos. Todo desde `match-details` y sin exponer IDs.
 
 La TUI siempre es opcional: `vtracker watch` para modo live, y comandos `player`/`match`/`history` para consultas puntuales.
 
@@ -235,7 +235,7 @@ Inspirado en patrones 2026 para TUIs Rust (Elm Architecture / TEA, `ratatui` + `
 - **Diseño orientado a eventos** para evitar polling y cálculos innecesarios.
 - **Separación estricta:** `AppState` solo datos de presentación; I/O y cálculos fuera del renderizado (Elm: Model → Message → Update → View).
 - **Autostart explícito** con `auto-launch` crate, nunca implícito.
-- **Testing primero:** 102 tests unitarios actuales, fixtures para analytics y postpartida, `cargo fmt`/`clippy` en CI.
+- **Testing primero:** 107 tests unitarios actuales, fixtures para analytics y postpartida, `cargo fmt`/`clippy` en CI.
 - **Seguridad (ISO 27001):** secretos solo en `.env`/env vars, `.gitignore` estricto, `doctor` enmascara claves (`***`), `cargo audit`+SBOM futuro, controles 8.25-8.29.
 - **Calidad (ISO 9001):** control documental (`TASKS.md`/`Arquitectura-inicial.md`), trazabilidad Raw/Derived, `watch.log` como registro, medición antes de optimizar.
 - **Ambiental (ISO 14001):** green coding — event-driven, L1/L2 para evitar red, `minimized` en autostart, binario Rust ligero; medición de CPU idle/mem en `docs/BENCHMARKS.md` futuro.
@@ -262,9 +262,11 @@ vtracker doctor                                  # diagnóstico local + provider
 vtracker config show|validate                   # ver/validar %APPDATA%\vtracker\config.toml
 vtracker config edit --interval 5 --log-transitions true  # cambio atómico y explícito
 vtracker autostart enable|disable|status        # gestionar inicio automático (requiere consentimiento)
-vtracker player <riot-id>                       # perfil autorizado (requiere RSO/opt-in)
+vtracker player                                 # nivel y XP del perfil autenticado
 vtracker match [id]                              # detalle de partida
-vtracker history [player]                        # historial propio autorizado
+vtracker history [--limit 1..20]                # últimas partidas propias, sin IDs
+vtracker dashboard                              # interfaz interactiva (alias: tui)
+vtracker stats [--limit 1..5]                   # K/D, KDA, win rate y desglose por modo/mapa/agente
 vtracker cache <subcomando>                      # inspeccionar/limpiar caché L1/L2
 ```
 
@@ -279,7 +281,7 @@ vtracker cache <subcomando>                      # inspeccionar/limpiar caché L
 
 ## Estado actual y conformidad
 
-MVP local y Prioridad 1 completados (88 tests, tabla de procesos, `doctor` testeable, `.env` protegido, `GameStateSource` desacoplado con `Process`/`Mock` y fallback). **Implementado:** `LocalClientSource` lee el lockfile y valida `GET /help`, entitlements, sesión externa, región/locale y el handshake/suscripción WAMP, exclusivamente en `127.0.0.1`; su listener persistente acepta solo URIs de fase inequívocas y descarta payloads. Los tokens nunca se imprimen ni persisten. Los modelos de rondas y `analytics` ya calculan K/D, KDA, win rate, HS%, ADR y ACS con datos normalizados. **Siguiente:** validar las transiciones observadas de fase y después GLZ/PD para roster, historial y rondas post-partida. Nombre `VTracker` temporal hasta release.
+MVP local y Prioridad 1 completados. **Implementado:** `LocalClientSource` lee el lockfile y valida `GET /help`, entitlements, sesión externa, región/locale y el handshake/suscripción WAMP, exclusivamente en `127.0.0.1`; su listener persistente acepta solo URIs de fase inequívocas y descarta payloads. Los tokens nunca se imprimen ni persisten. GLZ entrega contexto propio de partida y PD entrega perfil propio (nivel, XP, MMR/RR y cambios competitivos), historial propio, postpartida y agregados propios de las últimas 1–5 partidas por modo, mapa y agente. La base de `vtracker dashboard` usa Ratatui/Crossterm y solo renderiza cuando hay cambios. **Siguiente:** completar las vistas con datos propios y validar transiciones reales. Nombre `VTracker` temporal hasta release.
 
 **Compromiso ISO:** se adoptan principios **ISO 9001 (Calidad) + ISO 14001 (Ambiental) + ISO 27001 (Seguridad)** como sistema integrado PHVA desde el inicio (ver `docs/ISO.md` y `Arquitectura-inicial.md:21`). No es burocracia vacía: tests + `clippy`/`fmt` (calidad), `cargo` eficiente + caché (ambiental), `.env` + `doctor` enmascarado + RSO (seguridad). Certificación formal opcional a medio plazo.
 
@@ -287,6 +289,8 @@ MVP local y Prioridad 1 completados (88 tests, tabla de procesos, `doctor` teste
 
 ```powershell
 cargo run -- watch --once
+cargo run -- player
+cargo run -- history --limit 5
 cargo run -- doctor
 cargo test
 cargo fmt

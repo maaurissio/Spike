@@ -10,7 +10,10 @@ use reqwest::{StatusCode, blocking::Client};
 use serde_json::Value;
 
 use crate::{
-    models::{GameMode, MatchRounds, PlayerRoundStat, Round, RoundCeremony, RoundResult, Team},
+    models::{
+        GameMode, MatchRounds, PlayerMatchStats, PlayerRoundStat, Round, RoundCeremony,
+        RoundResult, Team,
+    },
     providers::ProviderError,
 };
 
@@ -19,6 +22,7 @@ const CLIENT_PLATFORM: &str = "ew0KCSJwbGF0Zm9ybVR5cGUiOiAiUEMiLA0KCSJwbGF0Zm9yb
 
 /// Credenciales y metadatos efímeros para una única consulta post-partida.
 /// Nunca se serializan, se imprimen ni se persisten.
+#[derive(Clone)]
 pub(crate) struct MatchDetailRequest {
     pub match_id: String,
     pub shard: String,
@@ -44,8 +48,22 @@ impl std::fmt::Debug for MatchDetailRequest {
 /// Resultado de postpartida listo para la interfaz del jugador.
 /// El identificador propio nunca se muestra ni se persiste.
 pub(crate) struct CompletedMatch {
-    pub rounds: MatchRounds,
     pub own_puuid: String,
+    pub rounds: Option<MatchRounds>,
+    pub summary: Option<MatchSummary>,
+}
+
+/// Resumen final propio de un modo que no tiene timeline de rondas.
+pub(crate) struct MatchSummary {
+    pub mode: GameMode,
+    pub stats: PlayerMatchStats,
+}
+
+/// Totales propios de una partida, aptos para agregados sin retener roster.
+pub(crate) struct OwnMatchTotals {
+    pub stats: crate::models::PlayerMatch,
+    pub map: String,
+    pub agent: String,
 }
 
 /// Consulta de solo lectura a `pd.{shard}.a.pvp.net` para una partida concluida.
@@ -93,17 +111,13 @@ impl MatchDetailSource {
             .header("X-Riot-Entitlements-JWT", &request.entitlement_token)
             .bearer_auth(&request.access_token)
             .send()
-            .map_err(|error| ProviderError::Network(error.to_string()))?;
+            .map_err(|_| ProviderError::Network("no se pudo conectar a PD".into()))?;
 
         match response.status() {
             status if status.is_success() => response
                 .json::<Value>()
                 .map_err(|_| parse_error("JSON inválido en match-details"))
-                .and_then(|payload| parse_completed_match_details(&payload))
-                .map(|rounds| CompletedMatch {
-                    rounds,
-                    own_puuid: request.own_puuid.clone(),
-                }),
+                .and_then(|payload| parse_completed_match(&payload, &request.own_puuid)),
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(ProviderError::Unauthorized(
                 "PD rechazó las credenciales de sesión".into(),
             )),
@@ -116,6 +130,55 @@ impl MatchDetailSource {
             ))),
         }
     }
+
+    pub(crate) fn fetch_own_totals(
+        &self,
+        request: &MatchDetailRequest,
+    ) -> Result<OwnMatchTotals, ProviderError> {
+        let base = self
+            .base_url
+            .clone()
+            .unwrap_or_else(|| format!("https://pd.{}.a.pvp.net", request.shard));
+        let url = format!("{base}/match-details/v1/matches/{}", request.match_id);
+        let response = self
+            .client
+            .get(url)
+            .header("X-Riot-ClientPlatform", CLIENT_PLATFORM)
+            .header("X-Riot-ClientVersion", &request.client_version)
+            .header("X-Riot-Entitlements-JWT", &request.entitlement_token)
+            .bearer_auth(&request.access_token)
+            .send()
+            .map_err(|_| ProviderError::Network("no se pudo conectar a PD".into()))?;
+        match response.status() {
+            status if status.is_success() => response
+                .json::<Value>()
+                .map_err(|_| parse_error("JSON inválido en match-details"))
+                .and_then(|payload| parse_own_match_totals(&payload, &request.own_puuid)),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(ProviderError::Unauthorized(
+                "PD rechazó las credenciales de sesión".into(),
+            )),
+            status => Err(ProviderError::Unavailable(format!(
+                "PD respondió HTTP {status} en match-details"
+            ))),
+        }
+    }
+}
+
+fn parse_completed_match(
+    payload: &Value,
+    own_puuid: &str,
+) -> Result<CompletedMatch, ProviderError> {
+    let mode = completed_game_mode(payload)?;
+    let (rounds, summary) = if mode.supports_round_timeline() {
+        (Some(parse_completed_match_details(payload)?), None)
+    } else {
+        (None, Some(parse_match_summary(payload, mode, own_puuid)?))
+    };
+    Ok(CompletedMatch {
+        own_puuid: own_puuid.to_owned(),
+        rounds,
+        summary,
+    })
 }
 
 impl Default for MatchDetailSource {
@@ -130,15 +193,8 @@ impl Default for MatchDetailSource {
 /// la partida para evitar presentar estadísticas parciales como definitivas.
 pub(crate) fn parse_completed_match_details(payload: &Value) -> Result<MatchRounds, ProviderError> {
     let match_info = required_object(payload, "matchInfo")?;
-    if !match_info
-        .get("isCompleted")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        return Err(parse_error("match-details aún no está finalizado"));
-    }
     let match_id = required_text(match_info, "matchId")?;
-    let mode = parse_game_mode(required_text(match_info, "gameMode")?)?;
+    let mode = completed_game_mode(payload)?;
     let raw_rounds = payload
         .get("roundResults")
         .and_then(Value::as_array)
@@ -151,6 +207,121 @@ pub(crate) fn parse_completed_match_details(payload: &Value) -> Result<MatchRoun
     }
     MatchRounds::new(match_id.to_owned(), mode, rounds)
         .map_err(|error| parse_error(&format!("timeline inválido: {error}")))
+}
+
+fn completed_game_mode(payload: &Value) -> Result<GameMode, ProviderError> {
+    let match_info = required_object(payload, "matchInfo")?;
+    if !match_info
+        .get("isCompleted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Err(parse_error("match-details aún no está finalizado"));
+    }
+    parse_game_mode(required_text(match_info, "gameMode")?)
+}
+
+fn parse_match_summary(
+    payload: &Value,
+    mode: GameMode,
+    own_puuid: &str,
+) -> Result<MatchSummary, ProviderError> {
+    let player = payload
+        .get("players")
+        .and_then(Value::as_array)
+        .and_then(|players| {
+            players
+                .iter()
+                .find(|player| player.get("subject").and_then(Value::as_str) == Some(own_puuid))
+        })
+        .and_then(Value::as_object)
+        .ok_or_else(|| parse_error("estadísticas propias ausentes en match-details"))?;
+    let stats = player
+        .get("stats")
+        .and_then(Value::as_object)
+        .ok_or_else(|| parse_error("stats propias ausentes en match-details"))?;
+    Ok(MatchSummary {
+        mode,
+        stats: PlayerMatchStats {
+            kills: required_u32(stats, "kills")?,
+            deaths: required_u32(stats, "deaths")?,
+            assists: required_u32(stats, "assists")?,
+            combat_score: optional_u32(stats, "score")?,
+            damage: None,
+            headshots: None,
+            bodyshots: None,
+            legshots: None,
+        },
+    })
+}
+
+fn parse_own_match_totals(
+    payload: &Value,
+    own_puuid: &str,
+) -> Result<OwnMatchTotals, ProviderError> {
+    let match_info = required_object(payload, "matchInfo")?;
+    completed_game_mode(payload)?;
+    let map = required_text(match_info, "mapId").map(crate::providers::live_match::asset_label)?;
+    let player = payload
+        .get("players")
+        .and_then(Value::as_array)
+        .and_then(|players| {
+            players
+                .iter()
+                .find(|player| player.get("subject").and_then(Value::as_str) == Some(own_puuid))
+        })
+        .and_then(Value::as_object)
+        .ok_or_else(|| parse_error("estadísticas propias ausentes en match-details"))?;
+    let stats = player
+        .get("stats")
+        .and_then(Value::as_object)
+        .ok_or_else(|| parse_error("stats propias ausentes en match-details"))?;
+    let agent = player
+        .get("characterId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(crate::providers::live_match::agent_label)
+        .unwrap_or_else(|| "no disponible".into());
+    let outcome = player
+        .get("teamId")
+        .and_then(Value::as_str)
+        .and_then(|team_id| {
+            payload
+                .get("teams")
+                .and_then(Value::as_array)
+                .and_then(|teams| {
+                    teams
+                        .iter()
+                        .find(|team| team.get("teamId").and_then(Value::as_str) == Some(team_id))
+                })
+        })
+        .and_then(|team| team.get("won").and_then(Value::as_bool))
+        .map(|won| {
+            if won {
+                crate::models::MatchOutcome::Win
+            } else {
+                crate::models::MatchOutcome::Loss
+            }
+        })
+        .unwrap_or(crate::models::MatchOutcome::Unknown);
+    Ok(OwnMatchTotals {
+        stats: crate::models::PlayerMatch {
+            outcome,
+            rounds_played: optional_u32(stats, "roundsPlayed")?.unwrap_or(0),
+            stats: crate::models::PlayerMatchStats {
+                kills: required_u32(stats, "kills")?,
+                deaths: required_u32(stats, "deaths")?,
+                assists: required_u32(stats, "assists")?,
+                combat_score: optional_u32(stats, "score")?,
+                damage: None,
+                headshots: None,
+                bodyshots: None,
+                legshots: None,
+            },
+        },
+        map,
+        agent,
+    })
 }
 
 fn parse_round(raw: &Value, index: usize, expected: u32) -> Result<Round, ProviderError> {
@@ -242,9 +413,10 @@ fn parse_game_mode(value: &str) -> Result<GameMode, ProviderError> {
         "unrated" | "standard" => Ok(GameMode::Unrated),
         "customgame" | "custom" => Ok(GameMode::Custom),
         "swiftplay" => Ok(GameMode::Swiftplay),
-        other => Err(parse_error(&format!(
-            "modo sin timeline compatible: {other}"
-        ))),
+        "deathmatch" => Ok(GameMode::Deathmatch),
+        "teamdeathmatch" => Ok(GameMode::TeamDeathmatch),
+        "escalation" => Ok(GameMode::Escalation),
+        _ => Ok(GameMode::Unknown),
     }
 }
 
@@ -400,6 +572,49 @@ mod tests {
     }
 
     #[test]
+    fn summarizes_own_deathmatch_without_retaining_a_round_timeline() {
+        let payload = serde_json::json!({
+            "matchInfo": {"matchId": "dm", "gameMode": "Deathmatch", "isCompleted": true},
+            "players": [
+                {"subject": "other", "stats": {"kills": 40, "deaths": 10, "assists": 2, "score": 4000}},
+                {"subject": "me", "stats": {"kills": 25, "deaths": 20, "assists": 4, "score": 2500}}
+            ]
+        });
+
+        let completed = parse_completed_match(&payload, "me").unwrap();
+        let summary = completed.summary.unwrap();
+
+        assert!(completed.rounds.is_none());
+        assert_eq!(summary.mode, GameMode::Deathmatch);
+        assert_eq!(summary.stats.kills, 25);
+        assert_eq!(summary.stats.deaths, 20);
+        assert_eq!(summary.stats.assists, 4);
+        assert_eq!(summary.stats.combat_score, Some(2500));
+    }
+
+    #[test]
+    fn parses_own_totals_without_retaining_roster_or_match_id() {
+        let totals = parse_own_match_totals(
+            &serde_json::json!({
+                "matchInfo": {"matchId": "private", "mapId": "/Game/Maps/Ascent/Ascent", "gameMode": "Competitive", "isCompleted": true},
+                "players": [
+                    {"subject": "other", "teamId": "Red", "stats": {"kills": 30, "deaths": 10, "assists": 2, "roundsPlayed": 20, "score": 5000}},
+                    {"subject": "me", "teamId": "Blue", "characterId": "8e253930-4c05-31dd-1b6c-968525494517", "stats": {"kills": 20, "deaths": 15, "assists": 5, "roundsPlayed": 20, "score": 4000}}
+                ],
+                "teams": [{"teamId": "Blue", "won": true}, {"teamId": "Red", "won": false}]
+            }),
+            "me",
+        )
+        .unwrap();
+
+        assert_eq!(totals.stats.outcome, crate::models::MatchOutcome::Win);
+        assert_eq!(totals.stats.stats.kills, 20);
+        assert_eq!(totals.stats.stats.assists, 5);
+        assert_eq!(totals.map, "Ascent");
+        assert_eq!(totals.agent, "Omen");
+    }
+
+    #[test]
     fn postmatch_source_sends_required_headers_and_normalizes_response() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -431,7 +646,7 @@ mod tests {
 
         let completed = source.fetch_completed(&request).unwrap();
 
-        assert_eq!(completed.rounds.rounds.len(), 2);
+        assert_eq!(completed.rounds.unwrap().rounds.len(), 2);
         assert_eq!(completed.own_puuid, "me");
         server.join().unwrap();
     }

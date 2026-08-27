@@ -1,8 +1,12 @@
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
+    Dashboard,
     Help,
     Doctor,
     Config(ConfigCommand),
+    History(HistoryArgs),
+    Player,
+    Stats(StatsArgs),
     Watch(WatchArgs),
 }
 
@@ -25,6 +29,28 @@ pub struct WatchArgs {
     pub interval_secs: Option<u64>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct HistoryArgs {
+    pub limit: u8,
+}
+
+impl Default for HistoryArgs {
+    fn default() -> Self {
+        Self { limit: 5 }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct StatsArgs {
+    pub limit: u8,
+}
+
+impl Default for StatsArgs {
+    fn default() -> Self {
+        Self { limit: 5 }
+    }
+}
+
 /// Parsea los argumentos de CLI sin efectos secundarios (sin `process::exit`).
 /// `args` corresponde a `env::args().skip(1)` ya colectado.
 pub fn parse(args: &[String]) -> Result<Command, String> {
@@ -42,6 +68,12 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
         }
         return Ok(Command::Doctor);
     }
+    if matches!(command, "dashboard" | "tui") {
+        if let Some(option) = iter.next() {
+            return Err(format!("Opción desconocida: {option}"));
+        }
+        return Ok(Command::Dashboard);
+    }
     if command == "config" {
         let Some(subcommand) = iter.next() else {
             return Err("Uso: vtracker config show|validate".into());
@@ -52,6 +84,18 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
             "edit" => parse_config_edit(&mut iter),
             _ => Err("Uso: vtracker config show|validate".into()),
         };
+    }
+    if command == "history" {
+        return parse_history(&mut iter);
+    }
+    if command == "player" {
+        if let Some(option) = iter.next() {
+            return Err(format!("Opción desconocida: {option}"));
+        }
+        return Ok(Command::Player);
+    }
+    if command == "stats" {
+        return parse_stats(&mut iter);
     }
     if command != "watch" {
         return Err(format!(
@@ -84,6 +128,52 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
         once,
         interval_secs,
     }))
+}
+
+fn parse_stats<'a>(iter: &mut impl Iterator<Item = &'a str>) -> Result<Command, String> {
+    let mut args = StatsArgs::default();
+    while let Some(arg) = iter.next() {
+        match arg {
+            "--limit" => {
+                let Some(value) = iter.next() else {
+                    return Err("--limit debe estar entre 1 y 5.".into());
+                };
+                let Ok(limit) = value.parse::<u8>() else {
+                    return Err("--limit debe estar entre 1 y 5.".into());
+                };
+                if !(1..=5).contains(&limit) {
+                    return Err("--limit debe estar entre 1 y 5.".into());
+                }
+                args.limit = limit;
+            }
+            "-h" | "--help" => return Ok(Command::Help),
+            _ => return Err(format!("Opción desconocida: {arg}")),
+        }
+    }
+    Ok(Command::Stats(args))
+}
+
+fn parse_history<'a>(iter: &mut impl Iterator<Item = &'a str>) -> Result<Command, String> {
+    let mut args = HistoryArgs::default();
+    while let Some(arg) = iter.next() {
+        match arg {
+            "--limit" => {
+                let Some(value) = iter.next() else {
+                    return Err("--limit debe estar entre 1 y 20.".into());
+                };
+                let Ok(limit) = value.parse::<u8>() else {
+                    return Err("--limit debe estar entre 1 y 20.".into());
+                };
+                if !(1..=20).contains(&limit) {
+                    return Err("--limit debe estar entre 1 y 20.".into());
+                }
+                args.limit = limit;
+            }
+            "-h" | "--help" => return Ok(Command::Help),
+            _ => return Err(format!("Opción desconocida: {arg}")),
+        }
+    }
+    Ok(Command::History(args))
 }
 
 fn parse_config_readonly<'a>(
@@ -159,6 +249,12 @@ mod tests {
     }
 
     #[test]
+    fn parses_dashboard_aliases() {
+        assert_eq!(parse(&["dashboard".into()]), Ok(Command::Dashboard));
+        assert_eq!(parse(&["tui".into()]), Ok(Command::Dashboard));
+    }
+
+    #[test]
     fn rejects_doctor_with_extra_args() {
         assert_eq!(
             parse(&s(&["doctor", "--once"])),
@@ -175,6 +271,51 @@ mod tests {
         assert_eq!(
             parse(&s(&["config", "validate"])),
             Ok(Command::Config(ConfigCommand::Validate))
+        );
+    }
+
+    #[test]
+    fn parses_history_with_safe_limit() {
+        assert_eq!(
+            parse(&s(&["history"])),
+            Ok(Command::History(HistoryArgs { limit: 5 }))
+        );
+        assert_eq!(
+            parse(&s(&["history", "--limit", "10"])),
+            Ok(Command::History(HistoryArgs { limit: 10 }))
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_history_limit() {
+        assert_eq!(
+            parse(&s(&["history", "--limit", "0"])),
+            Err("--limit debe estar entre 1 y 20.".into())
+        );
+        assert_eq!(
+            parse(&s(&["history", "--limit", "21"])),
+            Err("--limit debe estar entre 1 y 20.".into())
+        );
+    }
+
+    #[test]
+    fn parses_player_without_options() {
+        assert_eq!(parse(&s(&["player"])), Ok(Command::Player));
+        assert_eq!(
+            parse(&s(&["player", "--all"])),
+            Err("Opción desconocida: --all".into())
+        );
+    }
+
+    #[test]
+    fn parses_stats_with_bounded_limit() {
+        assert_eq!(
+            parse(&s(&["stats", "--limit", "3"])),
+            Ok(Command::Stats(StatsArgs { limit: 3 }))
+        );
+        assert_eq!(
+            parse(&s(&["stats", "--limit", "6"])),
+            Err("--limit debe estar entre 1 y 5.".into())
         );
     }
 
@@ -212,7 +353,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_command() {
-        let err = parse(&s(&["player"])).unwrap_err();
+        let err = parse(&s(&["rank"])).unwrap_err();
         assert!(err.contains("Comando no disponible"));
     }
 

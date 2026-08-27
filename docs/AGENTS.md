@@ -49,7 +49,7 @@
 | Waylay | Duelist | `df1cb487-4902-002e-5c17-d28e83e78588` |
 | Yoru | Duelist | `7f94d92c-4234-0a36-9646-3a87eb8b5c89` |
 
-> **Estrategia recomendada:** no hardcodear esta tabla en el binario. Cargarla en runtime desde `valorant-api.com` (una vez por sesión, TTL 24h en `moka`) y cachear el mapa `uuid→{nombre,rol,icono}`. Si falla la red → degradar a UUID corto. Así Miks (y el futuro Agent 30 croata) aparecen solos sin recompilar.
+> **Estrategia actual de VTracker:** la vista en vivo contiene una tabla local mínima UUID→nombre para los agentes de esta versión. No añade consultas de red durante una partida y, si llega un UUID nuevo, muestra `no disponible` en vez de adivinar. Un catálogo actualizable en runtime queda como mejora posterior.
 
 ### Forma segura (recomendada para VTracker)
 

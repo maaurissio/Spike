@@ -12,7 +12,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use base64::{Engine, engine::general_purpose::STANDARD};
+use base64::{
+    Engine,
+    engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD},
+};
 use native_tls::TlsConnector;
 use reqwest::{
     StatusCode,
@@ -25,8 +28,11 @@ use crate::{
     game::{self, GameState},
     providers::{
         capabilities::{Confidence, GamePhase, GameStateSource, ProviderError, StateInfo},
+        history::HistoryRequest,
+        live_match::LiveMatchRequest,
         lockfile::{self, Lockfile, LockfileError},
         match_detail::MatchDetailRequest,
+        profile::ProfileRequest,
     },
 };
 
@@ -40,6 +46,10 @@ const WAMP_EVENT: u8 = 8;
 const JSON_API_EVENT_TOPIC: &str = "OnJsonApiEvent";
 /// Un evento aislado no debe fijar la interfaz a una fase que ya terminó.
 const EVENT_PHASE_TTL: Duration = Duration::from_secs(15);
+/// La partida puede permanecer silenciosa en WebSocket, pero el proceso de
+/// VALORANT sigue abierto incluso después de volver al menú. Nunca usar el
+/// proceso como confirmación indefinida de `InMatch`.
+const IN_MATCH_PHASE_TTL: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LocalWsEvent {
@@ -51,7 +61,15 @@ pub(crate) struct LocalWsEvent {
 impl LocalWsEvent {
     pub(crate) fn phase_hint(&self) -> Option<GamePhase> {
         if self.uri.contains("ares-core-game/core-game/v1/matches/") {
-            Some(GamePhase::InMatch)
+            if self
+                .event_type
+                .as_deref()
+                .is_some_and(|event_type| event_type.eq_ignore_ascii_case("delete"))
+            {
+                Some(GamePhase::PostMatch)
+            } else {
+                Some(GamePhase::InMatch)
+            }
         } else if self.uri.contains("ares-pregame/pregame/v1/matches/") {
             // La representación de una partida pregame contiene la selección
             // de agente. No se inspecciona ni conserva el contenido del evento.
@@ -212,7 +230,11 @@ impl LocalClientSource {
             .as_ref()
             .is_some_and(|event| event.phase == GamePhase::InMatch)
         {
-            if game_running {
+            if game_running
+                && current
+                    .as_ref()
+                    .is_some_and(|event| event.observed_at.elapsed() <= IN_MATCH_PHASE_TTL)
+            {
                 return Some(GamePhase::InMatch);
             }
             *current = None;
@@ -250,9 +272,84 @@ impl LocalClientSource {
         self.check_health(&lockfile)?;
         let tokens = self.tokens_from(&lockfile)?;
         let sessions = self.json_from(&lockfile, EXTERNAL_SESSIONS_ENDPOINT)?;
-        let session = valorant_session_info(&sessions)?;
+        let session = valorant_session_info(
+            &sessions,
+            puuid_from_access_token(&tokens.access_token).as_deref(),
+        )?;
         Ok(MatchDetailRequest {
             match_id,
+            shard: session.shard,
+            client_version: session.client_version,
+            access_token: tokens.access_token,
+            entitlement_token: tokens.entitlement_token,
+            own_puuid: session.own_puuid,
+        })
+    }
+
+    pub(crate) fn live_match_request(&self) -> Result<LiveMatchRequest, ProviderError> {
+        let match_id = self
+            .event_match_id()
+            .ok_or_else(|| ProviderError::NotConfigured("no hay partida reciente".into()))?;
+        let lockfile = self
+            .read_lockfile()
+            .map_err(|error| ProviderError::NotConfigured(error.to_string()))?;
+        self.check_health(&lockfile)?;
+        let tokens = self.tokens_from(&lockfile)?;
+        let sessions = self.json_from(&lockfile, EXTERNAL_SESSIONS_ENDPOINT)?;
+        let session = valorant_session_info(
+            &sessions,
+            puuid_from_access_token(&tokens.access_token).as_deref(),
+        )?;
+        Ok(LiveMatchRequest {
+            match_id,
+            region: session.region,
+            shard: session.shard,
+            client_version: session.client_version,
+            access_token: tokens.access_token,
+            entitlement_token: tokens.entitlement_token,
+            own_puuid: session.own_puuid,
+        })
+    }
+
+    /// Construye una solicitud acotada para el historial del jugador autenticado.
+    /// No ejecuta red remota ni conserva los tokens al retornar.
+    pub(crate) fn history_request(&self, limit: u8) -> Result<HistoryRequest, ProviderError> {
+        if !(1..=20).contains(&limit) {
+            return Err(ProviderError::Parse("límite de historial inválido".into()));
+        }
+        let lockfile = self
+            .read_lockfile()
+            .map_err(|error| ProviderError::NotConfigured(error.to_string()))?;
+        self.check_health(&lockfile)?;
+        let tokens = self.tokens_from(&lockfile)?;
+        let sessions = self.json_from(&lockfile, EXTERNAL_SESSIONS_ENDPOINT)?;
+        let session = valorant_session_info(
+            &sessions,
+            puuid_from_access_token(&tokens.access_token).as_deref(),
+        )?;
+        Ok(HistoryRequest {
+            shard: session.shard,
+            client_version: session.client_version,
+            access_token: tokens.access_token,
+            entitlement_token: tokens.entitlement_token,
+            own_puuid: session.own_puuid,
+            limit,
+        })
+    }
+
+    /// Construye una solicitud efímera para el perfil del jugador autenticado.
+    pub(crate) fn profile_request(&self) -> Result<ProfileRequest, ProviderError> {
+        let lockfile = self
+            .read_lockfile()
+            .map_err(|error| ProviderError::NotConfigured(error.to_string()))?;
+        self.check_health(&lockfile)?;
+        let tokens = self.tokens_from(&lockfile)?;
+        let sessions = self.json_from(&lockfile, EXTERNAL_SESSIONS_ENDPOINT)?;
+        let session = valorant_session_info(
+            &sessions,
+            puuid_from_access_token(&tokens.access_token).as_deref(),
+        )?;
+        Ok(ProfileRequest {
             shard: session.shard,
             client_version: session.client_version,
             access_token: tokens.access_token,
@@ -441,11 +538,15 @@ fn optional_text(value: &Value, field: &str) -> Option<String> {
 #[derive(Debug, Eq, PartialEq)]
 struct ValorantSessionInfo {
     shard: String,
+    region: String,
     client_version: String,
     own_puuid: String,
 }
 
-fn valorant_session_info(value: &Value) -> Result<ValorantSessionInfo, ProviderError> {
+fn valorant_session_info(
+    value: &Value,
+    token_puuid: Option<&str>,
+) -> Result<ValorantSessionInfo, ProviderError> {
     let sessions = value
         .as_object()
         .ok_or_else(|| ProviderError::Parse("sesiones locales inválidas".into()))?;
@@ -471,23 +572,80 @@ fn valorant_session_info(value: &Value) -> Result<ValorantSessionInfo, ProviderE
         .filter_map(Value::as_str)
         .find_map(shard_from_argument)
         .ok_or_else(|| ProviderError::Parse("shard no informado por la sesión".into()))?;
-    let own_puuid = arguments
+    let region = arguments
         .iter()
         .filter_map(Value::as_str)
-        .find_map(|argument| argument.strip_prefix("-ares-puuid="))
-        .filter(|puuid| {
-            !puuid.is_empty()
-                && puuid
-                    .chars()
-                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
-        })
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| ProviderError::Parse("puuid no informado por la sesión".into()))?;
+        .find_map(region_from_argument)
+        .ok_or_else(|| ProviderError::Parse("región no informada por la sesión".into()))?;
+    let own_puuid = argument_value(
+        arguments,
+        &["-ares-puuid", "--ares-puuid", "-ares-player-uuid"],
+    )
+    .or_else(|| {
+        ["puuid", "subject", "userId"]
+            .iter()
+            .find_map(|field| session.get(*field).and_then(Value::as_str))
+    })
+    .or(token_puuid)
+    .filter(|puuid| {
+        !puuid.is_empty()
+            && puuid
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    })
+    .map(ToOwned::to_owned)
+    .ok_or_else(|| ProviderError::Parse("puuid no informado por la sesión".into()))?;
     Ok(ValorantSessionInfo {
         shard,
+        region,
         client_version,
         own_puuid,
     })
+}
+
+/// Obtiene el `sub` del JWT emitido por el cliente local. Es un respaldo para
+/// versiones que no incluyen el PUUID en la configuración de lanzamiento.
+/// El token, su payload y el PUUID nunca salen de esta función ni se registran.
+fn puuid_from_access_token(access_token: &str) -> Option<String> {
+    let payload = access_token.split('.').nth(1)?;
+    let bytes = URL_SAFE_NO_PAD
+        .decode(payload)
+        .or_else(|_| URL_SAFE.decode(payload))
+        .ok()?;
+    let claims: Value = serde_json::from_slice(&bytes).ok()?;
+    claims.get("sub")?.as_str().map(ToOwned::to_owned)
+}
+
+/// Acepta `-clave=valor` y el formato equivalente `-clave valor`. El valor
+/// queda en memoria y nunca se incluye en diagnósticos ni mensajes de error.
+fn argument_value<'a>(arguments: &'a [Value], names: &[&str]) -> Option<&'a str> {
+    let values = arguments
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    for (index, argument) in values.iter().enumerate() {
+        for name in names {
+            if let Some(value) = argument.strip_prefix(&format!("{name}=")) {
+                return Some(value);
+            }
+            if argument.eq_ignore_ascii_case(name) {
+                return values.get(index + 1).copied();
+            }
+        }
+    }
+    None
+}
+
+fn region_from_argument(argument: &str) -> Option<String> {
+    let value = argument
+        .strip_prefix("-ares-deployment=")
+        .or_else(|| argument.strip_prefix("-ares-region="))?
+        .to_ascii_lowercase();
+    match value.as_str() {
+        "na" | "latam" | "br" | "eu" | "ap" | "kr" => Some(value),
+        "la1" | "la2" => Some("latam".into()),
+        _ => None,
+    }
 }
 
 fn shard_from_argument(argument: &str) -> Option<String> {
@@ -739,6 +897,17 @@ mod tests {
     }
 
     #[test]
+    fn deleting_current_match_maps_to_postmatch() {
+        let event = parse_wamp_event(
+            r#"[8,"OnJsonApiEvent",{"uri":"/riot-messaging-service/v1/message/ares-core-game/core-game/v1/matches/id","eventType":"Delete","data":{"ignored":"payload"}}]"#,
+        )
+        .unwrap();
+
+        assert_eq!(event.phase_hint(), Some(GamePhase::PostMatch));
+        assert_eq!(event.match_id().as_deref(), Some("id"));
+    }
+
+    #[test]
     fn generic_pregame_events_remain_pregame() {
         let event = parse_wamp_event(
             r#"[8,"OnJsonApiEvent",{"uri":"/riot-messaging-service/v1/message/ares-pregame/pregame/v1/queues","eventType":"Update","data":{}}]"#,
@@ -798,12 +967,51 @@ mod tests {
                 "version": "1.2.3",
                 "launchConfiguration": {"arguments": ["-ares-deployment=la2", "-ares-puuid=player-1"]}
             }
-        }))
+        }), None)
         .unwrap();
 
         assert_eq!(info.shard, "na");
+        assert_eq!(info.region, "latam");
         assert_eq!(info.client_version, "1.2.3");
         assert_eq!(info.own_puuid, "player-1");
+    }
+
+    #[test]
+    fn accepts_puuid_as_a_separate_session_argument() {
+        let info = valorant_session_info(&serde_json::json!({
+            "session": {
+                "productId": "valorant",
+                "version": "1.2.3",
+                "launchConfiguration": {"arguments": ["-ares-deployment=la2", "-ares-puuid", "player-1"]}
+            }
+        }), None)
+        .unwrap();
+
+        assert_eq!(info.own_puuid, "player-1");
+    }
+
+    #[test]
+    fn falls_back_to_puuid_from_access_token_subject() {
+        let token_payload = URL_SAFE_NO_PAD.encode(r#"{"sub":"player-1"}"#);
+        let access_token = format!("header.{token_payload}.signature");
+        let info = valorant_session_info(
+            &serde_json::json!({
+                "session": {
+                    "productId": "valorant",
+                    "version": "1.2.3",
+                    "launchConfiguration": {"arguments": ["-ares-deployment=la2"]}
+                }
+            }),
+            puuid_from_access_token(&access_token).as_deref(),
+        )
+        .unwrap();
+
+        assert_eq!(info.own_puuid, "player-1");
+    }
+
+    #[test]
+    fn rejects_malformed_access_token_without_exposing_it() {
+        assert_eq!(puuid_from_access_token("not-a-jwt"), None);
     }
 
     #[test]
@@ -819,5 +1027,19 @@ mod tests {
 
         assert_eq!(source.event_phase(true), Some(GamePhase::InMatch));
         assert_eq!(source.event_phase(false), None);
+    }
+
+    #[test]
+    fn in_match_phase_expires_even_if_game_process_remains_open() {
+        let source = LocalClientSource::with_lockfile_path(Some(PathBuf::from("unused")));
+        if let Ok(mut phase) = source.event_phase.lock() {
+            *phase = Some(EventPhase {
+                phase: GamePhase::InMatch,
+                observed_at: Instant::now() - IN_MATCH_PHASE_TTL - Duration::from_secs(1),
+                match_id: None,
+            });
+        }
+
+        assert_eq!(source.event_phase(true), None);
     }
 }

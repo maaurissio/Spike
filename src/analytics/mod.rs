@@ -1,6 +1,8 @@
 //! Métricas reproducibles calculadas sobre los modelos normalizados.
 #![allow(dead_code)] // La TUI consumirá estos resultados en la fase de historial.
 
+use std::collections::BTreeMap;
+
 use crate::models::{MatchOutcome, PlayerMatch, PlayerMatchStats};
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -18,6 +20,12 @@ pub struct PerformanceSummary {
     pub hs_percent: Option<f32>,
     pub adr: Option<f32>,
     pub acs: Option<f32>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CategorySummary {
+    pub label: String,
+    pub summary: PerformanceSummary,
 }
 
 pub fn summarize(matches: &[PlayerMatch]) -> PerformanceSummary {
@@ -58,6 +66,24 @@ pub fn summarize(matches: &[PlayerMatch]) -> PerformanceSummary {
     summary.adr = total_damage.and_then(|damage| ratio(damage, rounds_played));
     summary.acs = total_score.and_then(|score| ratio(score, rounds_played));
     summary
+}
+
+/// Agrega partidas propias por una categoría ya normalizada (por ejemplo modo).
+pub fn summarize_by_category(matches: &[(String, PlayerMatch)]) -> Vec<CategorySummary> {
+    let mut groups = BTreeMap::<String, Vec<PlayerMatch>>::new();
+    for (label, player_match) in matches {
+        groups
+            .entry(label.clone())
+            .or_default()
+            .push(player_match.clone());
+    }
+    groups
+        .into_iter()
+        .map(|(label, matches)| CategorySummary {
+            label,
+            summary: summarize(&matches),
+        })
+        .collect()
 }
 
 fn add_optional(total: &mut Option<u32>, next: Option<u32>) {
@@ -161,5 +187,49 @@ mod tests {
         ]);
         assert_eq!(result.draws, 1);
         assert_eq!(result.win_rate, Some(0.5));
+    }
+
+    #[test]
+    fn groups_own_matches_by_category() {
+        let result = summarize_by_category(&[
+            (
+                "competitivo".into(),
+                match_with(
+                    MatchOutcome::Win,
+                    PlayerMatchStats {
+                        kills: 10,
+                        deaths: 5,
+                        ..Default::default()
+                    },
+                ),
+            ),
+            (
+                "competitivo".into(),
+                match_with(
+                    MatchOutcome::Loss,
+                    PlayerMatchStats {
+                        kills: 5,
+                        deaths: 10,
+                        ..Default::default()
+                    },
+                ),
+            ),
+            (
+                "deathmatch".into(),
+                match_with(
+                    MatchOutcome::Unknown,
+                    PlayerMatchStats {
+                        kills: 20,
+                        deaths: 15,
+                        ..Default::default()
+                    },
+                ),
+            ),
+        ]);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].label, "competitivo");
+        assert_eq!(result[0].summary.matches, 2);
+        assert_eq!(result[1].label, "deathmatch");
     }
 }
