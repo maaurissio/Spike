@@ -26,6 +26,8 @@ Sus objetivos son:
 
 **Pendiente:** Riot ha restringido casos de *scouting* previo de oponentes. Antes de definir una función pública de análisis de rivales, hay que confirmar que el caso de uso, permisos y consentimiento requerido estén permitidos. La primera versión debe centrarse en datos propios, de sesión y/o explícitamente autorizados.
 
+**Flujo de secretos:** el password efímero del lockfile se lee únicamente para autenticar una petición al loopback `127.0.0.1`; los tokens derivados quedan solo en memoria del proceso y se descartan al cerrar o renovar la sesión. Nunca se escriben en `config.toml`, caché, logs o mensajes de `doctor`. `RIOT_API_KEY`, si se usa en una mejora oficial futura, vive solo en una variable de entorno o `.env` ignorado por Git.
+
 ## 2. Decisiones principales
 
 | Tema | Decisión | Motivo |
@@ -512,7 +514,7 @@ Verificado contra `valapidocs.techchrism.me` (documentación de la API interna d
 
 **Decisión de producto:** el tracker de rondas se actualiza **al terminar la partida** (tabla `Ronda | Resultado | Kills | ¿Moriste?`); si `match-details` llegara a responder a mitad de partida se muestra progreso incremental, con degradación elegante si responde 404. No se implementa OCR ni lectura de memoria.
 
-**Autenticación local:** lockfile `name:pid:port:password:protocol` → Basic Auth `riot:{password}` (certificado self-signed) → `/entitlements-token` → bearer + entitlement JWT para GLZ/PD. El password nunca se persiste ni loguea.
+**Autenticación local:** lockfile `name:pid:port:password:protocol` → Basic Auth `riot:{password}` (certificado self-signed) → `/entitlements/v1/token` → bearer + entitlement JWT para GLZ/PD. El password nunca se persiste ni loguea.
 
 ## 21. Buenas prácticas y referencias aplicadas (2026)
 

@@ -67,6 +67,6 @@ pub fn draw_watch(watcher: &Watcher, info: &StateInfo, started: Instant, interac
 }
 pub fn print_help() {
     println!(
-        "vtracker {VERSION}\n\nUSO:\n  vtracker watch [--once] [--interval SEGUNDOS]\n  vtracker doctor\n\nVARIABLES:\n  VTRACKER_STATE=closed|idle|game  Simula un estado para pruebas."
+        "vtracker {VERSION}\n\nUSO:\n  vtracker watch [--once] [--interval SEGUNDOS]\n  vtracker doctor\n  vtracker config show|validate\n  vtracker config edit [--interval SEGUNDOS] [--log-transitions true|false]\n\nVARIABLES:\n  VTRACKER_STATE=closed|idle|game  Simula un estado para pruebas."
     );
 }

@@ -5,7 +5,8 @@ use crate::{
     config::{Config, config_path},
     game::{detect, process_list},
     providers::{
-        capabilities::{CONFIDENCE_LEVELS, FINE_GRAINED_PHASES},
+        GameStateSource, LocalClientSource, ProviderError, StateInfo,
+        capabilities::{CONFIDENCE_LEVELS, FINE_GRAINED_PHASES, GamePhase},
         lockfile,
     },
 };
@@ -69,6 +70,7 @@ pub(crate) fn build_report_inner(simulation_active: bool) -> String {
         }
     );
     write_lockfile_status(&mut out);
+    write_local_source_status(&mut out);
     let _ = writeln!(
         out,
         "Fases finas     {} planificadas para proveedor local autorizado",
@@ -132,6 +134,69 @@ fn write_lockfile_status(out: &mut String) {
         }
         Err(error) => {
             let _ = writeln!(out, "Lockfile API    {error}");
+        }
+    }
+}
+
+fn write_local_source_status(out: &mut String) {
+    let source = LocalClientSource::new();
+    let result = source.fetch();
+    let client_open = result
+        .as_ref()
+        .is_ok_and(|info| info.phase != GamePhase::ClientClosed);
+    write_local_source_result(out, result);
+    if client_open {
+        match source.inspect_api() {
+            Ok(info) => {
+                let _ = writeln!(
+                    out,
+                    "API local      entitlements={} sesiones={} región={} locale={}",
+                    if info.entitlements_available {
+                        "válidos"
+                    } else {
+                        "ausentes"
+                    },
+                    if info.external_sessions_available {
+                        "válidas"
+                    } else {
+                        "ausentes"
+                    },
+                    info.region.as_deref().unwrap_or("no informado"),
+                    info.locale.as_deref().unwrap_or("no informado"),
+                );
+            }
+            Err(error) => {
+                let _ = writeln!(out, "API local      endpoints base no verificados: {error}");
+            }
+        }
+        match source.validate_websocket() {
+            Ok(()) => {
+                let _ = writeln!(
+                    out,
+                    "WebSocket local handshake WAMP y suscripción validados"
+                );
+            }
+            Err(error) => {
+                let _ = writeln!(out, "WebSocket local no verificado: {error}");
+            }
+        }
+    }
+}
+
+fn write_local_source_result(out: &mut String, result: Result<StateInfo, ProviderError>) {
+    match result {
+        Ok(info) if info.phase == GamePhase::ClientClosed => {
+            let _ = writeln!(out, "Proveedor local cliente cerrado (sin petición HTTP)");
+        }
+        Ok(info) => {
+            let _ = writeln!(
+                out,
+                "Proveedor local correcto: fase={} confianza={}",
+                info.phase, info.confidence
+            );
+        }
+        Err(error) => {
+            let _ = writeln!(out, "Proveedor local no disponible: {error}");
         }
     }
 }
@@ -209,6 +274,43 @@ mod tests {
         let mut report = String::new();
         write_detector_result(&mut report, true);
         assert!(report.contains("No puede distinguir lobby"));
+    }
+
+    #[test]
+    fn local_provider_result_is_human_readable() {
+        let mut report = String::new();
+        write_local_source_result(
+            &mut report,
+            Ok(StateInfo::new(
+                GamePhase::Idle,
+                crate::game::GameState::Idle,
+                crate::providers::capabilities::Confidence::High,
+                "local-client",
+                true,
+                false,
+            )),
+        );
+        assert!(report.contains("Proveedor local correcto"));
+        assert!(report.contains("Cliente disponible"));
+        assert!(!report.contains("password"));
+    }
+
+    #[test]
+    fn local_provider_closed_does_not_count_as_an_error() {
+        let mut report = String::new();
+        write_local_source_result(
+            &mut report,
+            Ok(StateInfo::new(
+                GamePhase::ClientClosed,
+                crate::game::GameState::ClientClosed,
+                crate::providers::capabilities::Confidence::High,
+                "local-client",
+                false,
+                false,
+            )),
+        );
+        assert!(report.contains("cliente cerrado"));
+        assert!(!report.contains("no disponible"));
     }
 
     #[test]

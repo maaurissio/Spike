@@ -37,7 +37,7 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 - [x] Proteger secretos en repo: `.env` en `.gitignore` (`/.gitignore:4`), `.env.example` como plantilla y `config.example.toml` documentado sin secretos.
 - [x] **Lockfile:** leer `%LocalAppData%\Riot Games\Riot Client\Config\lockfile` (`name:pid:port:password:protocol`); password **solo en memoria**, nunca logueado ni persistido (`doctor` muestra solo `auth=presente/ausente`).
 - [ ] `RIOT_API_KEY` en `.env` queda **opcional** (solo para mejoras con API oficial futura).
-- [ ] Documentar flujo de secretos en `README.md` y `Arquitectura-inicial.md:10` (límites de producto y cumplimiento; solo-lectura, sin inyección ni memoria).
+- [x] Documentar flujo de secretos en `README.md` y `Arquitectura-inicial.md` (límites de producto y cumplimiento; solo-lectura, sin inyección ni memoria).
 
 ### 2B — Diseño de proveedores (hecho para interfaces; fuentes locales siguientes)
 
@@ -51,18 +51,20 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 ### 2C — Implementación Local Client (nueva ruta, sin API key)
 
 - [x] **`src/providers/lockfile.rs`:** parsear lockfile (puerto/password), con tests sobre contenido simulado.
-- [ ] **`src/providers/local.rs` (`LocalClientSource`):** implementa `GameStateSource` — detecta fase real vía endpoints locales (`/help`, sessions) y WebSocket (`wss://127.0.0.1:{port}`) para transiciones `Lobby→PreGame→AgentSelect→InMatch→PostMatch` event-driven (sin polling).
+- [x] **`src/providers/local.rs` (`LocalClientSource`, base):** implementa `GameStateSource`, lee el lockfile, valida `/help`, entitlements, sesión externa y región/locale con Basic Auth en memoria; usa HTTPS local con timeout y degrada al detector de procesos sin exponer secretos.
+- [x] **WebSocket local (contrato):** handshake TLS, subprotocolo WAMP y suscripción `OnJsonApiEvent` verificados contra un cliente VALORANT real el 2026-08-26, sin guardar payloads ni credenciales.
+- [ ] **`LocalClientSource` (fases reales):** consumir el stream persistente y mapear eventos observados a transiciones `Lobby→PreGame→AgentSelect→InMatch→PostMatch` event-driven (sin polling).
 - [ ] **Capability `LiveMatchSource`:** `Pre-Game Match` y `Current Game Match` (GLZ) → roster con ranks/nivel/agente de las 10 personas (incluye perfiles privados) para stats de equipo en Agent Select/partida.
 - [ ] **Capability `MatchDetailSource`:** `pd.{shard}.a.pvp.net/match-details/v1/matches/{id}` post-partida → `roundResults[]` con kills/deaths/resultado **por ronda** (desglose completo en `PostMatch`/`History`). Opcional: intentar polling durante partida y degradar con elegancia si aún no está disponible.
 - [ ] **Capability `PlayerProfileSource`:** perfil propio + historial (`match-history`, `competitive-updates`, `mmr`) con tokens locales.
-- [ ] Extender `vtracker doctor` para validar lockfile + local API + proveedor, sin exponer secretos.
+- [x] Extender `vtracker doctor` para validar lockfile + salud de la Local Client API/proveedor, sin exponer secretos.
 - [ ] API oficial Riot (`RIOT_API_KEY`) queda como mejora opcional posterior (leaderboards, contenido); no bloquea nada.
 
 ## Prioridad 3 — Datos propios e historial + Experiencia por fase
 
-- [ ] Definir modelos normalizados de jugador, partida, **ronda** (`Round { round_num, winning_team, round_result, players: Vec<PlayerRoundStat { puuid, kills, deaths, score, damage }> }`) y resultado.
+- [x] Definir modelos normalizados de jugador, partida, **ronda** (`src/models/mod.rs`: `Round`, `PlayerRoundStat`, `MatchRounds`, outcome y totales oficiales) con validación de secuencia/modo.
 - [ ] Implementar una capa de providers por capacidades: perfil, historial, detalle de partida y rondas.
-- [ ] Implementar caché L1 en memoria con TTL (`moka`/`cache-rs` TinyLFU/LRU; ver `docs/PERFORMANCE.md:2.2` — TTLs 10s-900s, `get_with` anti-stampede).
+- [x] Implementar caché L1 en memoria con TTL (`src/cache/mod.rs`, `moka` TinyLFU/LRU; capacidad acotada, `get_with` anti-stampede, sin persistir secretos).
 - [ ] Implementar caché L2 en disco con versión de esquema y expiración (solo si aporta valor; v1 puede ser solo RAM).
 - [ ] Centralizar solicitudes con timeout, deduplicación y reintentos seguros (Requests Manager `dedupe`/backoff/bounded channels).
 - [ ] Añadir el comando `vtracker history` para consultar el historial propio (tokens locales).
@@ -73,12 +75,12 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 
 ## Prioridad 4 — Estadísticas
 
-- [ ] Crear el módulo `analytics` separado de providers y UI.
-- [ ] Calcular K/D, KDA y win rate a partir de datos normalizados.
-- [ ] Calcular HS%, ADR y ACS solo cuando la fuente entregue los campos necesarios.
+- [x] Crear el módulo `analytics` separado de providers y UI.
+- [x] Calcular K/D, KDA y win rate a partir de datos normalizados.
+- [x] Calcular HS%, ADR y ACS solo cuando la fuente entregue los campos necesarios.
 - [ ] Documentar tratamiento de empates, abandonos, overtime y modos no competitivos.
 - [ ] Añadir desgloses por agente, mapa, modo y últimas N partidas.
-- [ ] Cubrir las fórmulas con fixtures y pruebas reproducibles.
+- [x] Cubrir las fórmulas con fixtures y pruebas reproducibles.
 
 ## Prioridad 5 — TUI completa + Apartado Configuración
 
@@ -88,7 +90,7 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 - [ ] Crear Dashboard con estado, salud de fuentes y resumen de sesión (perfil propio destacado).
 - [ ] Crear vistas Match, Player, History y **Settings (Configuración)**.
 - [ ] **Settings debe permitir:** ver/editar `config.toml` (intervalo, `log_transitions`, `profile.riot_id`, `profile.region`, `autostart.enabled/minimized`), gestionar `.env` (solo estado `***`/`no configurada`), TTL de caché y apariencia.
-- [ ] Añadir `vtracker config show|edit|validate` y persistencia atómica de `config.toml`.
+- [x] Añadir `vtracker config show|edit|validate` y persistencia atómica de `config.toml`, sin mostrar secretos.
 - [ ] Añadir navegación por teclado, ayuda y estados de carga/error.
 - [ ] Adaptar layouts a terminales pequeñas y grandes.
 - [ ] Mantener I/O y cálculos fuera del renderizado; UI solo consume `AppState`.

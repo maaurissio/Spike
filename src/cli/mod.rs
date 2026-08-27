@@ -2,7 +2,21 @@
 pub enum Command {
     Help,
     Doctor,
+    Config(ConfigCommand),
     Watch(WatchArgs),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ConfigCommand {
+    Show,
+    Validate,
+    Edit(ConfigEditArgs),
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ConfigEditArgs {
+    pub interval_secs: Option<u64>,
+    pub log_transitions: Option<bool>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -27,6 +41,17 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
             return Err(format!("Opción desconocida: {option}"));
         }
         return Ok(Command::Doctor);
+    }
+    if command == "config" {
+        let Some(subcommand) = iter.next() else {
+            return Err("Uso: vtracker config show|validate".into());
+        };
+        return match subcommand {
+            "show" => parse_config_readonly(&mut iter, ConfigCommand::Show),
+            "validate" => parse_config_readonly(&mut iter, ConfigCommand::Validate),
+            "edit" => parse_config_edit(&mut iter),
+            _ => Err("Uso: vtracker config show|validate".into()),
+        };
     }
     if command != "watch" {
         return Err(format!(
@@ -61,6 +86,53 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     }))
 }
 
+fn parse_config_readonly<'a>(
+    iter: &mut impl Iterator<Item = &'a str>,
+    command: ConfigCommand,
+) -> Result<Command, String> {
+    if let Some(option) = iter.next() {
+        return Err(format!("Opción desconocida: {option}"));
+    }
+    Ok(Command::Config(command))
+}
+
+fn parse_config_edit<'a>(iter: &mut impl Iterator<Item = &'a str>) -> Result<Command, String> {
+    let mut edit = ConfigEditArgs::default();
+    while let Some(arg) = iter.next() {
+        match arg {
+            "--interval" => {
+                let Some(value) = iter.next() else {
+                    return Err("--interval debe estar entre 1 y 60 segundos.".into());
+                };
+                let Ok(seconds) = value.parse::<u64>() else {
+                    return Err("--interval debe estar entre 1 y 60 segundos.".into());
+                };
+                if !(1..=60).contains(&seconds) {
+                    return Err("--interval debe estar entre 1 y 60 segundos.".into());
+                }
+                edit.interval_secs = Some(seconds);
+            }
+            "--log-transitions" => {
+                let Some(value) = iter.next() else {
+                    return Err("--log-transitions debe ser true o false.".into());
+                };
+                edit.log_transitions = Some(
+                    value
+                        .parse::<bool>()
+                        .map_err(|_| "--log-transitions debe ser true o false.")?,
+                );
+            }
+            _ => return Err(format!("Opción desconocida: {arg}")),
+        }
+    }
+    if edit.interval_secs.is_none() && edit.log_transitions.is_none() {
+        return Err(
+            "Uso: vtracker config edit --interval SEGUNDOS|--log-transitions true|false".into(),
+        );
+    }
+    Ok(Command::Config(ConfigCommand::Edit(edit)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,6 +163,50 @@ mod tests {
         assert_eq!(
             parse(&s(&["doctor", "--once"])),
             Err("Opción desconocida: --once".into())
+        );
+    }
+
+    #[test]
+    fn parses_config_subcommands() {
+        assert_eq!(
+            parse(&s(&["config", "show"])),
+            Ok(Command::Config(ConfigCommand::Show))
+        );
+        assert_eq!(
+            parse(&s(&["config", "validate"])),
+            Ok(Command::Config(ConfigCommand::Validate))
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_config_subcommands() {
+        assert_eq!(
+            parse(&s(&["config"])),
+            Err("Uso: vtracker config show|validate".into())
+        );
+        assert_eq!(
+            parse(&s(&["config", "edit"])),
+            Err(
+                "Uso: vtracker config edit --interval SEGUNDOS|--log-transitions true|false".into()
+            )
+        );
+    }
+
+    #[test]
+    fn parses_config_edit_values() {
+        assert_eq!(
+            parse(&s(&[
+                "config",
+                "edit",
+                "--interval",
+                "5",
+                "--log-transitions",
+                "true"
+            ])),
+            Ok(Command::Config(ConfigCommand::Edit(ConfigEditArgs {
+                interval_secs: Some(5),
+                log_transitions: Some(true),
+            })))
         );
     }
 

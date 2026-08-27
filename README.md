@@ -4,7 +4,7 @@
 
 VTracker es una aplicación de terminal para observar el estado de VALORANT, consultar datos autorizados de partidas y jugadores, y presentar estadísticas de forma rápida y con bajo consumo de recursos.
 
-El proyecto incluye un MVP de `watch`: detecta de forma no invasiva los procesos locales del cliente/juego y presenta el estado en terminal. No consulta APIs ni accede a memoria.
+El proyecto incluye un MVP de `watch`: detecta de forma no invasiva los procesos locales del cliente/juego y presenta el estado en terminal. Si Riot Client está abierto, comprueba su API local en `127.0.0.1` usando el lockfile; no accede a memoria ni automatiza el juego.
 
 ## MVP: `watch`
 
@@ -259,7 +259,8 @@ La interfaz debe adaptarse a terminales pequeñas y grandes, sin depender de una
 ```text
 vtracker watch [--once] [--interval SEGUNDOS]   # modo live (MVP actual)
 vtracker doctor                                  # diagnóstico local + providers (sin exponer secretos)
-vtracker config show|edit|validate              # ver/editar/validar %APPDATA%\vtracker\config.toml
+vtracker config show|validate                   # ver/validar %APPDATA%\vtracker\config.toml
+vtracker config edit --interval 5 --log-transitions true  # cambio atómico y explícito
 vtracker autostart enable|disable|status        # gestionar inicio automático (requiere consentimiento)
 vtracker player <riot-id>                       # perfil autorizado (requiere RSO/opt-in)
 vtracker match [id]                              # detalle de partida
@@ -278,7 +279,7 @@ vtracker cache <subcomando>                      # inspeccionar/limpiar caché L
 
 ## Estado actual y conformidad
 
-MVP local y Prioridad 1 completados (58 tests, tabla de procesos, `doctor` testeable, `.env` protegido, `GameStateSource` desacoplado con `Process`/`Mock` y `resolve_with_fallback`). **Agilizado:** la fuente primaria será la **Local Client API** (lockfile + WebSocket + GLZ/PD) — fases reales en vivo, roster, perfil, historial y rondas post-partida **sin API key ni RSO**. Siguiente: `src/providers/lockfile.rs` → `LocalClientSource`. Nombre `VTracker` temporal hasta release.
+MVP local y Prioridad 1 completados (86 tests, tabla de procesos, `doctor` testeable, `.env` protegido, `GameStateSource` desacoplado con `Process`/`Mock` y fallback). **Implementado:** `LocalClientSource` lee el lockfile y valida `GET /help`, entitlements, sesión externa, región/locale y el handshake/suscripción WAMP, exclusivamente en `127.0.0.1`; los tokens nunca se imprimen ni persisten. Los modelos de rondas y `analytics` ya calculan K/D, KDA, win rate, HS%, ADR y ACS con datos normalizados. **Siguiente:** conectar el stream WAMP persistente para habilitar fases finas; después GLZ/PD para roster, historial y rondas post-partida. Nombre `VTracker` temporal hasta release.
 
 **Compromiso ISO:** se adoptan principios **ISO 9001 (Calidad) + ISO 14001 (Ambiental) + ISO 27001 (Seguridad)** como sistema integrado PHVA desde el inicio (ver `docs/ISO.md` y `Arquitectura-inicial.md:21`). No es burocracia vacía: tests + `clippy`/`fmt` (calidad), `cargo` eficiente + caché (ambiental), `.env` + `doctor` enmascarado + RSO (seguridad). Certificación formal opcional a medio plazo.
 

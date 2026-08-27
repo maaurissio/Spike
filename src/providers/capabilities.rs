@@ -106,7 +106,6 @@ pub enum ProviderError {
     Unknown(String),
 }
 
-#[cfg(test)]
 impl ProviderError {
     pub fn is_retryable(&self) -> bool {
         matches!(
@@ -115,6 +114,7 @@ impl ProviderError {
         )
     }
 
+    #[cfg(test)]
     pub fn is_auth_failure(&self) -> bool {
         matches!(self, Self::Unauthorized(_))
     }
