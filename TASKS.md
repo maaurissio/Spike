@@ -4,6 +4,8 @@
 
 Este documento ordena el trabajo restante. Las integraciones con Riot u otros proveedores solo se implementarán después de confirmar permisos, términos de uso y límites aplicables.
 
+> **Requisito principal confirmado (2026-08-28, ADR-011):** mostrar aliados y enemigos de la partida (diez jugadores en 5v5) con rangos y estadísticas disponibles y permitidos. La implementación de datos propios es una base parcial, no el alcance final. No considerar cumplido el objetivo principal hasta implementar y validar el roster.
+
 ## Hecho: MVP local
 
 - [x] Crear proyecto Rust y documentación de arquitectura.
@@ -55,14 +57,16 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 - [x] **WebSocket local (contrato):** handshake TLS, subprotocolo WAMP y suscripción `OnJsonApiEvent` verificados contra un cliente VALORANT real el 2026-08-26, sin guardar payloads ni credenciales.
 - [x] **`LocalClientSource` (stream):** consumir `OnJsonApiEvent` en un listener persistente de solo lectura; los payloads se descartan y solo URIs inequívocas actualizan estado.
 - [ ] **`LocalClientSource` (fases reales):** observar y validar las URIs de transición para completar el mapeo `Lobby→PreGame→AgentSelect→InMatch→PostMatch` event-driven (sin polling). El listener ya expira la fase tras 15 s sin evento para evitar estados obsoletos.
-- [x] **Capability `LiveMatchSource` (partida):** tras el evento local `InMatch`, realiza un único `GET` a `Current Game Match` (GLZ) y muestra únicamente modo, mapa y agente propio. El roster, ranks y perfiles de otras personas no se consultan ni se muestran.
+- [x] **Capability `LiveMatchSource` (base parcial):** tras el evento local `InMatch`, realiza un único `GET` a `Current Game Match` (GLZ) y muestra modo, mapa y agente propio. El roster y las estadísticas de otros jugadores siguen pendientes; esta base no cumple aún el requisito principal.
+- [ ] **Validación del roster (ADR-011):** documentar por fuente y fase los campos disponibles, permisos, consentimiento y restricciones antes de consultar datos de terceros. No asumir que los tokens locales autorizan su presentación.
+- [ ] **Modelo y proveedor de roster:** normalizar aliados/enemigos y sus agentes; incorporar rangos y estadísticas históricas solo desde fuentes validadas, con estados explícitos de datos ocultos o no disponibles.
 - [x] **Capability `MatchDetailSource`:** al entrar a `PostMatch`, usa el ID de una URI local reciente y ejecuta un único `GET` a `pd.{shard}.a.pvp.net/match-details/v1/matches/{id}` con tokens efímeros; normaliza rondas de los modos compatibles y, en Deathmatch/Team Deathmatch/Escalation, extrae únicamente el resumen propio K/D/A y puntos. No imprime secretos/IDs ni hace polling durante partida.
 - [x] **Capability `PlayerProfileSource`:** `account-xp` y `mmr` para el jugador autenticado muestran nivel, XP, rango, RR y récord competitivo de la temporada activa. La fuente valida que `Subject` coincida con el PUUID local y no retiene IDs de partidas.
 - [x] **Cambios competitivos propios:** `competitive-updates` muestra hasta las cinco variaciones recientes de RR y bono de rendimiento desde `vtracker player`, descartando MatchID antes de la UI.
 - [x] Extender `vtracker doctor` para validar lockfile + salud de la Local Client API/proveedor, sin exponer secretos.
 - [ ] API oficial Riot (`RIOT_API_KEY`) queda como mejora opcional posterior (leaderboards, contenido); no bloquea nada.
 
-## Prioridad 3 — Datos propios e historial + Experiencia por fase
+## Prioridad 3 — Roster, perfil e historial + Experiencia por fase
 
 - [x] Definir modelos normalizados de jugador, partida, **ronda** (`src/models/mod.rs`: `Round`, `PlayerRoundStat`, `MatchRounds`, outcome y totales oficiales) con validación de secuencia/modo.
 - [x] Implementar la capa base de providers por capacidades: perfil básico, historial propio, detalle de partida y rondas.
@@ -72,8 +76,9 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 - [x] Añadir `vtracker history [--limit 1..20]`: una única consulta de historial propio que muestra modo y antigüedad, sin IDs de partidas.
 - [x] **Flujo perfil básico:** al detectar `Idle`, muestra nivel y XP propios; la caché L1 conserva el último perfil durante 60 s si una consulta falla.
 - [ ] **Flujo perfil ampliado:** añadir estadísticas agregadas y snapshot competitivo al perfil cacheado de `watch`.
-- [ ] **Flujo equipo:** queda fuera del MVP de privacidad actual; no se consultarán ni mostrarán ranks/WR del resto de jugadores.
-- [x] **Flujo partida:** al detectar `InMatch`, mostrar contexto propio de modo, mapa y agente en vivo. La composición completa queda fuera de alcance.
+- [ ] **Flujo equipo y enemigos (principal):** mostrar los diez jugadores en partidas 5v5, sus agentes, rangos y estadísticas históricas disponibles y permitidos; en selección de agente, mostrar solo lo que la fuente validada permita conocer en esa fase. Respetar identidades ocultas y no inventar datos faltantes.
+- [x] **Flujo partida (base parcial):** al detectar `InMatch`, mostrar contexto propio de modo, mapa y agente en vivo. Falta ampliar la vista al roster de aliados y enemigos.
+- [ ] **Verificación del requisito principal:** pruebas de equipos, campos ausentes y privacidad, más validación en partida real. Diferenciar estadísticas históricas de estadísticas de la partida en curso.
 - [x] **Flujo rondas postpartida:** al terminar la partida, mostrar kills/muertes propias por ronda — tabla `Ronda | Resultado | Kills | Muertes` desde `MatchDetailSource`, sin mostrar IDs ni datos de otros jugadores. El timeline en vivo por frontera de ronda queda pendiente.
 
 ## Prioridad 4 — Estadísticas
@@ -94,6 +99,8 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 - [x] Añadir Ratatui y Crossterm con un dashboard inicial, navegación por teclado y dirty-flag (sin I/O durante render).
 - [ ] Crear Dashboard con estado, salud de fuentes y resumen de sesión (perfil propio destacado).
 - [ ] Crear vistas Match, Player, History y **Settings (Configuración)**.
+- [ ] Llevar a la TUI el timeline compacto solicitado: tres filas de cantidades (`1K/4K`, `R1/R2`, `0D/2D`) entre aliados y enemigos, con datos confirmados y ronda actual pendiente.
+- [ ] Añadir acceso a Tracker.gg del jugador seleccionado mediante clic o `g`: Riot ID completo y verificado, destino HTTPS de Tracker construido de forma segura, apertura explícita en navegador, deshabilitado para identidad oculta o ausente. La maqueta solo demuestra la acción, sin enlaces reales.
 - [ ] **Settings debe permitir:** ver/editar `config.toml` (intervalo, `log_transitions`, `profile.riot_id`, `profile.region`, `autostart.enabled/minimized`), gestionar `.env` (solo estado `***`/`no configurada`), TTL de caché y apariencia.
 - [x] Añadir `vtracker config show|edit|validate` y persistencia atómica de `config.toml`, sin mostrar secretos.
 - [ ] Añadir navegación por teclado, ayuda y estados de carga/error.
@@ -118,5 +125,5 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 
 1. **Hecho (2B — diseño):** `GameStateSource` + `GamePhase`/`ProviderError`/`StateInfo` + `Process`/`Mock` + `resolve_with_fallback`.
 2. **Hecho (2C base):** `LocalClientSource` + WebSocket, `LiveMatchSource`, `MatchDetailSource`, `PlayerProfileSource` básico y `HistorySource` propio. **Sin API key ni RSO.**
-3. **Ahora:** completar las vistas Dashboard/Match/Player/History/Settings sobre la base TUI y validar en partidas reales las transiciones y respuestas de GLZ/PD.
+3. **Ahora (ADR-011):** validar fuentes y permisos para el roster y sus estadísticas; implementar el modelo y la vista de aliados/enemigos como función principal, y verificar transiciones y respuestas en partidas reales. Completar Dashboard/Match/Player/History/Settings como soporte de esa experiencia.
 4. **Opcional:** API oficial Riot con `RIOT_API_KEY` solo para mejoras (leaderboards/contenido).

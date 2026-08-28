@@ -1,5 +1,7 @@
 # VTracker — Registro de Decisiones (ADRs)
 
+> Alcance de producto vigente: ADR-011. Las afirmaciones históricas sobre acceso técnico sin RSO no constituyen validación de permisos para mostrar datos de terceros.
+
 > Cada decisión relevante se registra con contexto, decisión y consecuencias. Numeradas y inmutables: una decisión nueva que revoca otra crea un nuevo ADR que la referencia. Detalle técnico en los specs (`docs/SPEC-*.md`).
 
 ## ADR-001 — Nombre temporal `VTracker`
@@ -51,3 +53,10 @@
 **Contexto:** el proyecto quiere calidad auditable, impacto ambiental medido y seguridad de la información desde el inicio, sin burocracia de gran empresa.
 **Decisión:** adoptar los tres sistemas como sistema integrado PHVA proporcional (ver `docs/ISO.md`). Certificación formal opcional a medio plazo.
 **Consecuencias:** tests+clippy+fmt (calidad), medición de recursos (ambiental), `.env`+enmascaramiento+auditorías (seguridad) son parte del flujo normal.
+
+## ADR-011 — Roster de la partida como requisito principal (2026-08-28)
+**Contexto:** el usuario confirmó que la idea principal es ver a los diez jugadores de la partida con sus rangos y estadísticas. La restricción a datos propios introducida en `TASKS.md` y partes del README contradice ese objetivo; no representa una exclusión aprobada por el usuario.
+**Decisión:** el producto debe mostrar aliados y enemigos en partida (diez jugadores en modos 5v5; tamaño real del roster en otros modos), sus agentes, rangos y estadísticas históricas cuando estén disponibles y su uso esté permitido. Perfil propio, historial, rondas y resumen postpartida complementan esta función. Esta decisión sustituye las exclusiones de roster del alcance, pero no elimina las restricciones de privacidad ni autoriza consultas sin validar sus condiciones.
+**Límites:** validar por fuente los permisos, términos, consentimiento y campos disponibles antes de implementar consultas de terceros. Respetar identidades ocultas y controles de acceso; indicar `no disponible` sin inferir identidades ni inventar estadísticas. No prometer K/D de la partida en curso a partir de estadísticas históricas. La disponibilidad de tokens locales no demuestra autorización de uso.
+**Estado:** pendiente de implementación y validación real. El código actual muestra solo contexto propio; no cumple todavía este requisito principal.
+**Consecuencias:** priorizar validación de fuentes, modelo de roster y presentación de aliados/enemigos. Si una restricción impide parte del requisito, documentarla y consultarla con el usuario, sin redefinir silenciosamente el producto. Solo considerar terminado el requisito con pruebas de normalización, privacidad y ausencia de datos, más evidencia en una partida real.

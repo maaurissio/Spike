@@ -1,5 +1,7 @@
 # VTracker — Arquitectura y especificación inicial — nombre temporal
 
+> **Alcance vigente (2026-08-28):** el roster de aliados/enemigos con rangos y estadísticas disponibles y permitidos es el requisito principal, confirmado en `docs/DECISIONS.md`, ADR-011. La implementación de datos propios es parcial. Las hipótesis históricas de acceso técnico de este documento no sustituyen la validación de permisos, términos y consentimiento para datos de terceros.
+
 > Estado: borrador de arquitectura.  
 > Alcance: decisión y diseño inicial; **no es una implementación**.  
 > Convención: **Decidido** refleja acuerdos ya tomados. **Propuesta** indica una dirección recomendada que debe validarse antes de construirla.  
