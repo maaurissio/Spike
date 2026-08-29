@@ -4,10 +4,58 @@ use std::{
     time::Duration,
 };
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
     pub interval: Duration,
     pub log_transitions: bool,
+    pub theme: Theme,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Theme {
+    #[default]
+    System,
+    Dark,
+    Light,
+    Mono,
+}
+
+impl Theme {
+    pub fn previous(self) -> Self {
+        match self {
+            Self::System => Self::Mono,
+            Self::Dark => Self::System,
+            Self::Light => Self::Dark,
+            Self::Mono => Self::Light,
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::System => Self::Dark,
+            Self::Dark => Self::Light,
+            Self::Light => Self::Mono,
+            Self::Mono => Self::System,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::System => "Sistema",
+            Self::Dark => "Noche",
+            Self::Light => "Claro",
+            Self::Mono => "Sin color",
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Dark => "dark",
+            Self::Light => "light",
+            Self::Mono => "mono",
+        }
+    }
 }
 
 impl Default for Config {
@@ -15,6 +63,7 @@ impl Default for Config {
         Self {
             interval: Duration::from_secs(3),
             log_transitions: false,
+            theme: Theme::System,
         }
     }
 }
@@ -31,6 +80,15 @@ impl Config {
                 .split_once('=')
                 .ok_or_else(|| format!("línea {}: se esperaba clave = valor", number + 1))?;
             match key.trim() {
+                "theme" => {
+                    config.theme = match value.trim() {
+                        "\"system\"" => Theme::System,
+                        "\"dark\"" => Theme::Dark,
+                        "\"light\"" => Theme::Light,
+                        "\"mono\"" => Theme::Mono,
+                        _ => return Err(format!("línea {}: tema inválido", number + 1)),
+                    };
+                }
                 "interval_seconds" => {
                     let seconds = value.trim().parse::<u64>().map_err(|_| {
                         format!("línea {}: interval_seconds debe ser un número", number + 1)
@@ -84,9 +142,10 @@ impl Config {
 
     fn encode(&self) -> String {
         format!(
-            "# Generado por vtracker config edit. No guardes secretos aquí.\ninterval_seconds = {}\nlog_transitions = {}\n",
+            "# Generado por vtracker. No guardes secretos aquí.\ninterval_seconds = {}\nlog_transitions = {}\ntheme = \"{}\"\n",
             self.interval.as_secs(),
-            self.log_transitions
+            self.log_transitions,
+            self.theme.key(),
         )
     }
 }
@@ -139,9 +198,16 @@ fn save_atomic(path: &Path, config: &Config) -> Result<(), String> {
     })
 }
 
+/// Guardado explícito del borrador completo de la TUI, fuera del render.
+pub fn save(config: &Config) -> Result<(), String> {
+    Config::parse(&config.encode())?;
+    let path = config_path().ok_or_else(|| "APPDATA no está disponible".to_string())?;
+    save_atomic(&path, config)
+}
+
 fn format_config(config: &Config, path: &std::path::Path, configured: bool) -> String {
     format!(
-        "Configuración {}\nOrigen          {}\nIntervalo       {} s\nLog transiciones {}\nSecretos        no se muestran aquí",
+        "Configuración {}\nOrigen          {}\nIntervalo       {} s\nLog transiciones {}\nTema            {}\nSecretos        no se muestran aquí",
         if configured {
             "efectiva"
         } else {
@@ -154,6 +220,7 @@ fn format_config(config: &Config, path: &std::path::Path, configured: bool) -> S
         } else {
             "desactivado"
         },
+        config.theme.label(),
     )
 }
 
@@ -171,6 +238,22 @@ mod tests {
         let config = Config::parse("interval_seconds = 5\nlog_transitions = true").unwrap();
         assert_eq!(config.interval, Duration::from_secs(5));
         assert!(config.log_transitions);
+    }
+    #[test]
+    fn themes_roundtrip_and_legacy_configs_use_terminal_defaults() {
+        assert_eq!(
+            Config::parse("interval_seconds = 4").unwrap().theme,
+            Theme::System
+        );
+        for theme in [Theme::System, Theme::Dark, Theme::Light, Theme::Mono] {
+            let config = Config {
+                theme,
+                ..Config::default()
+            };
+            assert_eq!(Config::parse(&config.encode()).unwrap(), config);
+        }
+        assert!(Config::parse("theme = dark").is_err());
+        assert!(Config::parse("theme = \"invalid\"").is_err());
     }
     #[test]
     fn rejects_invalid_configuration() {
@@ -253,6 +336,7 @@ mod tests {
             &Config {
                 interval: Duration::from_secs(5),
                 log_transitions: true,
+                ..Config::default()
             },
             std::path::Path::new("config.toml"),
             true,
@@ -267,6 +351,7 @@ mod tests {
         let config = Config {
             interval: Duration::from_secs(9),
             log_transitions: true,
+            theme: Theme::Dark,
         };
         save_atomic(&path, &config).unwrap();
         let content = fs::read_to_string(&path).unwrap();
@@ -276,6 +361,17 @@ mod tests {
         );
         assert!(Config::parse(&content).unwrap().log_transitions);
         assert!(!path.with_extension("toml.tmp").exists());
+        // La TUI guarda sobre una configuración existente, también en Windows.
+        let updated = Config {
+            interval: Duration::from_secs(4),
+            log_transitions: false,
+            theme: Theme::Light,
+        };
+        save_atomic(&path, &updated).unwrap();
+        assert_eq!(
+            Config::parse(&fs::read_to_string(&path).unwrap()).unwrap(),
+            updated
+        );
         fs::remove_file(path).unwrap();
     }
 }

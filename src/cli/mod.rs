@@ -1,6 +1,6 @@
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
-    Dashboard,
+    Dashboard { demo: bool },
     Help,
     Doctor,
     Config(ConfigCommand),
@@ -69,10 +69,15 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
         return Ok(Command::Doctor);
     }
     if matches!(command, "dashboard" | "tui") {
-        if let Some(option) = iter.next() {
-            return Err(format!("Opción desconocida: {option}"));
+        let mut demo = false;
+        for option in iter {
+            match option {
+                "--demo" if !demo => demo = true,
+                "--help" | "-h" => return Ok(Command::Help),
+                _ => return Err(format!("Opción desconocida: {option}")),
+            }
         }
-        return Ok(Command::Dashboard);
+        return Ok(Command::Dashboard { demo });
     }
     if command == "config" {
         let Some(subcommand) = iter.next() else {
@@ -250,8 +255,20 @@ mod tests {
 
     #[test]
     fn parses_dashboard_aliases() {
-        assert_eq!(parse(&["dashboard".into()]), Ok(Command::Dashboard));
-        assert_eq!(parse(&["tui".into()]), Ok(Command::Dashboard));
+        assert_eq!(
+            parse(&["dashboard".into()]),
+            Ok(Command::Dashboard { demo: false })
+        );
+        assert_eq!(
+            parse(&["tui".into()]),
+            Ok(Command::Dashboard { demo: false })
+        );
+        assert_eq!(
+            parse(&s(&["dashboard", "--demo"])),
+            Ok(Command::Dashboard { demo: true })
+        );
+        assert!(parse(&s(&["dashboard", "--demo", "--demo"])).is_err());
+        assert!(parse(&s(&["dashboard", "--once"])).is_err());
     }
 
     #[test]

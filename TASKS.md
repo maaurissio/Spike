@@ -92,13 +92,19 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 > **Configuración es requisito explícito del usuario** — debe ser completa antes del release.
 
 - [x] Añadir Ratatui y Crossterm con un dashboard inicial, navegación por teclado y dirty-flag (sin I/O durante render).
+- [x] Portar la composición de `docs/mockups` a Rust: cinco vistas, Aliados → Tus rondas → Enemigos, foco, selección/detalle y modo `dashboard --demo` aislado de red/configuración personal.
+- [x] Temas Sistema/Noche/Claro/Sin color, previsualización con `t` y persistencia explícita con `s`; compatibilidad con archivos de configuración anteriores.
 - [ ] Crear Dashboard con estado, salud de fuentes y resumen de sesión (perfil propio destacado).
 - [ ] Crear vistas Match, Player, History y **Settings (Configuración)**.
 - [ ] **Settings debe permitir:** ver/editar `config.toml` (intervalo, `log_transitions`, `profile.riot_id`, `profile.region`, `autostart.enabled/minimized`), gestionar `.env` (solo estado `***`/`no configurada`), TTL de caché y apariencia.
+- [x] **Settings básico:** editar intervalo (1–60 s) y registro con borrador, guardado explícito, descarte y aplicación en la sesión sin reiniciar.
 - [x] Añadir `vtracker config show|edit|validate` y persistencia atómica de `config.toml`, sin mostrar secretos.
-- [ ] Añadir navegación por teclado, ayuda y estados de carga/error.
-- [ ] Adaptar layouts a terminales pequeñas y grandes.
-- [ ] Mantener I/O y cálculos fuera del renderizado; UI solo consume `AppState`.
+- [x] Añadir navegación por teclado, ayuda de atajos, desplazamiento de tablas y estados de carga/error con último dato disponible.
+- [x] Adaptar layouts a terminales pequeñas y grandes (mínimo 38×10; demo completa 72×24/38×26, selección visible, scroll y paginación del timeline).
+- [ ] Conectar el roster real y los datos enriquecidos de la maqueta; validar disponibilidad/privacidad antes de ampliar proveedores. Marcador y rondas en vivo siguen pendientes.
+- [x] Mantener las consultas y escrituras fuera del hilo de interfaz: trabajador con colas acotadas, solicitudes duplicadas suprimidas y descarte de respuestas de fases anteriores. El estado de pantalla no retiene el roster postpartida.
+
+> Verificación TUI: 158 pruebas globales, incluyendo guardado/reemplazo, descarte, colas, consultas lentas, respuestas atrasadas, aislamiento de demo, privacidad, celdas Unicode, 72×24/38×26, temas y navegación. Smoke test de build release en PTY: demo sin archivos, tema/intervalo guardados en configuración temporal y salida limpia. No se consultó VALORANT durante estas pruebas. Validación de transiciones reales sigue pendiente.
 
 ## Prioridad 6 — Robustez, autoinicio y distribución + ISO
 

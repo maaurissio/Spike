@@ -25,6 +25,32 @@ La configuración opcional está en `%APPDATA%\vtracker\config.toml`; consulta [
 
 Consulta la [lista de tareas](TASKS.md) para el trabajo realizado, prioridades y siguiente paso.
 
+## Dashboard interactivo
+
+Ejecuta `vtracker dashboard` (alias `tui`). Abrir el ejecutable sin argumentos sigue iniciando `watch`.
+
+- `1–5` o `←/→`: cambiar vista. `Tab`/`Shift+Tab`: alternar foco entre pestañas y contenido; `Enter` entra al contenido o abre el detalle seleccionado.
+- `↑/↓` selecciona jugadores (demo), partidas o ajustes. `PgUp/PgDn` desplaza el contenido; la selección se mantiene visible en ventanas pequeñas.
+- `r`: actualizar datos propios bajo demanda; el historial se carga al entrar en su pestaña.
+- `t`: previsualizar Sistema, Noche, Claro o Sin color. En **Ajustes**, `s` guarda el tema junto al intervalo/registro; `r` descarta el borrador. `+/-` edita y `Espacio` alterna el registro o tema seleccionado. Cerrar sin guardar descarta los cambios.
+- `Esc`: cerrar detalle o volver a Partida. `q` o `Ctrl+C`: salir y restaurar la terminal.
+
+La presentación nativa sigue [`docs/mockups`](docs/mockups/README.md): bordes de caracteres, cinco vistas, tablas compactas y orden **Aliados → Tus rondas → Enemigos**. A 72 columnas la partida de demostración cabe en 24 filas; a 38 columnas, en 26. En ventanas más bajas se habilita desplazamiento; por debajo de 38×10 se solicita ampliar la terminal.
+
+Para ver la maqueta completa en Rust, sin VALORANT:
+
+```powershell
+.\target\release\vtracker.exe dashboard --demo
+```
+
+**DEMO** está siempre identificado: todos sus jugadores y estadísticas son ficticios. No crea proveedores reales, no lee configuración personal ni guarda en disco. `p` alterna partida/postpartida, `g` explica por qué el enlace a Tracker no está disponible, `[`/`]` pagina timelines largos. No abre perfiles externos. El HTML original se conserva intacto como referencia.
+
+En modo normal se conservan los datos propios ya disponibles; no se han añadido endpoints. El roster real, marcador y rondas en vivo, estadísticas enriquecidas de Perfil/Historial, resumen de sesión e imágenes siguen pendientes. Se muestran estados vacíos explícitos, nunca fixtures de la demo. Los modos continuos tienen una vista propia sin inventar equipos ni rondas.
+
+Las consultas se ejecutan en un trabajador con colas acotadas y una sola operación a la vez; el teclado sigue disponible durante la carga. Un refresh fallido conserva los datos anteriores de la sesión y avisa en la vista. El resumen postpartida permanece al volver al menú, hasta otra partida o el cierre del cliente. Las respuestas atrasadas de fases/sesiones anteriores se descartan.
+
+Están disponibles para edición el intervalo local (1–60 s), `log_transitions` y `theme` (`"system"`, `"dark"`, `"light"`, `"mono"`). Sistema hereda fondo/texto y colores ANSI del terminal; no detecta el tema de Windows. TTL y autoinicio siguen pendientes. El registro se habilita únicamente después de guardar ese cambio; nunca contiene credenciales. No hay caché de historial en disco ni polling periódico de estadísticas remotas.
+
 ## Documentación
 
 | Documento | Contenido |
@@ -149,7 +175,7 @@ Verificación con `vtracker doctor` y `VTRACKER_STATE` en Windows (`tasklist /FO
 
 > El detector (`src/game/mod.rs:75`) solo distingue estas 3 señales. `LocalClientSource` añade fases finas solo tras un evento WebSocket inequívoco y las descarta después de 15 segundos sin actualización, para no presentar una fase antigua como actual.
 
-Tests: `cargo test` — 138 pruebas para `config`, `cli`, `game`, `diagnostics`, `providers` (lockfile, REST local, WAMP, contexto propio en vivo, perfil/MMR, historial, postpartida y agregados por modo/mapa/agente), `analytics`, `cache`, `watch` y TUI.
+Tests: `cargo test` — 158 pruebas para `config`, `cli`, `game`, `diagnostics`, `providers` (lockfile, REST local, WAMP, contexto propio en vivo, perfil/MMR, historial, postpartida y agregados por modo/mapa/agente), `analytics`, `cache`, `watch` y TUI.
 
 ## Experiencia de usuario final — visión
 
@@ -235,7 +261,7 @@ Inspirado en patrones 2026 para TUIs Rust (Elm Architecture / TEA, `ratatui` + `
 - **Diseño orientado a eventos** para evitar polling y cálculos innecesarios.
 - **Separación estricta:** `AppState` solo datos de presentación; I/O y cálculos fuera del renderizado (Elm: Model → Message → Update → View).
 - **Autostart explícito** con `auto-launch` crate, nunca implícito.
-- **Testing primero:** 107 tests unitarios actuales, fixtures para analytics y postpartida, `cargo fmt`/`clippy` en CI.
+- **Testing:** fixtures para analytics y postpartida, pruebas de colas/carga, configuración y renderizado; `cargo fmt`/`clippy` en CI.
 - **Seguridad (ISO 27001):** secretos solo en `.env`/env vars, `.gitignore` estricto, `doctor` enmascara claves (`***`), `cargo audit`+SBOM futuro, controles 8.25-8.29.
 - **Calidad (ISO 9001):** control documental (`TASKS.md`/`Arquitectura-inicial.md`), trazabilidad Raw/Derived, `watch.log` como registro, medición antes de optimizar.
 - **Ambiental (ISO 14001):** green coding — event-driven, L1/L2 para evitar red, `minimized` en autostart, binario Rust ligero; medición de CPU idle/mem en `docs/BENCHMARKS.md` futuro.

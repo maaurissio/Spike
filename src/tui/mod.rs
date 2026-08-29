@@ -1,52 +1,76 @@
 //! Interfaz terminal interactiva, sin I/O remoto durante el renderizado.
 
+mod demo;
+mod settings;
+mod theme;
+mod view;
+mod worker;
+
 use std::{
     io,
+    sync::mpsc::TryRecvError,
     time::{Duration, Instant},
 };
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{
-    Terminal,
-    backend::CrosstermBackend,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::Line,
-    widgets::{Block, Borders, Paragraph, Tabs, Wrap},
-};
+use ratatui::{Terminal, backend::CrosstermBackend};
 
 use crate::{
     config::Config,
     providers::{
-        HistorySource, LiveMatchSource, LocalClientSource, PlayerProfileSource,
-        ProcessGameStateSource, StateInfo,
+        StateInfo,
+        capabilities::GamePhase,
         history::HistoryEntry,
         live_match::LiveMatchContext,
-        match_detail::{CompletedMatch, MatchDetailSource},
+        match_detail::CompletedMatch,
         profile::{CompetitiveProfile, CompetitiveUpdate, OwnProfile},
-        resolve_with_fallback,
     },
 };
+use settings::Settings;
+use view::render;
+use worker::{Context, Reply, Request, Worker};
 
 const TABS: [&str; 5] = ["Panel", "Partida", "Perfil", "Historial", "Ajustes"];
 const INPUT_TIMEOUT: Duration = Duration::from_millis(100);
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Focus {
+    Tabs,
+    Content,
+}
+
 struct App {
+    demo: Option<demo::Demo>,
+    focus: Focus,
+    player_index: usize,
+    history_index: usize,
+    detail: bool,
+    tracker_notice: bool,
+    round_page: usize,
+    follow_selection: bool,
     selected_tab: usize,
     state: Option<StateInfo>,
     live_match: Option<LiveMatchContext>,
-    completed_match: Option<CompletedMatch>,
+    completed_match: Option<String>,
     own_profile: Option<OwnProfile>,
     competitive: Option<CompetitiveProfile>,
     competitive_updates: Vec<CompetitiveUpdate>,
     history: Option<Vec<HistoryEntry>>,
     history_failed: bool,
-    interval_secs: u64,
-    log_transitions: bool,
+    settings: Settings,
+    observation_pending: bool,
+    context_pending: bool,
+    context_requested: bool,
+    context_failed: bool,
+    history_pending: bool,
+    generation: u64,
+    epoch: u64,
+    log_failed: bool,
+    scroll: u16,
     refresh_failed: bool,
     dirty: bool,
     should_quit: bool,
@@ -55,6 +79,14 @@ struct App {
 impl App {
     fn new(config: &Config) -> Self {
         Self {
+            demo: None,
+            focus: Focus::Content,
+            player_index: 0,
+            history_index: 0,
+            detail: false,
+            tracker_notice: false,
+            round_page: 0,
+            follow_selection: true,
             selected_tab: 0,
             state: None,
             live_match: None,
@@ -64,8 +96,16 @@ impl App {
             competitive_updates: Vec::new(),
             history: None,
             history_failed: false,
-            interval_secs: config.interval.as_secs(),
-            log_transitions: config.log_transitions,
+            settings: Settings::new(config),
+            observation_pending: false,
+            context_pending: false,
+            context_requested: false,
+            context_failed: false,
+            history_pending: false,
+            generation: 0,
+            epoch: 0,
+            log_failed: false,
+            scroll: 0,
             refresh_failed: false,
             dirty: true,
             should_quit: false,
@@ -73,12 +113,19 @@ impl App {
     }
 
     fn select_next(&mut self) {
-        self.selected_tab = (self.selected_tab + 1) % TABS.len();
-        self.dirty = true;
+        self.select_tab((self.selected_tab + 1) % TABS.len());
     }
 
     fn select_previous(&mut self) {
-        self.selected_tab = (self.selected_tab + TABS.len() - 1) % TABS.len();
+        self.select_tab((self.selected_tab + TABS.len() - 1) % TABS.len());
+    }
+
+    fn select_tab(&mut self, tab: usize) {
+        self.selected_tab = tab;
+        self.scroll = 0;
+        self.detail = false;
+        self.tracker_notice = false;
+        self.follow_selection = true;
         self.dirty = true;
     }
 
@@ -92,9 +139,31 @@ impl App {
                 || previous.client_found != state.client_found
                 || previous.game_found != state.game_found
         });
+        if phase_changed {
+            self.scroll = 0;
+            self.detail = false;
+            self.follow_selection = true;
+            self.generation = self.generation.wrapping_add(1);
+            self.context_requested = false;
+            self.context_failed = false;
+            self.live_match = None;
+            // El último resumen permanece disponible tras volver al menú.
+            if matches!(state.phase, GamePhase::InMatch | GamePhase::ClientClosed) {
+                self.completed_match = None;
+            }
+            if state.phase == GamePhase::ClientClosed {
+                self.epoch = self.epoch.wrapping_add(1);
+                self.own_profile = None;
+                self.competitive = None;
+                self.competitive_updates.clear();
+                self.history = None;
+                self.history_index = 0;
+                self.history_failed = false;
+            }
+        }
+        self.dirty |= changed || self.refresh_failed;
         self.state = Some(state);
         self.refresh_failed = false;
-        self.dirty |= changed;
         phase_changed
     }
 
@@ -104,272 +173,330 @@ impl App {
             self.dirty = true;
         }
     }
+
+    fn apply(&mut self, reply: Reply) {
+        match reply {
+            Reply::Observed { state, log_failed } => {
+                self.observation_pending = false;
+                self.dirty |= self.log_failed != log_failed;
+                self.log_failed = log_failed;
+                match state {
+                    Ok(state) => {
+                        self.update_state(state);
+                    }
+                    Err(()) => self.mark_refresh_failed(),
+                }
+                return;
+            }
+            Reply::Context { generation, data } => {
+                self.context_pending = false;
+                if generation != self.generation {
+                    self.dirty = true;
+                    return;
+                }
+                self.context_failed = data.is_err();
+                match data {
+                    Ok(Context::Live(context)) => self.live_match = Some(context),
+                    Ok(Context::Completed(summary)) => self.completed_match = Some(summary),
+                    Ok(Context::Profile(profile, competitive, updates)) => {
+                        self.own_profile = Some(profile);
+                        self.competitive = competitive;
+                        self.competitive_updates = updates;
+                    }
+                    Err(()) => {} // Conservar el último dato de esta sesión al fallar un refresh.
+                }
+            }
+            Reply::History { epoch, data } => {
+                self.history_pending = false;
+                if epoch != self.epoch {
+                    self.dirty = true;
+                    return;
+                }
+                self.history_failed = data.is_err();
+                if let Ok(entries) = data {
+                    // La posición cambia al llegar nuevas partidas. Conservar la
+                    // selección por los metadatos seguros, sin retener MatchID.
+                    let selected = self
+                        .history
+                        .as_ref()
+                        .and_then(|old| old.get(self.history_index));
+                    let preserved =
+                        selected.and_then(|old| entries.iter().position(|entry| entry == old));
+                    self.history_index = preserved
+                        .unwrap_or_else(|| self.history_index.min(entries.len().saturating_sub(1)));
+                    if preserved.is_none() && self.selected_tab == 3 {
+                        self.detail = false;
+                    }
+                    self.follow_selection = true;
+                    self.history = Some(entries);
+                }
+            }
+            Reply::Saved(result) => self.settings.saved(result),
+        }
+        self.dirty = true;
+    }
+
+    fn schedule_data(&mut self, worker: &Worker) {
+        if self.demo.is_some() {
+            return;
+        }
+        if !self.context_pending
+            && !self.context_requested
+            && let Some(phase @ (GamePhase::Idle | GamePhase::InMatch | GamePhase::PostMatch)) =
+                self.state.as_ref().map(|info| info.phase)
+            && worker.submit(Request::Context {
+                phase,
+                generation: self.generation,
+            })
+        {
+            self.context_pending = true;
+            self.context_requested = true;
+            self.dirty = true;
+        }
+        if self.selected_tab == 3 && self.history.is_none() && !self.history_failed {
+            self.request_history(worker);
+        }
+    }
+
+    fn request_history(&mut self, worker: &Worker) {
+        if self.demo.is_some() {
+            return;
+        }
+        if !self.history_pending && worker.submit(Request::History { epoch: self.epoch }) {
+            self.history_pending = true;
+            self.history_failed = false;
+            self.dirty = true;
+        }
+    }
+
+    fn key(&mut self, key: KeyEvent, worker: &Worker) {
+        if key.kind != KeyEventKind::Press {
+            return;
+        }
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.should_quit = true;
+            return;
+        }
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            return;
+        }
+        match key.code {
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Esc => {
+                if self.detail {
+                    self.detail = false;
+                    self.tracker_notice = false;
+                    self.scroll = 0;
+                } else {
+                    self.select_tab(1);
+                    if let Some(demo) = &mut self.demo {
+                        demo.post = false;
+                    }
+                }
+                self.focus = Focus::Content;
+                self.follow_selection = true;
+            }
+            KeyCode::Char(c @ '1'..='5') => {
+                self.select_tab((c as u8 - b'1') as usize);
+                self.focus = Focus::Content;
+            }
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.focus = if self.focus == Focus::Content {
+                    Focus::Tabs
+                } else {
+                    Focus::Content
+                };
+                self.follow_selection = true;
+            }
+            KeyCode::Char('t') => self.settings.cycle_theme(),
+            KeyCode::Right | KeyCode::Char('l') => self.select_next(),
+            KeyCode::Left | KeyCode::Char('h') => self.select_previous(),
+            KeyCode::Enter if self.focus == Focus::Tabs => self.focus = Focus::Content,
+            _ if self.focus == Focus::Tabs => return,
+            KeyCode::Up | KeyCode::Char('k') if self.selected_tab == 4 => {
+                self.settings.previous();
+                self.follow_selection = true;
+            }
+            KeyCode::Down | KeyCode::Char('j') if self.selected_tab == 4 => {
+                self.settings.select();
+                self.follow_selection = true;
+            }
+            KeyCode::Char('+') | KeyCode::Char('=') if self.selected_tab == 4 => {
+                self.settings.adjust(true)
+            }
+            KeyCode::Char('-') if self.selected_tab == 4 => self.settings.adjust(false),
+            KeyCode::Char(' ') | KeyCode::Enter if self.selected_tab == 4 => self.settings.toggle(),
+            KeyCode::Char('s') if self.selected_tab == 4 => {
+                if let Some(config) = self.settings.to_save()
+                    && worker.submit(Request::Save(config))
+                {
+                    self.settings.saving = true;
+                }
+            }
+            KeyCode::Char('r') if self.selected_tab == 4 => self.settings.discard(),
+            KeyCode::Char('r') if self.selected_tab == 3 => self.request_history(worker),
+            KeyCode::Char('r') if !self.context_pending => self.context_requested = false,
+            KeyCode::Char('p') if self.selected_tab == 1 && self.demo.is_some() => {
+                let demo = self.demo.as_mut().unwrap();
+                demo.post = !demo.post;
+                self.detail = false;
+                self.scroll = 0;
+            }
+            KeyCode::Char('[') if self.selected_tab == 1 && self.demo.is_some() => {
+                self.round_page = self.round_page.saturating_sub(1)
+            }
+            KeyCode::Char(']') if self.selected_tab == 1 && self.demo.is_some() => {
+                self.round_page = self.round_page.saturating_add(1)
+            }
+            KeyCode::Char('g')
+                if self.selected_tab == 1 && self.demo.as_ref().is_some_and(|d| !d.post) =>
+            {
+                self.detail = true;
+                self.tracker_notice = true;
+                self.follow_selection = true;
+            }
+            KeyCode::Enter if self.selected_tab == 0 => self.select_tab(1),
+            KeyCode::Enter if self.selected_tab == 3 => {
+                if let Some(demo) = &mut self.demo {
+                    demo.post = true;
+                    self.select_tab(1);
+                } else {
+                    self.detail = !self.detail;
+                }
+                self.follow_selection = true;
+            }
+            KeyCode::Enter
+                if self.selected_tab == 1 && self.demo.as_ref().is_some_and(|d| !d.post) =>
+            {
+                self.detail = !self.detail;
+                self.tracker_notice = false;
+                self.follow_selection = true;
+            }
+            KeyCode::Up | KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('k')
+                if self.selected_tab == 3
+                    || (self.selected_tab == 1 && self.demo.as_ref().is_some_and(|d| !d.post)) =>
+            {
+                let down = matches!(key.code, KeyCode::Down | KeyCode::Char('j'));
+                let (index, count) = if self.selected_tab == 3 {
+                    (
+                        &mut self.history_index,
+                        self.demo.as_ref().map_or_else(
+                            || self.history.as_ref().map_or(0, Vec::len),
+                            |d| d.matches.len(),
+                        ),
+                    )
+                } else {
+                    (
+                        &mut self.player_index,
+                        self.demo.as_ref().unwrap().players.len(),
+                    )
+                };
+                if count > 0 {
+                    *index = if down {
+                        (*index + 1) % count
+                    } else {
+                        (*index + count - 1) % count
+                    };
+                }
+                self.tracker_notice = false;
+                self.follow_selection = true;
+            }
+            KeyCode::Up | KeyCode::Char('k') => self.scroll = self.scroll.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => self.scroll = self.scroll.saturating_add(1),
+            KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(10),
+            KeyCode::PageDown => self.scroll = self.scroll.saturating_add(10),
+            KeyCode::Home => self.scroll = 0,
+            _ => return,
+        }
+        self.dirty = true;
+    }
 }
 
-/// Abre el dashboard. El estado se consulta fuera de `draw`, a un intervalo
-/// acotado, y el render solo ocurre cuando cambian datos, pestaña o tamaño.
-pub(crate) fn run(config: Config) -> io::Result<()> {
+/// Restaura la terminal incluso si falla la inicialización o hay un panic.
+struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show);
+    }
+}
+
+pub(crate) fn run(config: Config, demo: bool) -> io::Result<()> {
+    use io::IsTerminal;
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "el dashboard requiere una terminal interactiva; usa watch --once para salida de texto",
+        ));
+    }
     enable_raw_mode()?;
+    let _guard = TerminalGuard;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-    let result = run_loop(&mut terminal, config);
-
-    let _ = disable_raw_mode();
-    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
-    let _ = terminal.show_cursor();
-    result
+    let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
+    run_loop(&mut terminal, config, demo)
 }
 
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     config: Config,
+    demo: bool,
 ) -> io::Result<()> {
-    let refresh_interval = config.interval;
-    let local = LocalClientSource::new();
-    let fallback = ProcessGameStateSource::new();
-    let history_source = HistorySource::new();
-    let live_match_source = LiveMatchSource::new();
-    let match_detail_source = MatchDetailSource::new();
-    let profile_source = PlayerProfileSource::new();
-    local.start_event_listener();
+    let worker = if demo {
+        Worker::demo()?
+    } else {
+        Worker::start()?
+    };
     let mut app = App::new(&config);
-    let mut last_refresh = Instant::now()
-        .checked_sub(refresh_interval)
-        .unwrap_or_else(Instant::now);
+    if demo {
+        app.demo = Some(demo::Demo::default());
+        app.selected_tab = 1;
+    }
+    let mut last_refresh: Option<Instant> = None;
 
     while !app.should_quit {
-        if last_refresh.elapsed() >= refresh_interval {
-            match resolve_with_fallback(&local, &fallback) {
-                Ok(state) => {
-                    if app.update_state(state) {
-                        refresh_player_context(
-                            &mut app,
-                            &local,
-                            &live_match_source,
-                            &match_detail_source,
-                            &profile_source,
-                        );
-                    }
+        loop {
+            match worker.receive() {
+                Ok(reply) => app.apply(reply),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    return Err(io::Error::other(
+                        "el trabajador de datos se detuvo; vuelve a abrir el dashboard",
+                    ));
                 }
-                Err(_) => app.mark_refresh_failed(),
             }
-            last_refresh = Instant::now();
         }
-
-        if app.selected_tab == 3 && app.history.is_none() && !app.history_failed {
-            refresh_history(&mut app, &local, &history_source);
+        if app.demo.is_none()
+            && !app.observation_pending
+            && last_refresh.is_none_or(|at| at.elapsed() >= app.settings.active.interval)
+            && worker.submit(Request::Observe {
+                log: app.settings.active.log_transitions,
+            })
+        {
+            app.observation_pending = true;
+            last_refresh = Some(Instant::now());
         }
-
+        app.schedule_data(&worker);
         if app.dirty {
-            terminal.draw(|frame| render(frame.area(), frame, &app))?;
+            terminal.draw(|frame| render(frame.area(), frame, &mut app))?;
             app.dirty = false;
         }
-
         if event::poll(INPUT_TIMEOUT)? {
             match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
-                    KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab => app.select_next(),
-                    KeyCode::Left | KeyCode::Char('h') | KeyCode::BackTab => app.select_previous(),
-                    KeyCode::Char('r') => {
-                        if app.selected_tab == 3 {
-                            refresh_history(&mut app, &local, &history_source);
-                        } else {
-                            refresh_player_context(
-                                &mut app,
-                                &local,
-                                &live_match_source,
-                                &match_detail_source,
-                                &profile_source,
-                            );
-                        }
-                    }
-                    _ => {}
-                },
-                Event::Resize(_, _) => app.dirty = true,
+                Event::Key(key) => app.key(key, &worker),
+                Event::Resize(_, _) => {
+                    app.dirty = true;
+                    app.follow_selection = true;
+                }
                 _ => {}
             }
         }
     }
     Ok(())
-}
-
-/// Historial acotado del jugador autenticado. No se guardan ni muestran IDs de
-/// partida y el usuario controla los refrescos posteriores con `r`.
-fn refresh_history(app: &mut App, local: &LocalClientSource, source: &HistorySource) {
-    match local
-        .history_request(10)
-        .and_then(|request| source.fetch_own(&request))
-    {
-        Ok(entries) => {
-            app.history = Some(entries);
-            app.history_failed = false;
-        }
-        Err(_) => {
-            app.history = None;
-            app.history_failed = true;
-        }
-    }
-    app.dirty = true;
-}
-
-/// Las consultas remotas son puntuales: solo al entrar en una fase que puede
-/// aportar datos nuevos. Nunca se ejecutan desde el bucle de renderizado.
-fn refresh_player_context(
-    app: &mut App,
-    local: &LocalClientSource,
-    live_match_source: &LiveMatchSource,
-    match_detail_source: &MatchDetailSource,
-    profile_source: &PlayerProfileSource,
-) {
-    let phase = app.state.as_ref().map(|state| state.phase);
-    match phase {
-        Some(crate::providers::capabilities::GamePhase::InMatch) => {
-            app.live_match = local
-                .live_match_request()
-                .and_then(|request| live_match_source.fetch(&request))
-                .ok();
-            app.completed_match = None;
-            app.own_profile = None;
-            app.competitive = None;
-            app.competitive_updates.clear();
-        }
-        Some(crate::providers::capabilities::GamePhase::Idle) => {
-            let profile_data = local.profile_request().and_then(|request| {
-                profile_source.fetch_own(&request).map(|profile| {
-                    let competitive = profile_source
-                        .fetch_own_competitive(&request)
-                        .ok()
-                        .flatten();
-                    let updates = profile_source
-                        .fetch_own_competitive_updates(&request, 5)
-                        .unwrap_or_default();
-                    (profile, competitive, updates)
-                })
-            });
-            match profile_data {
-                Ok((profile, competitive, updates)) => {
-                    app.own_profile = Some(profile);
-                    app.competitive = competitive;
-                    app.competitive_updates = updates;
-                }
-                Err(_) => {
-                    app.own_profile = None;
-                    app.competitive = None;
-                    app.competitive_updates.clear();
-                }
-            }
-            app.live_match = None;
-            app.completed_match = None;
-        }
-        Some(crate::providers::capabilities::GamePhase::PostMatch) => {
-            app.completed_match = local
-                .match_detail_request()
-                .and_then(|request| match_detail_source.fetch_completed(&request))
-                .ok();
-            app.live_match = None;
-            app.own_profile = None;
-            app.competitive = None;
-            app.competitive_updates.clear();
-        }
-        _ => {
-            app.live_match = None;
-            app.completed_match = None;
-            app.own_profile = None;
-            app.competitive = None;
-            app.competitive_updates.clear();
-        }
-    }
-    app.dirty = true;
-}
-
-fn render(area: Rect, frame: &mut ratatui::Frame<'_>, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(5),
-            Constraint::Length(2),
-        ])
-        .split(area);
-
-    let titles = TABS.iter().map(|tab| Line::from(*tab)).collect::<Vec<_>>();
-    frame.render_widget(
-        Tabs::new(titles)
-            .select(app.selected_tab)
-            .block(
-                Block::default()
-                    .borders(Borders::BOTTOM)
-                    .title(" VTRACKER "),
-            )
-            .highlight_style(
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .divider(" · "),
-        chunks[0],
-    );
-
-    frame.render_widget(main_content(app), chunks[1]);
-    frame.render_widget(
-        Paragraph::new("←/→ cambiar vista   ·   r actualizar   ·   q salir")
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(Color::DarkGray)),
-        chunks[2],
-    );
-}
-
-fn main_content(app: &App) -> Paragraph<'static> {
-    Paragraph::new(content_for(app))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(TABS[app.selected_tab]),
-        )
-        .wrap(Wrap { trim: true })
-        .alignment(Alignment::Left)
-}
-
-fn content_for(app: &App) -> String {
-    let phase = app
-        .state
-        .as_ref()
-        .map(|state| state.phase.label())
-        .unwrap_or("Comprobando cliente…");
-    let body = match app.selected_tab {
-        0 => dashboard_content(app, phase),
-        1 => match app.completed_match.as_ref() {
-            Some(completed) => completed_match_content(completed),
-            None => match app.live_match.as_ref() {
-                Some(match_context) => format!(
-                "Partida en curso\n\nModo     {}\nMapa     {}\nAgente   {}\n\nSolo se muestra tu contexto; el tracker no consulta ni expone roster, rangos o perfiles de otras personas.",
-                match_context.mode,
-                match_context.map,
-                match_context.agent.as_deref().unwrap_or("no disponible"),
-            ),
-                None => "Partida\n\nNo hay detalles de partida todavía.\n\nEsta vista se completa al recibir una fase de partida confirmada.".into(),
-            },
-        },
-        2 => match app.own_profile.as_ref() {
-            Some(profile) => profile_content(app, profile),
-            None => "Perfil\n\nTu perfil se consulta al quedar disponible el cliente.\n\nTambién puedes usar `vtracker player` cuando quieras un resumen puntual.".into(),
-        },
-        3 => history_content(app),
-        _ => format!(
-            "Ajustes\n\nIntervalo de actualización   {} s\nRegistrar transiciones        {}\n\nUsa `vtracker config show`, `validate` o `edit` para cambiar la configuración. Los secretos no se muestran ni se guardan aquí.",
-            app.interval_secs,
-            if app.log_transitions { "sí" } else { "no" },
-        ),
-    };
-    let footer = if app.refresh_failed {
-        "\n\nNo se pudo actualizar ahora; se reintentará automáticamente."
-    } else {
-        ""
-    };
-    format!("{body}{footer}")
 }
 
 fn completed_match_content(completed: &CompletedMatch) -> String {
@@ -403,82 +530,32 @@ fn completed_match_content(completed: &CompletedMatch) -> String {
             summary.stats.kills,
             summary.stats.deaths,
             summary.stats.assists,
-            summary.stats.combat_score.unwrap_or(0),
+            summary
+                .stats
+                .combat_score
+                .map_or_else(|| "—".into(), |score| score.to_string()),
         );
     }
     "Última partida\n\nEl resumen propio aún no está disponible.".into()
 }
 
-fn profile_content(app: &App, profile: &OwnProfile) -> String {
-    let mut content = format!(
-        "Perfil propio\n\nNivel de cuenta   {}\nExperiencia       {} XP",
-        profile.level, profile.xp,
-    );
-    if let Some(competitive) = app.competitive.as_ref() {
-        content.push_str(&format!(
-            "\nRango              {} · {} RR\nCompetitivo        {}/{} victorias",
-            crate::ui::competitive_tier_label(competitive.tier),
-            competitive.ranked_rating,
-            competitive.wins,
-            competitive.games,
-        ));
-    }
-    if !app.competitive_updates.is_empty() {
-        content.push_str("\nCambios RR         ");
-        for (index, update) in app.competitive_updates.iter().enumerate() {
-            if index > 0 {
-                content.push_str(" · ");
-            }
-            content.push_str(&format!("{:+}", update.rr_earned));
-            if update.performance_bonus > 0 {
-                content.push_str(&format!(" (+{} bono)", update.performance_bonus));
-            }
-        }
-    }
-    content
+#[cfg(test)]
+fn content_for(app: &App) -> String {
+    view::content(app, 78)
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
-fn dashboard_content(app: &App, phase: &str) -> String {
-    let mut content = format!("Estado de VALORANT\n\n{phase}");
-    if let Some(match_context) = app.live_match.as_ref() {
-        content.push_str(&format!(
-            "\n\nPartida actual\n{} · {} · {}",
-            match_context.mode,
-            match_context.map,
-            match_context.agent.as_deref().unwrap_or("sin agente"),
-        ));
-    } else if let Some(profile) = app.own_profile.as_ref() {
-        content.push_str(&format!(
-            "\n\nPerfil propio\nNivel {} · {} XP",
-            profile.level, profile.xp,
-        ));
-    } else {
-        content.push_str("\n\nEl tracker observa el cliente de forma local y en modo lectura.");
-    }
-    content
-}
-
+#[cfg(test)]
 fn history_content(app: &App) -> String {
-    if app.history_failed {
-        return "Historial\n\nNo se pudo cargar tu historial ahora. Presiona `r` para reintentar."
-            .into();
-    }
-    let Some(entries) = app.history.as_ref() else {
-        return "Historial\n\nCargando tus partidas recientes…".into();
-    };
-    if entries.is_empty() {
-        return "Historial\n\nNo hay partidas recientes disponibles.".into();
-    }
-    let mut output = String::from("Historial propio\n\nModo                 Cuándo\n");
-    for entry in entries {
-        output.push_str(&format!(
-            "{:<20} {}\n",
-            entry.queue,
-            relative_time(entry.started_at_ms),
-        ));
-    }
-    output.push_str("\nPresiona `r` para actualizar.");
-    output
+    let mut history = App::new(&Config::default());
+    history.selected_tab = 3;
+    history.history = app.history.clone();
+    history.history_failed = app.history_failed;
+    content_for(&history)
 }
 
 fn relative_time(started_at_ms: u64) -> String {
@@ -539,5 +616,204 @@ mod tests {
         let text = history_content(&app);
         assert!(text.contains("competitivo"));
         assert!(!text.contains("match"));
+    }
+
+    fn phase_info(phase: GamePhase) -> StateInfo {
+        StateInfo::new(
+            phase,
+            GameState::Idle,
+            Confidence::High,
+            "test",
+            true,
+            false,
+        )
+    }
+
+    #[test]
+    fn ignores_late_context_and_history_from_a_closed_session() {
+        let mut app = App::new(&Config::default());
+        app.update_state(phase_info(GamePhase::Idle));
+        let generation = app.generation;
+        let epoch = app.epoch;
+        app.update_state(phase_info(GamePhase::ClientClosed));
+        app.apply(Reply::Context {
+            generation,
+            data: Ok(Context::Profile(
+                OwnProfile { level: 50, xp: 10 },
+                None,
+                vec![],
+            )),
+        });
+        app.apply(Reply::History {
+            epoch,
+            data: Ok(vec![HistoryEntry {
+                queue: "competitivo".into(),
+                started_at_ms: 0,
+            }]),
+        });
+        assert!(app.own_profile.is_none());
+        assert!(app.history.is_none());
+        assert!(!app.context_pending && !app.history_pending);
+    }
+
+    #[test]
+    fn preserves_last_history_and_postmatch_when_refresh_fails_or_phase_expires() {
+        let mut app = App::new(&Config::default());
+        app.update_state(phase_info(GamePhase::PostMatch));
+        app.apply(Reply::Context {
+            generation: app.generation,
+            data: Ok(Context::Completed("Rondas propias".into())),
+        });
+        app.update_state(phase_info(GamePhase::GameOpen));
+        assert_eq!(app.completed_match.as_deref(), Some("Rondas propias"));
+        app.history = Some(vec![HistoryEntry {
+            queue: "competitivo".into(),
+            started_at_ms: 0,
+        }]);
+        app.apply(Reply::History {
+            epoch: app.epoch,
+            data: Err(()),
+        });
+        assert!(history_content(&app).contains("competitivo"));
+        assert!(history_content(&app).contains("Última consulta"));
+        app.update_state(phase_info(GamePhase::ClientClosed));
+        assert!(app.completed_match.is_none());
+    }
+
+    #[test]
+    fn unchanged_observations_do_not_redraw_but_recovery_does() {
+        let mut app = App::new(&Config::default());
+        app.update_state(phase_info(GamePhase::Idle));
+        app.dirty = false;
+        app.apply(Reply::Observed {
+            state: Ok(phase_info(GamePhase::Idle)),
+            log_failed: false,
+        });
+        assert!(!app.dirty);
+        app.refresh_failed = true;
+        app.apply(Reply::Observed {
+            state: Ok(phase_info(GamePhase::Idle)),
+            log_failed: false,
+        });
+        assert!(app.dirty && !app.refresh_failed);
+    }
+
+    #[test]
+    fn history_refresh_preserves_selected_match_and_closes_removed_detail() {
+        let entry = |started_at_ms| HistoryEntry {
+            queue: "competitivo".into(),
+            started_at_ms,
+        };
+        let mut app = App::new(&Config::default());
+        app.selected_tab = 3;
+        app.history = Some(vec![entry(200), entry(100)]);
+        app.history_index = 1;
+        app.detail = true;
+        app.apply(Reply::History {
+            epoch: app.epoch,
+            data: Ok(vec![entry(300), entry(200), entry(100)]),
+        });
+        assert_eq!(app.history_index, 2);
+        assert!(app.detail);
+        app.apply(Reply::History {
+            epoch: app.epoch,
+            data: Err(()),
+        });
+        assert_eq!(app.history_index, 2);
+        assert!(app.detail);
+        app.apply(Reply::History {
+            epoch: app.epoch,
+            data: Ok(vec![entry(400), entry(300)]),
+        });
+        assert!(!app.detail);
+        assert!(app.history_index < app.history.as_ref().unwrap().len());
+        app.apply(Reply::History {
+            epoch: app.epoch,
+            data: Ok(vec![]),
+        });
+        assert_eq!(app.history_index, 0);
+        assert!(!app.detail);
+    }
+
+    #[test]
+    fn duplicate_refreshes_are_suppressed_and_navigation_stays_available() {
+        use std::sync::mpsc;
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker = Worker::spawn(move |request, _| match request {
+            Request::History { epoch } => {
+                started_tx.send("history").unwrap();
+                release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                Reply::History {
+                    epoch,
+                    data: Ok(vec![]),
+                }
+            }
+            Request::Save(config) => {
+                started_tx.send("save").unwrap();
+                Reply::Saved(Ok(config))
+            }
+            _ => panic!("unexpected test request"),
+        })
+        .unwrap();
+        let mut app = App::new(&Config::default());
+        app.selected_tab = 3;
+        app.schedule_data(&worker);
+        assert_eq!(
+            started_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            "history"
+        );
+        for _ in 0..20 {
+            app.key(
+                KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
+                &worker,
+            );
+        }
+        app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &worker);
+        assert_eq!(app.selected_tab, 3);
+        assert!(app.focus == Focus::Tabs);
+        app.key(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            &worker,
+        );
+        assert!(app.should_quit);
+        // Barrera simulada, sin escribir configuración ni consultar proveedores.
+        assert!(worker.submit(Request::Save(Config::default())));
+        release_tx.send(()).unwrap();
+        assert_eq!(
+            started_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            "save"
+        );
+    }
+
+    #[test]
+    fn renders_tabs_at_small_sizes_and_scrolls_long_postmatch_tables() {
+        use ratatui::backend::TestBackend;
+        let mut app = App::new(&Config::default());
+        for (width, height) in [(1, 1), (32, 10), (80, 24)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            for tab in 0..TABS.len() {
+                app.selected_tab = tab;
+                terminal
+                    .draw(|frame| render(frame.area(), frame, &mut app))
+                    .unwrap();
+            }
+        }
+        app.selected_tab = 1;
+        app.completed_match = Some(format!("{}Ronda final", "Ronda propia\n".repeat(30)));
+        app.scroll = 30;
+        app.follow_selection = false;
+        let mut terminal = Terminal::new(TestBackend::new(80, 15)).unwrap();
+        terminal
+            .draw(|frame| render(frame.area(), frame, &mut app))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("Ronda final"));
     }
 }

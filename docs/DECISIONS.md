@@ -51,3 +51,11 @@
 **Contexto:** el proyecto quiere calidad auditable, impacto ambiental medido y seguridad de la información desde el inicio, sin burocracia de gran empresa.
 **Decisión:** adoptar los tres sistemas como sistema integrado PHVA proporcional (ver `docs/ISO.md`). Certificación formal opcional a medio plazo.
 **Consecuencias:** tests+clippy+fmt (calidad), medición de recursos (ambiental), `.env`+enmascaramiento+auditorías (seguridad) son parte del flujo normal.
+
+## ADR-012 — Maqueta aprobada y traspaso visual a Rust
+
+**Contexto (2026-08-28):** el usuario elige `docs/mockups` como dirección del diseño final y solicita trasladarlo a Rust. Esto actualiza la condición exploratoria de ADR-009 para esta referencia concreta; el resto de los bocetos sigue siendo histórico.
+
+**Decisión:** conservar Panel/Partida/Perfil/Historial/Ajustes, una fila por jugador y la prioridad visual Aliados → Tus rondas → Enemigos para partidas por equipos/rondas. Temas accesibles, foco por teclado, selección/detalle, tamaños 72/38 columnas y desplazamiento cuando haga falta. Deathmatch y otros modos continuos no inventan una división 5v5 ni timeline. Diagnóstico interno fuera de las vistas principales.
+
+**Consecuencias:** la presentación se implementa en Ratatui con un modo `dashboard --demo` explícitamente ficticio, sin proveedores reales ni persistencia. El ejecutable normal solo muestra datos disponibles y estados pendientes; este traspaso no añade consultas de otros jugadores, marcador/rondas en vivo, apertura de Tracker ni imágenes. El roster completo es un objetivo visual, no una garantía de disponibilidad o permiso para descubrir identidades ocultas. La integración de datos se valida por separado.

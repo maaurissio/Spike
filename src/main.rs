@@ -42,14 +42,18 @@ fn main() {
         }
     };
     match command {
-        Command::Dashboard => {
-            let (config, config_warning) = Config::effective();
+        Command::Dashboard { demo } => {
+            let (config, config_warning) = if demo {
+                (Config::default(), None)
+            } else {
+                Config::effective()
+            };
             if let Some(warning) = config_warning {
                 eprintln!(
                     "Advertencia: configuración ignorada ({warning}). Se usan valores por defecto."
                 );
             }
-            if let Err(error) = tui::run(config) {
+            if let Err(error) = tui::run(config, demo) {
                 eprintln!("No se pudo abrir el dashboard: {error}");
                 std::process::exit(1);
             }
