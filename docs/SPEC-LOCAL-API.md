@@ -1,6 +1,6 @@
 # SPEC-LOCAL-API — Fuente primaria: Local Client API de VALORANT
 
-> Estado: especificación pre-código (contrato). Investigación base: 2026-08-24 sobre `valapidocs.techchrism.me` y repos de la comunidad (ver `README.md:Fuentes`). **Todo lo aquí descrito funciona sin `RIOT_API_KEY` ni RSO** — la API oficial queda como mejora opcional.
+> Estado: contrato técnico actualizado por ADR-014. El roster base local está habilitado en modo lectura; ADR-013 conserva por separado la advertencia de autorización para distribución. Nunca desanonimizar `Incognito`, leer memoria ni automatizar input.
 
 ## 0. Resumen y alcance
 
@@ -73,7 +73,7 @@ Región/shard se derivan del log (`https://glz-(.+?)-1.(.+?).a.pvp.net`) o de la
 
 **Uso en VTracker:**
 * Detectar fase: `PreGame → AgentSelect → InMatch` vía WebSocket o polling de `Pre-Game`/`Current Game`.
-* Mostrar roster: ranks/nivel/agente de los 10 en Agent Select y partida — **incluye perfiles privados** (el cliente ya los recibe; la local API no filtra por privacidad).
+* Prototipo actual: mostrar equipos/participantes, agentes, rango disponible y nombres visibles. `Incognito` se excluye de Name Service y aparece como `Jugador oculto`.
 
 ## 5. PD — datos del jugador y rondas
 
@@ -113,6 +113,8 @@ Todos requieren los 4 headers de §3. `shard` = `na`/`eu`/`ap`/`kr`/`pbe`.
 Reglas para VTracker (ADR-008):
 * `deaths` por ronda: `0..=2` (Clove self-revive y Sage res permiten 2; Phoenix ult no genera kill/death — "matar a la nada").
 * K/D agregado de partida sale de `players[].stats.kills/deaths` del scoreboard oficial, **no** de contar `kills[]` (evita sobreconteo por Phoenix).
+* HS% histórico del roster suma `damage[].headshots/bodyshots/legshots`; KAST cuenta Kill, Assist, Survived o Trade por un compañero dentro de 5 s. La ventana es propia y documentada, no se atribuye a Tracker.gg.
+* El proveedor del roster usa el PUUID solo durante la unión historial/detalle, incluye `Incognito`, deduplica MatchID compartidos y entrega a la TUI únicamente métricas normalizadas.
 * Si `match-details` responde a mitad de partida (raro, a verificar en 2C): el timeline se llena columna por columna. Si 404 → degradación a post-partida.
 
 ## 6. WebSocket local — eventos en vivo
@@ -160,7 +162,7 @@ El password del lockfile y los tokens **solo en memoria**; `doctor` los comprueb
 
 Todo GLZ/PD se normaliza a modelos propios, versionados y con caché L1/L2 (`Arquitectura:9`):
 
-* `Player { puuid, gameName, tagLine, teamId, characterId, rank, accountLevel, peerPublic: bool }` (perfiles privados marcados pero con rank visible vía local)
+* `RosterPlayer { side, slot, is_self, identity, agent, rank, stats }`, sin PUUID ni match ID en la UI; cada campo indica `Available`, `Hidden`, `NotAvailable` o `ApprovalRequired`. La fuente base está conectada; `stats` espera enriquecimiento.
 * `Round { round_num, winning_team, round_result, ceremony, players: Vec<PlayerRoundStat { puuid, kills, deaths, score, damage }> }`
 * `MatchRounds { match_id, mode, rounds: Vec<Round> }` — solo para modos con ronda (ADR-004).
 

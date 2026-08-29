@@ -1,6 +1,6 @@
 # VTracker — Arquitectura y especificación inicial — nombre temporal
 
-> **Alcance vigente (2026-08-28):** el roster de aliados/enemigos con rangos y estadísticas disponibles y permitidos es el requisito principal, confirmado en `docs/DECISIONS.md`, ADR-011. La implementación de datos propios es parcial. Las hipótesis históricas de acceso técnico de este documento no sustituyen la validación de permisos, términos y consentimiento para datos de terceros.
+> **Alcance vigente (2026-08-28):** el roster de aliados/enemigos con rangos y estadísticas disponibles es el requisito principal (ADR-011/014). El prototipo local implementa la fuente base; ADR-013 conserva la advertencia de autorización para distribución sin bloquear el desarrollo solicitado.
 
 > Estado: borrador de arquitectura.  
 > Alcance: decisión y diseño inicial; **no es una implementación**.  
@@ -231,14 +231,14 @@ Fórmulas base ilustrativas:
 
 ```text
 K/D  = kills / deaths                         (definir manejo de deaths = 0)
-HS%  = headshot_kills / kills × 100           (si la fuente entrega headshot kills)
+HS%  = impactos a la cabeza / impactos totales × 100
 WR   = wins / (wins + losses) × 100
 ADR  = total_damage / total_rounds
 ACS  = suma de combat score / total_rounds    (solo si los campos de fuente lo soportan)
-KAST = rondas con Kill, Assist, Survived o Traded / rondas totales × 100
+KAST = rondas con Kill, Assist, Survived o Trade ≤5 s / rondas con timeline × 100
 ```
 
-**Pendiente:** confirmar qué campos expone cada proveedor y fijar definiciones consistentes para KAST, ACS, empates, abandonos, overtime y modos no competitivos. Nunca se deben inventar campos ausentes ni presentar métricas incomparables como equivalentes.
+**Definición vigente del roster:** HS% usa `roundResults[].playerStats[].damage` (`headshots/bodyshots/legshots`); KAST usa kills, assistants, supervivencia y trade de un compañero dentro de 5 s. Esta ventana es una definición propia y explícita porque Tracker Network no publica su algoritmo exacto. Los modos sin timeline dejan KAST ausente; empates y resultados desconocidos no entran al denominador de WR. ACS, abandonos y casos de revive todavía requieren validación con fixtures reales. Nunca se inventan campos ausentes ni se presentan métricas incomparables como equivalentes.
 
 ## 9. Caché de dos niveles
 
@@ -509,7 +509,7 @@ Verificado contra `valapidocs.techchrism.me` (documentación de la API interna d
 | Dato | Fuente | Disponibilidad |
 |---|---|---|
 | Fase real (Lobby/PreGame/AgentSelect/InMatch/PostMatch) | REST local + WebSocket local (eventos) | **En vivo**, event-driven |
-| Roster de las 10 personas (ranks, nivel, agente, perfiles privados incluidos) | `glz-{region}-1.{shard}.a.pvp.net` Pre-Game/Current Game con tokens locales | **En vivo** |
+| Roster real (equipos/participantes, agente, rango disponible, identidad visible) | `glz-{region}-1.{shard}.a.pvp.net` Current Game + Name Service | **Implementado:** `Incognito` permanece anónimo; IDs descartados antes de la TUI |
 | Perfil propio, MMR, historial | `pd.{shard}.a.pvp.net` con tokens locales | En vivo/post |
 | **Desglose por ronda** (`roundResults[]`: `roundNum`, `winningTeam`, `roundResult`, `playerStats[].kills`) | `pd.../match-details/v1/matches/{id}` | **Post-partida** |
 | Kills en vivo dentro de la ronda actual | No expuesto por ninguna API | ❌ Solo OCR del killfeed (frágil) o lectura de memoria (descartada por principios) |

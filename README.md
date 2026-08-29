@@ -4,7 +4,7 @@
 
 VTracker es una aplicación de terminal para observar el estado de VALORANT, consultar datos autorizados de partidas y jugadores, y presentar estadísticas de forma rápida y con bajo consumo de recursos.
 
-**Objetivo principal confirmado el 2026-08-28:** mostrar aliados y enemigos de la partida (diez jugadores en 5v5), con sus agentes, rangos y estadísticas históricas disponibles y permitidos. El perfil propio, historial y resumen postpartida son complementos. **El roster aún no está implementado:** la versión actual solo muestra contexto propio. Véase [ADR-011](docs/DECISIONS.md#adr-011--roster-de-la-partida-como-requisito-principal-2026-08-28).
+**Objetivo principal confirmado el 2026-08-28:** mostrar aliados y enemigos de la partida (diez jugadores en 5v5), con sus agentes, rangos y estadísticas históricas disponibles. El perfil propio, historial y resumen postpartida son complementos. **Roster enriquecido implementado:** la versión actual normaliza equipos/participantes, agentes, rango disponible y nombres visibles, y añade K/D, HS%, KAST, WR y resultados recientes desde un historial acotado. Véanse [ADR-011](docs/DECISIONS.md#adr-011--roster-de-la-partida-como-requisito-principal-2026-08-28) y ADR-014.
 
 Las referencias históricas a acceso mediante tokens locales describen una vía técnica, no una autorización de uso de datos de terceros. Antes de implementar el roster se deben validar fuentes, términos y consentimiento aplicable; las identidades ocultas y datos restringidos se respetan y los campos ausentes se muestran como no disponibles.
 
@@ -49,7 +49,7 @@ Para ver la maqueta completa en Rust, sin VALORANT:
 
 **DEMO** está siempre identificado: todos sus jugadores y estadísticas son ficticios. No crea proveedores reales, no lee configuración personal ni guarda en disco. `p` alterna partida/postpartida, `g` explica por qué el enlace a Tracker no está disponible, `[`/`]` pagina timelines largos. No abre perfiles externos. El HTML original se conserva intacto como referencia.
 
-En modo normal se conservan los datos propios ya disponibles; no se han añadido endpoints. El roster real, marcador y rondas en vivo, estadísticas enriquecidas de Perfil/Historial, resumen de sesión e imágenes siguen pendientes. Se muestran estados vacíos explícitos, nunca fixtures de la demo. Los modos continuos tienen una vista propia sin inventar equipos ni rondas.
+En modo normal se conserva el contexto propio y se añade el roster real desde `Current Game Match` más una resolución de nombres visibles en Name Service. La TUI muestra aliados/enemigos o participantes según el modo, nunca fixtures de la demo. Para cada participante consulta hasta cinco partidas de la cola relevante y deduplica `match-details` compartidos con concurrencia máxima de seis. Las filas `Incognito` conservan el nombre oculto, muestran el agente y reciben métricas cuando PD entrega historial. Marcador y rondas en vivo siguen pendientes.
 
 Las consultas se ejecutan en un trabajador con colas acotadas y una sola operación a la vez; el teclado sigue disponible durante la carga. Un refresh fallido conserva los datos anteriores de la sesión y avisa en la vista. El resumen postpartida permanece al volver al menú, hasta otra partida o el cierre del cliente. Las respuestas atrasadas de fases/sesiones anteriores se descartan.
 
@@ -59,7 +59,7 @@ Están disponibles para edición el intervalo local (1–60 s), `log_transitions
 
 ### Maqueta interactiva
 
-La [primera maqueta de interfaz](docs/mockups/vtracker-maqueta.html) muestra el roster de diez jugadores, perfil, historial, ajustes y postpartida con datos ficticios. Descarga el HTML y ábrelo en tu navegador para interactuar; GitHub muestra su código, no la interfaz. [Archivos y notas de diseño](docs/mockups/README.md). Su presentación ya está trasladada a Rust en `dashboard --demo`; la integración del roster y sus datos reales sigue pendiente.
+La [primera maqueta de interfaz](docs/mockups/vtracker-maqueta.html) muestra el roster de diez jugadores, perfil, historial, ajustes y postpartida con datos ficticios. Descarga el HTML y ábrelo en tu navegador para interactuar; GitHub muestra su código, no la interfaz. [Archivos y notas de diseño](docs/mockups/README.md). Su presentación ya está trasladada a Rust en `dashboard --demo`; el roster y su enriquecimiento histórico ya están conectados y falta validarlos en partidas reales.
 
 | Documento | Contenido |
 |---|---|
@@ -69,6 +69,7 @@ La [primera maqueta de interfaz](docs/mockups/vtracker-maqueta.html) muestra el 
 | [`docs/TRACKERS.md`](docs/TRACKERS.md) | Cómo funcionan los trackers vigentes (Tracker.gg/Overwolf, Blitz, Instalock, Vantage) y qué adopta VTracker |
 | [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) | RAM/cache sin BD + mínimo CPU: `moka`/`cache-rs`/`CacheKit`, dirty-flag Ratatui, perfil release |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | Registro de decisiones (ADRs) |
+| [`docs/ROSTER-POLICY.md`](docs/ROSTER-POLICY.md) | Matriz oficial de autorización y compuerta del roster real |
 | [`docs/SPEC-ROUNDS.md`](docs/SPEC-ROUNDS.md) | Spec del tracking de rondas |
 | [`docs/DESIGN-UI.md`](docs/DESIGN-UI.md) | Spec de interfaz: LIVE MATCH, PostMatch, layouts adaptativos |
 | [`docs/ISO.md`](docs/ISO.md) | Sistema integrado ISO 9001/14001/27001 |
@@ -76,12 +77,12 @@ La [primera maqueta de interfaz](docs/mockups/vtracker-maqueta.html) muestra el 
 
 ## Fuentes de datos — Local Client API (agilizado)
 
-**Investigación 2026-08-24** (ver `Arquitectura-inicial.md:20`): VALORANT expone una **API local** cuando corre — lockfile en `%LocalAppData%\Riot Games\Riot Client\Config\lockfile` + REST en `127.0.0.1:{port}` + WebSocket `wss://riot:{password}@127.0.0.1:{port}` — y con sus tokens se accede a GLZ/PD. **No se necesita API key de producción ni RSO** para la experiencia principal:
+**Investigación técnica 2026-08-24** (ver `Arquitectura-inicial.md:20`): VALORANT expone una **API local** cuando corre — lockfile en `%LocalAppData%\Riot Games\Riot Client\Config\lockfile` + REST en `127.0.0.1:{port}` + WebSocket `wss://riot:{password}@127.0.0.1:{port}` — y con sus tokens se accede técnicamente a GLZ/PD. Eso no autoriza una experiencia de terceros sin registrar el producto: la revisión oficial del 2026-08-28 exige auditoría y RSO/opt-in para estadísticas de jugadores. Véanse [ADR-013](docs/DECISIONS.md#adr-013--compuerta-oficial-para-el-roster-real-2026-08-28) y [la matriz del roster](docs/ROSTER-POLICY.md).
 
 | Dato | Fuente | Cuándo |
 |---|---|---|
 | Fase (`Lobby`/`PreGame`/`AgentSelect`/`InMatch`/`PostMatch`) | WebSocket local | En vivo, event-driven; mapeo de URIs aún en validación |
-| Roster 10 jugadores (ranks, nivel, agente — privados incluidos) | GLZ Pre-Game/Current Game | En vivo |
+| Roster 10 jugadores (campos presentes técnicamente) | GLZ Pre-Game/Current Game | **No habilitado:** requiere definición y aprobación de Riot; nunca desanonimizar |
 | Perfil propio, MMR, historial | PD con tokens locales | En vivo/post |
 | **Desglose por ronda** (`roundResults[]`: kills/deaths/resultado por ronda) | PD `match-details` | Al terminar la partida |
 
@@ -121,7 +122,7 @@ Lectura solo-lectura (sin inyección ni memoria); el password del lockfile vive 
 
 **Conclusiones de la investigación** (detalle en `Arquitectura-inicial.md:20`):
 
-1. La Local Client API (lockfile) cubre fases reales, roster, perfil, historial y rondas **sin API key ni RSO**.
+1. La Local Client API (lockfile) permite observar técnicamente fases y respuestas de contexto propio sin una developer key, pero no sustituye el registro, auditoría ni RSO/opt-in exigidos para presentar datos de jugadores.
 2. `match-details` entrega el desglose por ronda **post-partida** (`PostGameDetails: null` en vivo).
 3. Los kills dentro de la ronda en curso **no están expuestos por ninguna API** — solo OCR (frágil) o lectura de memoria (descartada por principios).
 
@@ -315,7 +316,7 @@ vtracker cache <subcomando>                      # inspeccionar/limpiar caché L
 
 ## Estado actual y conformidad
 
-MVP local y Prioridad 1 completados. **Implementado:** `LocalClientSource` lee el lockfile y valida `GET /help`, entitlements, sesión externa, región/locale y el handshake/suscripción WAMP, exclusivamente en `127.0.0.1`; su listener persistente acepta solo URIs de fase inequívocas y descarta payloads. Los tokens nunca se imprimen ni persisten. GLZ entrega contexto propio de partida y PD entrega perfil propio (nivel, XP, MMR/RR y cambios competitivos), historial propio, postpartida y agregados propios de las últimas 1–5 partidas por modo, mapa y agente. La base de `vtracker dashboard` usa Ratatui/Crossterm y solo renderiza cuando hay cambios. **Siguiente:** validar fuentes y permisos para el roster, implementar aliados/enemigos con rangos y estadísticas disponibles y permitidos (ADR-011), y validar transiciones reales. Nombre `VTracker` temporal hasta release.
+MVP local y Prioridad 1 completados. **Implementado:** `LocalClientSource` lee el lockfile y valida `GET /help`, entitlements, sesión externa, región/locale y WebSocket, exclusivamente en modo lectura. Los tokens nunca se imprimen ni persisten. GLZ entrega contexto y roster de la partida; Name Service resuelve una vez los nombres visibles, excluyendo `Incognito`. PD enriquece cada fila —también anónima— con hasta cinco partidas para K/D, HS%, KAST, WR y forma reciente; los detalles compartidos se consultan una sola vez y los IDs se descartan antes de la TUI. **Siguiente:** validar latencia y campos en partidas reales y completar marcador/rondas. Nombre `VTracker` temporal hasta release.
 
 **Compromiso ISO:** se adoptan principios **ISO 9001 (Calidad) + ISO 14001 (Ambiental) + ISO 27001 (Seguridad)** como sistema integrado PHVA desde el inicio (ver `docs/ISO.md` y `Arquitectura-inicial.md:21`). No es burocracia vacía: tests + `clippy`/`fmt` (calidad), `cargo` eficiente + caché (ambiental), `.env` + `doctor` enmascarado + RSO (seguridad). Certificación formal opcional a medio plazo.
 

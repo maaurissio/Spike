@@ -1,11 +1,18 @@
 //! Contexto mínimo y de solo lectura de la partida en curso.
 
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use reqwest::{StatusCode, blocking::Client};
 use serde_json::Value;
 
-use super::ProviderError;
+use super::{
+    ProviderError,
+    roster::{competitive_tier_label, visible_names},
+    roster_stats::{RosterStatsRequest, RosterStatsSource},
+};
+use crate::models::roster::{
+    DataAvailability, HistoricalStats, RosterPlayer, RosterSide, RosterSnapshot,
+};
 
 const CLIENT_PLATFORM: &str = "ew0KCSJwbGF0Zm9ybVR5cGUiOiAiUEMiLA0KCSJwbGF0Zm9ybU9TIjogIldpbmRvd3MiLA0KCSJwbGF0Zm9ybU9TVmVyc2lvbiI6ICIxMC4wLjE5MDQyLjEuMjU2LjY0Yml0IiwNCgkicGxhdGZvcm1DaGlwc2V0IjogIlVua25vd24iDQp9";
 
@@ -19,16 +26,20 @@ pub(crate) struct LiveMatchRequest {
     pub own_puuid: String,
 }
 
-pub(crate) struct LiveMatchSource(Client);
+pub(crate) struct LiveMatchSource {
+    client: Client,
+    stats: RosterStatsSource,
+}
 
 impl LiveMatchSource {
     pub(crate) fn new() -> Self {
-        Self(
-            Client::builder()
+        Self {
+            client: Client::builder()
                 .timeout(Duration::from_secs(5))
                 .build()
                 .expect("cliente live"),
-        )
+            stats: RosterStatsSource::new(),
+        }
     }
 
     pub(crate) fn fetch(
@@ -40,7 +51,7 @@ impl LiveMatchSource {
             request.region, request.shard, request.match_id
         );
         let response = self
-            .0
+            .client
             .get(url)
             .header("X-Riot-ClientPlatform", CLIENT_PLATFORM)
             .header("X-Riot-ClientVersion", &request.client_version)
@@ -49,10 +60,26 @@ impl LiveMatchSource {
             .send()
             .map_err(|_| ProviderError::Network("no se pudo conectar a GLZ".into()))?;
         match response.status() {
-            status if status.is_success() => response
-                .json::<Value>()
-                .map_err(|_| ProviderError::Parse("JSON inválido en partida actual".into()))
-                .and_then(|payload| parse_live_match(&payload, &request.own_puuid)),
+            status if status.is_success() => {
+                let payload = response
+                    .json::<Value>()
+                    .map_err(|_| ProviderError::Parse("JSON inválido en partida actual".into()))?;
+                let names = self
+                    .fetch_visible_names(request, &payload)
+                    .unwrap_or_default();
+                let subjects = roster_subjects(&payload);
+                let stats_request = RosterStatsRequest {
+                    shard: request.shard.clone(),
+                    client_version: request.client_version.clone(),
+                    access_token: request.access_token.clone(),
+                    entitlement_token: request.entitlement_token.clone(),
+                };
+                let queue = history_queue(&payload);
+                let stats = self
+                    .stats
+                    .fetch(&stats_request, &subjects, queue.as_deref());
+                parse_live_match_with_names_and_stats(&payload, &request.own_puuid, &names, &stats)
+            }
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
                 Err(ProviderError::Unauthorized("GLZ rechazó la sesión".into()))
             }
@@ -61,28 +88,90 @@ impl LiveMatchSource {
             ))),
         }
     }
+
+    /// Una sola resolución por partida. Las identidades marcadas como ocultas
+    /// se excluyen de la solicitud y nunca se reconstruyen.
+    fn fetch_visible_names(
+        &self,
+        request: &LiveMatchRequest,
+        match_payload: &Value,
+    ) -> Result<HashMap<String, String>, ProviderError> {
+        let subjects = match_payload
+            .get("Players")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|player| {
+                !player
+                    .pointer("/PlayerIdentity/Incognito")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            })
+            .filter_map(|player| player.get("Subject").and_then(Value::as_str))
+            .filter(|subject| !subject.is_empty())
+            .collect::<Vec<_>>();
+        if subjects.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let url = format!(
+            "https://pd.{}.a.pvp.net/name-service/v2/players",
+            request.shard
+        );
+        let response = self
+            .client
+            .post(url)
+            .header("X-Riot-ClientPlatform", CLIENT_PLATFORM)
+            .header("X-Riot-ClientVersion", &request.client_version)
+            .header("X-Riot-Entitlements-JWT", &request.entitlement_token)
+            .bearer_auth(&request.access_token)
+            .json(&subjects)
+            .send()
+            .map_err(|_| ProviderError::Network("no se pudo resolver el roster".into()))?;
+        match response.status() {
+            status if status.is_success() => response
+                .json::<Value>()
+                .map(|payload| visible_names(&payload))
+                .map_err(|_| ProviderError::Parse("JSON inválido en Name Service".into())),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(ProviderError::Unauthorized(
+                "Name Service rechazó la sesión".into(),
+            )),
+            status => Err(ProviderError::Unavailable(format!(
+                "Name Service respondió HTTP {status}"
+            ))),
+        }
+    }
 }
 
-/// Solo datos propios o de la partida; nunca expone el roster.
+/// Contexto de pantalla ya normalizado. No contiene PUUID ni MatchID.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LiveMatchContext {
     pub mode: String,
     pub map: String,
     pub agent: Option<String>,
+    pub roster: Option<RosterSnapshot>,
 }
 
+#[cfg(test)]
 pub(crate) fn parse_live_match(
     payload: &Value,
     own_puuid: &str,
+) -> Result<LiveMatchContext, ProviderError> {
+    parse_live_match_with_names_and_stats(payload, own_puuid, &HashMap::new(), &HashMap::new())
+}
+
+fn parse_live_match_with_names_and_stats(
+    payload: &Value,
+    own_puuid: &str,
+    names: &HashMap<String, String>,
+    stats: &HashMap<String, HistoricalStats>,
 ) -> Result<LiveMatchContext, ProviderError> {
     let object = payload
         .as_object()
         .ok_or_else(|| ProviderError::Parse("partida actual inválida".into()))?;
     let mode = required_asset(object, "ModeID")?;
     let map = required_asset(object, "MapID")?;
-    let agent = object
-        .get("Players")
-        .and_then(Value::as_array)
+    let players = object.get("Players").and_then(Value::as_array);
+    let agent = players
         .and_then(|players| {
             players
                 .iter()
@@ -92,7 +181,157 @@ pub(crate) fn parse_live_match(
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .map(agent_label);
-    Ok(LiveMatchContext { mode, map, agent })
+    let roster = players
+        .filter(|players| !players.is_empty())
+        .and_then(|players| normalize_roster(players, own_puuid, names, stats).ok());
+    Ok(LiveMatchContext {
+        mode,
+        map,
+        agent,
+        roster,
+    })
+}
+
+fn normalize_roster(
+    players: &[Value],
+    own_puuid: &str,
+    names: &HashMap<String, String>,
+    stats: &HashMap<String, HistoricalStats>,
+) -> Result<RosterSnapshot, ProviderError> {
+    let own_team = players
+        .iter()
+        .find(|player| player.get("Subject").and_then(Value::as_str) == Some(own_puuid))
+        .and_then(|player| player.get("TeamID"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let distinct_teams = players
+        .iter()
+        .filter_map(|player| player.get("TeamID").and_then(Value::as_str))
+        .filter(|team| !team.is_empty())
+        .collect::<std::collections::HashSet<_>>();
+    let free_for_all = own_team.is_empty() || distinct_teams.len() < 2;
+    let mut ally_slot = 0_u8;
+    let mut enemy_slot = 0_u8;
+    let mut participant_slot = 0_u8;
+
+    let normalized = players
+        .iter()
+        .map(|player| {
+            let subject = player
+                .get("Subject")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let is_self = subject == own_puuid;
+            let team = player
+                .get("TeamID")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let (side, slot) = if free_for_all {
+                participant_slot = participant_slot.saturating_add(1);
+                (RosterSide::Participant, participant_slot)
+            } else if team == own_team {
+                ally_slot = ally_slot.saturating_add(1);
+                (RosterSide::Ally, ally_slot)
+            } else {
+                enemy_slot = enemy_slot.saturating_add(1);
+                (RosterSide::Enemy, enemy_slot)
+            };
+            let hidden = player
+                .pointer("/PlayerIdentity/Incognito")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let identity = if is_self {
+                DataAvailability::Available("Tú".into())
+            } else if hidden {
+                DataAvailability::Hidden
+            } else {
+                names
+                    .get(subject)
+                    .cloned()
+                    .map(DataAvailability::Available)
+                    .unwrap_or(DataAvailability::NotAvailable)
+            };
+            let agent = player
+                .get("CharacterID")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(agent_label)
+                .filter(|value| value != "no disponible")
+                .map(DataAvailability::Available)
+                .unwrap_or(DataAvailability::NotAvailable);
+            let rank = player
+                .get("CompetitiveTier")
+                .or_else(|| player.pointer("/PlayerIdentity/CompetitiveTier"))
+                .or_else(|| player.pointer("/SeasonalBadgeInfo/Rank"))
+                .and_then(Value::as_u64)
+                .and_then(competitive_tier_label)
+                .map(DataAvailability::Available)
+                .unwrap_or(DataAvailability::NotAvailable);
+            RosterPlayer {
+                side,
+                slot,
+                is_self,
+                identity,
+                agent,
+                rank,
+                stats: stats
+                    .get(subject)
+                    .cloned()
+                    .map(DataAvailability::Available)
+                    .unwrap_or(DataAvailability::NotAvailable),
+            }
+        })
+        .collect();
+    RosterSnapshot::new(normalized)
+        .map_err(|error| ProviderError::Parse(format!("roster inválido: {error}")))
+}
+
+fn roster_subjects(payload: &Value) -> Vec<String> {
+    payload
+        .get("Players")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|player| {
+            !player
+                .get("IsCoach")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .filter_map(|player| player.get("Subject").and_then(Value::as_str))
+        .filter(|subject| !subject.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+/// El payload live no siempre distingue normal de competitivo. Cuando la cola
+/// no viene informada, las partidas con bomba muestran el histórico competitivo
+/// (la referencia útil junto al rango); los modos explícitos conservan su cola.
+fn history_queue(payload: &Value) -> Option<String> {
+    if let Some(queue) = payload
+        .pointer("/MatchmakingData/QueueID")
+        .or_else(|| payload.pointer("/MatchmakingData/QueueId"))
+        .and_then(Value::as_str)
+        .filter(|queue| !queue.is_empty())
+    {
+        return Some(queue.to_owned());
+    }
+    if payload.get("ProvisioningFlow").and_then(Value::as_str) == Some("CustomGame") {
+        return None;
+    }
+    let mode = payload
+        .get("ModeID")
+        .and_then(Value::as_str)
+        .map(asset_label)?;
+    match mode.to_ascii_lowercase().as_str() {
+        "bomb" => Some("competitive".into()),
+        "deathmatch" => Some("deathmatch".into()),
+        "teamdeathmatch" => Some("teamdeathmatch".into()),
+        "swiftplay" => Some("swiftplay".into()),
+        "spikerush" | "quickbomb" => Some("spikerush".into()),
+        "escalation" => Some("escalation".into()),
+        _ => None,
+    }
 }
 
 fn required_asset(
@@ -231,6 +470,82 @@ mod tests {
         .unwrap();
 
         assert_eq!(context.agent.as_deref(), Some("Omen"));
+    }
+
+    #[test]
+    fn normalizes_visible_hidden_and_ranked_roster_without_ids() {
+        let names = HashMap::from([
+            ("me".to_owned(), "MiCuenta#LAS".to_owned()),
+            ("ally".to_owned(), "Aliado#LAN".to_owned()),
+            ("enemy".to_owned(), "Rival#BR".to_owned()),
+            ("hidden-secret".to_owned(), "No debe aparecer".to_owned()),
+        ]);
+        let stats = HashMap::from([(
+            "hidden-secret".to_owned(),
+            HistoricalStats {
+                matches: 2,
+                decided_matches: 2,
+                wins: 1,
+                kills: 30,
+                deaths: 20,
+                ..Default::default()
+            },
+        )]);
+        let context = parse_live_match_with_names_and_stats(
+            &serde_json::json!({
+                "ModeID": "/Game/GameModes/Bomb/Bomb",
+                "MapID": "/Game/Maps/Triad/Triad",
+                "Players": [
+                    {"Subject":"me", "TeamID":"Blue", "CharacterID":"8e253930-4c05-31dd-1b6c-968525494517", "CompetitiveTier":18},
+                    {"Subject":"ally", "TeamID":"Blue", "CharacterID":"320b2a48-4d9b-a075-30f1-1f93a9b638fa", "CompetitiveTier":12},
+                    {"Subject":"enemy", "TeamID":"Red", "CharacterID":"add6443a-41bd-e414-f6ad-e58d267f4e95", "CompetitiveTier":27},
+                    {"Subject":"hidden-secret", "TeamID":"Red", "CharacterID":"569fdd95-4d10-43ab-ca70-79becc718b46", "PlayerIdentity":{"Incognito":true}, "SeasonalBadgeInfo":{"Rank":6}}
+                ]
+            }),
+            "me",
+            &names,
+            &stats,
+        )
+        .unwrap();
+        let roster = context.roster.unwrap();
+
+        assert_eq!(roster.allies().count(), 2);
+        assert_eq!(roster.enemies().count(), 2);
+        assert_eq!(
+            roster.players[1].identity,
+            DataAvailability::Available("Aliado#LAN".into())
+        );
+        assert_eq!(
+            roster.players[2].rank,
+            DataAvailability::Available("Radiante".into())
+        );
+        assert_eq!(roster.players[3].identity, DataAvailability::Hidden);
+        assert!(matches!(
+            &roster.players[3].stats,
+            DataAvailability::Available(stats) if stats.kd_hundredths() == Some(150)
+        ));
+        let debug = format!("{roster:?}");
+        assert!(!debug.contains("hidden-secret") && !debug.contains("No debe aparecer"));
+    }
+
+    #[test]
+    fn normalizes_deathmatch_as_participants_instead_of_fake_teams() {
+        let context = parse_live_match(
+            &serde_json::json!({
+                "ModeID": "/Game/GameModes/Deathmatch/Deathmatch",
+                "MapID": "/Game/Maps/Ascent/Ascent",
+                "Players": [
+                    {"Subject":"me", "TeamID":"Neutral", "CharacterID":"/Game/Agents/Omen"},
+                    {"Subject":"other", "TeamID":"Neutral", "CharacterID":"/Game/Agents/Jett"}
+                ]
+            }),
+            "me",
+        )
+        .unwrap();
+        let roster = context.roster.unwrap();
+        assert_eq!(roster.participants().count(), 2);
+        assert_eq!(roster.allies().count(), 0);
+        assert_eq!(roster.enemies().count(), 0);
     }
 
     #[test]

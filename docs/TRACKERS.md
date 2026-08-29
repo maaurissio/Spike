@@ -1,5 +1,7 @@
 # Cómo funcionan los trackers (y qué toma VTracker de cada uno)
 
+> Nota 2026-08-28: ADR-014 habilita el desarrollo local del roster; ADR-013 conserva la advertencia para distribución. VTracker nunca desanonimiza `Incognito`.
+
 > Investigación exhaustiva 2026-08-25 sobre Tracker.gg (Overwolf), Blitz.gg, Instalock y Vantage + val-local-api. Objetivo: entender arquitectura real vigente y qué aplicar/simplificar en un `.exe` sin BD, solo durante la partida.
 
 ## 1. Tracker.gg / Valorant Tracker (Overwolf) — 230M+ jugadores

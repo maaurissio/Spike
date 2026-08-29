@@ -12,6 +12,8 @@ pub mod match_detail;
 pub mod mock;
 pub mod process;
 pub mod profile;
+pub(crate) mod roster;
+pub(crate) mod roster_stats;
 
 pub use capabilities::ProviderError;
 pub use capabilities::{GameStateSource, StateInfo};

@@ -1,6 +1,8 @@
 //! Modelos normalizados y fuente-agnósticos de partidas.
 #![allow(dead_code)] // Se conectan cuando MatchDetailSource entregue datos reales.
 
+pub(crate) mod roster;
+
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

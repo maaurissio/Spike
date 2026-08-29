@@ -1,6 +1,6 @@
 # VTracker — Registro de Decisiones (ADRs)
 
-> Alcance de producto vigente: ADR-011. Las afirmaciones históricas sobre acceso técnico sin RSO no constituyen validación de permisos para mostrar datos de terceros.
+> Alcance de producto vigente: ADR-011 y ADR-014. ADR-013 conserva la advertencia oficial para distribución, pero ya no bloquea el desarrollo local del roster solicitado.
 
 > Cada decisión relevante se registra con contexto, decisión y consecuencias. Numeradas y inmutables: una decisión nueva que revoca otra crea un nuevo ADR que la referencia. Detalle técnico en los specs (`docs/SPEC-*.md`).
 
@@ -68,3 +68,23 @@
 **Decisión:** conservar Panel/Partida/Perfil/Historial/Ajustes, una fila por jugador y la prioridad visual Aliados → Tus rondas → Enemigos para partidas por equipos/rondas. Temas accesibles, foco por teclado, selección/detalle, tamaños 72/38 columnas y desplazamiento cuando haga falta. Deathmatch y otros modos continuos no inventan una división 5v5 ni timeline. Diagnóstico interno fuera de las vistas principales.
 
 **Consecuencias:** la presentación se implementa en Ratatui con un modo `dashboard --demo` explícitamente ficticio, sin proveedores reales ni persistencia. El ejecutable normal solo muestra datos disponibles y estados pendientes; este traspaso no añade consultas de otros jugadores, marcador/rondas en vivo, apertura de Tracker ni imágenes. El roster completo sigue siendo el requisito principal de ADR-011 y no se considera cumplido por la demo. La integración real y sus permisos se validan por separado, sin descubrir identidades ocultas.
+
+## ADR-013 — Compuerta oficial para el roster real (2026-08-28)
+
+**Contexto:** la disponibilidad técnica de datos mediante servicios internos del cliente no determina su autorización. La revisión de la política oficial de VALORANT exige registrar todo producto para jugadores, RSO/opt-in para estadísticas personales y respeto de identidades ocultas. También enumera como no aprobado el *scouting* de estadísticas del rival antes de empezar una partida. Las solicitudes de Personal Key no están soportadas actualmente y RSO requiere una production key/aplicación aprobada.
+
+**Decisión:** ADR-011 sigue definiendo el requisito visual, pero el binario de producción no consulta ni presenta nombres, rangos o estadísticas de terceros hasta obtener registro, auditoría y RSO/opt-in aplicable. Las estadísticas previas de rivales se eliminan del alcance real por ser *scouting* no aprobado. Se permite mantener la demo ficticia como evidencia del caso de uso y crear un modelo normalizado sin identificadores; el parser de roster se compila solo en tests con fixtures fabricados.
+
+**Sustitución:** esta decisión sustituye la conclusión de autorización de ADR-002 ("experiencia completa sin RSO"), no sus observaciones técnicas ni la fuente local usada para contexto propio. Cualquier spec histórico que afirme que acceso local autoriza perfiles privados debe leerse bajo esta decisión y `docs/ROSTER-POLICY.md`.
+
+**Consecuencias:** la TUI normal informa que el roster real requiere aprobación y no intenta *scouting*. Desbloquear el proveedor exige una revisión nueva de producto, production key/RSO, consentimiento verificable, definición de campos/fases aprobados y pruebas de privacidad. La falta de esa coordinación externa es un bloqueo explícito, no una función silenciosamente incompleta.
+
+## ADR-014 — Continuar el roster local como función principal (2026-08-28)
+
+**Contexto:** el usuario ratificó que la finalidad de VTracker es mostrar en la partida actual los datos disponibles de aliados y enemigos, de forma similar a trackers existentes. No quiere convertirlo en comparador de amigos ni limitarlo a estadísticas propias. Las identidades ocultas pueden conservar datos de juego disponibles, pero no deben ser descubiertas.
+
+**Decisión:** continuar la implementación técnica local del roster. `Current Game Match` aporta equipos, agentes y rango cuando el campo existe; Name Service resuelve únicamente identidades no ocultas. El modelo entregado a la TUI descarta PUUID y MatchID. Los modos libres muestran participantes y los modos por equipos muestran aliados/enemigos. El enriquecimiento consulta hasta cinco partidas por jugador desde PD, deduplica detalles y agrega K/D, HS% por impactos, KAST, win rate y resultados recientes. Una fila permanece `—` si su historial o detalle no está disponible.
+
+**Límites técnicos:** solo lectura mediante HTTP del cliente/servicios ya autenticados; nunca lectura de memoria, inyección, captura de input ni automatización del juego. `Incognito` produce `Jugador oculto`, se excluye de la resolución de nombres y conserva únicamente su agente/rango/métricas normalizadas. Los PUUID y MatchID se usan dentro del proveedor durante la unión y se descartan antes de construir el estado de pantalla. Un fallo de Name Service o PD no elimina el roster base.
+
+**Relación con ADR-013:** sustituye únicamente su bloqueo de implementación. La advertencia de política continúa documentada y deberá resolverse antes de distribuir el producto; no se presenta esta decisión como aprobación de Riot.

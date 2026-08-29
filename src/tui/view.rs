@@ -7,7 +7,13 @@ use ratatui::{
 };
 
 use super::{App, Focus, TABS, relative_time, theme::Palette};
-use crate::providers::capabilities::GamePhase;
+use crate::{
+    models::{
+        MatchOutcome,
+        roster::{DataAvailability, HistoricalStats, RosterPlayer, RosterSide, RosterSnapshot},
+    },
+    providers::capabilities::GamePhase,
+};
 
 pub(super) struct Screen {
     pub lines: Vec<Line<'static>>,
@@ -326,17 +332,141 @@ fn match_view(s: &mut Screen, app: &App) {
             context.agent.as_deref().unwrap_or("—")
         ));
         s.text("Resumen al terminar; sin timeline.");
+        if let Some(roster) = &context.roster {
+            if roster.participants().next().is_some() {
+                s.section("PARTICIPANTES", s.palette.focus);
+                live_roster(s, roster, RosterSide::Participant);
+            } else {
+                s.section("ALIADOS", s.palette.good);
+                live_roster(s, roster, RosterSide::Ally);
+                s.section("ENEMIGOS", s.palette.bad);
+                live_roster(s, roster, RosterSide::Enemy);
+            }
+        }
     } else {
         s.section("ALIADOS", s.palette.good);
-        s.text(format!(
-            "Tú / {}\nOtros jugadores: no integrados.",
-            context.agent.as_deref().unwrap_or("—")
-        ));
+        if let Some(roster) = &context.roster {
+            live_roster(s, roster, RosterSide::Ally);
+        } else {
+            s.text(format!(
+                "Tú / {}\nRoster todavía no disponible.",
+                context.agent.as_deref().unwrap_or("—"),
+            ));
+        }
         s.section("TUS RONDAS", s.palette.focus);
         s.row(Line::styled("—K   /   —D", s.palette.pending));
         s.text("Datos en vivo aún no disponibles.");
         s.section("ENEMIGOS", s.palette.bad);
-        s.text("Listado no integrado.");
+        if let Some(roster) = &context.roster {
+            live_roster(s, roster, RosterSide::Enemy);
+        } else {
+            s.text("Roster todavía no disponible.");
+        }
+    }
+}
+
+fn live_roster(s: &mut Screen, roster: &RosterSnapshot, side: RosterSide) {
+    let wide = s.width >= 70;
+    let players = roster
+        .players
+        .iter()
+        .filter(|player| player.side == side)
+        .collect::<Vec<_>>();
+    if players.is_empty() {
+        s.text("Sin jugadores disponibles.");
+        return;
+    }
+    s.row(Line::styled(
+        if wide {
+            "  JUGADOR       AGENTE    RANGO      K/D   HS%  KAST%  WR%   ÚLT.5"
+        } else {
+            "  JUGADOR   AGENTE   RANGO  K/D"
+        },
+        s.palette.dim,
+    ));
+    for player in players {
+        let marker = if player.is_self { "▶ " } else { "  " };
+        let name = roster_identity(player);
+        let agent = available_text(&player.agent, "Agente —");
+        let rank = available_text(&player.rank, "Rango —");
+        let metrics = match &player.stats {
+            DataAvailability::Available(stats) => roster_metrics(stats),
+            DataAvailability::Hidden
+            | DataAvailability::NotAvailable
+            | DataAvailability::ApprovalRequired => {
+                ["—".into(), "—".into(), "—".into(), "—".into(), "—".into()]
+            }
+        };
+        let style = if player.is_self {
+            s.palette.focus
+        } else {
+            s.palette.base
+        };
+        let mut spans = vec![
+            Span::styled(marker, s.palette.focus),
+            Span::styled(cell(&name, if wide { 14 } else { 10 }), style),
+            Span::styled(cell(&agent, if wide { 10 } else { 9 }), s.palette.dim),
+            Span::styled(cell(&rank, if wide { 11 } else { 8 }), s.palette.rank),
+            Span::styled(cell(&metrics[0], if wide { 6 } else { 5 }), style),
+        ];
+        if wide {
+            spans.extend([
+                Span::styled(cell(&metrics[1], 6), style),
+                Span::styled(cell(&metrics[2], 7), style),
+                Span::styled(cell(&metrics[3], 6), style),
+                Span::styled(cell(&metrics[4], 6), style),
+            ]);
+        }
+        s.row(Line::from(spans));
+    }
+}
+
+fn roster_metrics(stats: &HistoricalStats) -> [String; 5] {
+    let kd = stats
+        .kd_hundredths()
+        .map(|value| format!("{}.{:02}", value / 100, value % 100))
+        .unwrap_or_else(|| "—".into());
+    let percent = |value: Option<u32>| {
+        value
+            .map(|value| format!("{}.{:01}%", value / 10, value % 10))
+            .unwrap_or_else(|| "—".into())
+    };
+    let hs = percent(stats.headshot_rate_tenths());
+    let kast = percent(stats.kast_rate_tenths());
+    let wr = percent(stats.win_rate_tenths());
+    let recent = if stats.recent.is_empty() {
+        "—".into()
+    } else {
+        stats
+            .recent
+            .iter()
+            .map(|outcome| match outcome {
+                MatchOutcome::Win => 'V',
+                MatchOutcome::Loss => 'D',
+                MatchOutcome::Draw => 'E',
+                MatchOutcome::Unknown => '·',
+            })
+            .collect()
+    };
+    [kd, hs, kast, wr, recent]
+}
+
+fn roster_identity(player: &RosterPlayer) -> String {
+    match &player.identity {
+        DataAvailability::Available(value) => value.clone(),
+        DataAvailability::Hidden => "Jugador oculto".into(),
+        DataAvailability::NotAvailable | DataAvailability::ApprovalRequired => {
+            format!("Jugador {}", player.slot)
+        }
+    }
+}
+
+fn available_text(value: &DataAvailability<String>, fallback: &str) -> String {
+    match value {
+        DataAvailability::Available(value) => value.clone(),
+        DataAvailability::Hidden
+        | DataAvailability::NotAvailable
+        | DataAvailability::ApprovalRequired => fallback.into(),
     }
 }
 
@@ -913,9 +1043,10 @@ mod tests {
             map: "Ascent".into(),
             mode: "Bomb".into(),
             agent: Some("Sova".into()),
+            roster: None,
         });
         let text = snapshot(&mut app, 72, 24);
-        assert!(text.contains("Sova") && text.contains("no integrados") && text.contains("—K"));
+        assert!(text.contains("Sova") && text.contains("no disponible") && text.contains("—K"));
         for absent in ["Norte", "4:2", "R7*", "secret-source", "Confianza", "DEMO"] {
             assert!(!text.contains(absent));
         }
@@ -941,6 +1072,88 @@ mod tests {
         let summary = super::super::completed_match_content(&completed);
         assert!(summary.ends_with("2  1  0  —"));
         assert!(!summary.contains("not-for-display"));
+    }
+
+    #[test]
+    fn real_roster_renders_visible_and_hidden_players_without_identifiers() {
+        let mut app = App::new(&Config::default());
+        app.selected_tab = 1;
+        app.update_state(StateInfo::new(
+            GamePhase::InMatch,
+            GameState::GameOpen,
+            Confidence::High,
+            "local-websocket",
+            true,
+            true,
+        ));
+        let player = |side: RosterSide,
+                      slot: u8,
+                      is_self: bool,
+                      identity: DataAvailability<String>,
+                      agent: &str,
+                      rank: &str| {
+            let stats = if matches!(identity, DataAvailability::Hidden) {
+                DataAvailability::Available(HistoricalStats {
+                    matches: 2,
+                    decided_matches: 2,
+                    wins: 1,
+                    kills: 3,
+                    deaths: 2,
+                    headshots: 2,
+                    bodyshots: 2,
+                    kast_rounds: 2,
+                    rounds_played: 3,
+                    recent: vec![MatchOutcome::Win, MatchOutcome::Loss],
+                    ..Default::default()
+                })
+            } else {
+                DataAvailability::NotAvailable
+            };
+            RosterPlayer {
+                side,
+                slot,
+                is_self,
+                identity,
+                agent: DataAvailability::Available(agent.into()),
+                rank: DataAvailability::Available(rank.into()),
+                stats,
+            }
+        };
+        app.live_match = Some(LiveMatchContext {
+            map: "Haven".into(),
+            mode: "Bomb".into(),
+            agent: Some("Omen".into()),
+            roster: Some(
+                RosterSnapshot::new(vec![
+                    player(
+                        RosterSide::Ally,
+                        1,
+                        true,
+                        DataAvailability::Available("Tú".into()),
+                        "Omen",
+                        "Diamante 1",
+                    ),
+                    player(
+                        RosterSide::Enemy,
+                        1,
+                        false,
+                        DataAvailability::Hidden,
+                        "Jett",
+                        "Radiante",
+                    ),
+                ])
+                .unwrap(),
+            ),
+        });
+
+        let text = snapshot(&mut app, 72, 24);
+        assert!(text.contains("Tú") && text.contains("Omen") && text.contains("Diamante 1"));
+        assert!(
+            text.contains("Jugador oculto") && text.contains("Jett") && text.contains("Radiante")
+        );
+        assert!(text.contains("K/D") && text.contains("HS%") && text.contains("KAST%"));
+        assert!(text.contains("1.50") && text.contains("50.0%") && text.contains("VD"));
+        assert!(!text.contains("puuid") && !text.contains("local-websocket"));
     }
 
     #[test]

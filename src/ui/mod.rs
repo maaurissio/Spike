@@ -383,6 +383,7 @@ mod tests {
             mode: "deathmatch".into(),
             map: "Ascent".into(),
             agent: Some("Omen".into()),
+            roster: None,
         };
 
         let view = player_view(&info, Some(&context), None, None);

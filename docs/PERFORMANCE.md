@@ -1,5 +1,7 @@
 # PERFORMANCE — RAM, cache sin BD y mínimo uso de CPU (solo durante la partida)
 
+> El roster enriquecido está habilitado por ADR-014 y vive solo en memoria durante la consulta, sin PUUID ni MatchID en el estado de pantalla. Cada carga consulta como máximo 12 jugadores × 5 partidas, ejecuta hasta 6 solicitudes simultáneas y deduplica `match-details` compartidos antes de agregarlos.
+
 > Principio: sin base de datos, sin persistencia innecesaria. Todo vive **solo mientras dura la sesión de juego**. Inspirado en RATATUI #1338, Zellij, `moka-rs`, `cache-rs`, `CacheKit` (2026), `rustfaq: binary size` y `val-local-api` SSE. Presupuestos: **<10 MB RAM, <1% CPU idle, <100ms arranque, <5 MB binario**.
 
 ## 1. Por qué sin BD
