@@ -15,7 +15,6 @@ use crate::{
         GameStateSource, HistorySource, LiveMatchSource, LocalClientSource, MatchDetailSource,
         PlayerProfileSource, ProcessGameStateSource, StateInfo,
         capabilities::GamePhase,
-        history::HistoryEntry,
         live_match::LiveMatchContext,
         profile::{CompetitiveProfile, CompetitiveUpdate, OwnProfile},
         resolve_with_fallback,
@@ -26,19 +25,14 @@ use crate::{
 pub(super) enum Request {
     Observe { log: bool },
     Context { phase: GamePhase, generation: u64 },
+    Profile { epoch: u64 },
     History { epoch: u64 },
     Save(Config),
 }
 
 pub(super) enum Context {
     Live(LiveMatchContext),
-    Profile(
-        OwnProfile,
-        Option<CompetitiveProfile>,
-        Vec<CompetitiveUpdate>,
-    ),
-    /// Texto normalizado: sin IDs ni roster en el estado de pantalla.
-    Completed(String),
+    Completed(super::PostMatch),
 }
 
 pub(super) enum Reply {
@@ -50,9 +44,20 @@ pub(super) enum Reply {
         generation: u64,
         data: Result<Context, ()>,
     },
+    Profile {
+        epoch: u64,
+        data: Result<
+            (
+                OwnProfile,
+                Option<CompetitiveProfile>,
+                Vec<CompetitiveUpdate>,
+            ),
+            (),
+        >,
+    },
     History {
         epoch: u64,
-        data: Result<Vec<HistoryEntry>, ()>,
+        data: Result<Vec<super::HistoryItem>, ()>,
     },
     Saved(Result<Config, ()>),
 }
@@ -74,6 +79,10 @@ impl Worker {
             },
             Request::Context { generation, .. } => Reply::Context {
                 generation,
+                data: Err(()),
+            },
+            Request::Profile { epoch } => Reply::Profile {
+                epoch,
                 data: Err(()),
             },
             Request::History { epoch } => Reply::History {
@@ -192,15 +201,16 @@ impl Sources {
                 generation,
                 data: self.context(phase, stop),
             },
+            Request::Profile { epoch } => Reply::Profile {
+                epoch,
+                data: self.profile(stop),
+            },
             Request::History { epoch } => Reply::History {
                 epoch,
                 data: if self.simulation {
                     Err(())
                 } else {
-                    self.local
-                        .history_request(10)
-                        .and_then(|request| self.history.fetch_own(&request))
-                        .map_err(|_| ())
+                    self.history(stop)
                 },
             },
             Request::Save(config) => {
@@ -225,29 +235,94 @@ impl Sources {
                 .local
                 .match_detail_request()
                 .and_then(|request| self.details.fetch_completed(&request))
-                .map(|completed| Context::Completed(super::completed_match_content(&completed)))
+                .map(super::PostMatch::from_completed)
+                .map(Context::Completed)
                 .map_err(|_| ()),
-            GamePhase::Idle => {
-                let request = self.local.profile_request().map_err(|_| ())?;
-                if stop.load(Ordering::Acquire) {
-                    return Err(());
-                }
-                let profile = self.profile.fetch_own(&request).map_err(|_| ())?;
-                if stop.load(Ordering::Acquire) {
-                    return Err(());
-                }
-                let competitive = self.profile.fetch_own_competitive(&request).ok().flatten();
-                if stop.load(Ordering::Acquire) {
-                    return Err(());
-                }
-                let updates = self
-                    .profile
-                    .fetch_own_competitive_updates(&request, 5)
-                    .unwrap_or_default();
-                Ok(Context::Profile(profile, competitive, updates))
-            }
             _ => Err(()),
         }
+    }
+
+    fn profile(
+        &self,
+        stop: &AtomicBool,
+    ) -> Result<
+        (
+            OwnProfile,
+            Option<CompetitiveProfile>,
+            Vec<CompetitiveUpdate>,
+        ),
+        (),
+    > {
+        if self.simulation || stop.load(Ordering::Acquire) {
+            return Err(());
+        }
+        let request = self.local.profile_request().map_err(|_| ())?;
+        let profile = self.profile.fetch_own(&request).map_err(|_| ())?;
+        if stop.load(Ordering::Acquire) {
+            return Err(());
+        }
+        let mut competitive = self.profile.fetch_own_competitive(&request).ok().flatten();
+        let updates = self
+            .profile
+            .fetch_own_competitive_updates(&request, 5)
+            .unwrap_or_default();
+        if competitive.is_none() {
+            competitive = updates
+                .first()
+                .and_then(CompetitiveProfile::from_latest_update);
+        }
+        Ok((profile, competitive, updates))
+    }
+
+    fn history(&self, stop: &AtomicBool) -> Result<Vec<super::HistoryItem>, ()> {
+        if stop.load(Ordering::Acquire) {
+            return Err(());
+        }
+        let request = self.local.history_request(5).map_err(|_| ())?;
+        let matches = self.history.fetch_own_matches(&request).map_err(|_| ())?;
+        let mut indexed = Vec::with_capacity(matches.len());
+        let mut matches = matches.into_iter().enumerate();
+        loop {
+            let batch = matches.by_ref().take(5).collect::<Vec<_>>();
+            if batch.is_empty() || stop.load(Ordering::Acquire) {
+                break;
+            }
+            let mut results = thread::scope(|scope| {
+                batch
+                    .into_iter()
+                    .map(|(index, item)| {
+                        let detail_request = request.match_detail_request(item.match_id);
+                        scope.spawn(move || {
+                            let details =
+                                self.details
+                                    .fetch_own_totals(&detail_request)
+                                    .ok()
+                                    .map(|totals| super::HistoryDetails {
+                                        map: totals.map,
+                                        agent: totals.agent,
+                                        outcome: totals.stats.outcome,
+                                        stats: totals.stats.stats,
+                                        own_score: totals.own_score,
+                                        opponent_score: totals.opponent_score,
+                                    });
+                            (
+                                index,
+                                super::HistoryItem {
+                                    entry: item.entry,
+                                    details,
+                                },
+                            )
+                        })
+                    })
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .map(|handle| handle.join().expect("trabajador de historial"))
+                    .collect::<Vec<_>>()
+            });
+            indexed.append(&mut results);
+        }
+        indexed.sort_by_key(|(index, _)| *index);
+        Ok(indexed.into_iter().map(|(_, item)| item).collect())
     }
 }
 

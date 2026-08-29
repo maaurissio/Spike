@@ -109,7 +109,7 @@ impl HistorySource {
             .clone()
             .unwrap_or_else(|| format!("https://pd.{}.a.pvp.net", request.shard));
         let url = format!(
-            "{base}/match-history/v1/history/{}?startIndex=0&endIndex={}",
+            "{base}/match-history/v1/history/{}?startIndex=0&endIndex={}&queue=competitive",
             request.own_puuid, request.limit
         );
         let response = self
@@ -162,6 +162,12 @@ fn parse_own_history(
         .ok_or_else(|| ProviderError::Parse("History ausente o inválido".into()))?;
     history
         .iter()
+        .filter(|entry| {
+            entry
+                .get("QueueID")
+                .and_then(Value::as_str)
+                .is_some_and(|queue| queue.eq_ignore_ascii_case("competitive"))
+        })
         .take(usize::from(limit))
         .map(|entry| {
             let match_id = entry
@@ -238,8 +244,8 @@ mod tests {
             &serde_json::json!({
                 "Subject": "me",
                 "History": [
-                    {"MatchID": "private-id", "QueueID": "competitive", "GameStartTime": 123},
-                    {"MatchID": "another-id", "QueueID": "deathmatch", "GameStartTime": 456}
+                    {"MatchID": "dm-id", "QueueID": "deathmatch", "GameStartTime": 456},
+                    {"MatchID": "private-id", "QueueID": "competitive", "GameStartTime": 123}
                 ]
             }),
             "me",
@@ -281,14 +287,14 @@ mod tests {
             let request = String::from_utf8_lossy(&request[..size]).to_ascii_lowercase();
             assert!(
                 request.starts_with(
-                    "get /match-history/v1/history/me?startindex=0&endindex=5 http/1.1"
+                    "get /match-history/v1/history/me?startindex=0&endindex=5&queue=competitive http/1.1"
                 )
             );
             assert!(request.contains("authorization: bearer access"));
             assert!(request.contains("x-riot-entitlements-jwt: entitlement"));
             let body = serde_json::json!({
                 "Subject": "me",
-                "History": [{"MatchID": "id", "QueueID": "unrated", "GameStartTime": 123}]
+                "History": [{"MatchID": "id", "QueueID": "competitive", "GameStartTime": 123}]
             })
             .to_string();
             let response = format!(
@@ -301,7 +307,7 @@ mod tests {
 
         let entries = source.fetch_own(&request()).unwrap();
 
-        assert_eq!(entries[0].queue, "normal");
+        assert_eq!(entries[0].queue, "competitivo");
         server.join().unwrap();
     }
 }

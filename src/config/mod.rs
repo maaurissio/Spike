@@ -63,7 +63,7 @@ impl Default for Config {
         Self {
             interval: Duration::from_secs(3),
             log_transitions: false,
-            theme: Theme::System,
+            theme: Theme::Dark,
         }
     }
 }
@@ -240,10 +240,10 @@ mod tests {
         assert!(config.log_transitions);
     }
     #[test]
-    fn themes_roundtrip_and_legacy_configs_use_terminal_defaults() {
+    fn themes_roundtrip_and_legacy_configs_use_dark_product_palette() {
         assert_eq!(
             Config::parse("interval_seconds = 4").unwrap().theme,
-            Theme::System
+            Theme::Dark
         );
         for theme in [Theme::System, Theme::Dark, Theme::Light, Theme::Mono] {
             let config = Config {

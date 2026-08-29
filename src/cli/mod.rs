@@ -56,7 +56,7 @@ impl Default for StatsArgs {
 pub fn parse(args: &[String]) -> Result<Command, String> {
     let mut iter = args.iter().map(|s| s.as_str());
     let Some(command) = iter.next() else {
-        return Ok(Command::Watch(WatchArgs::default()));
+        return Ok(Command::Dashboard { demo: false });
     };
 
     if matches!(command, "-h" | "--help" | "help") {
@@ -104,7 +104,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     }
     if command != "watch" {
         return Err(format!(
-            "Comando no disponible en el MVP: {command}\nUsa `vtracker watch`."
+            "Comando no disponible: {command}\nUsa `vtracker` o `vtracker --help`."
         ));
     }
 
@@ -237,8 +237,8 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_watch_when_no_args() {
-        assert_eq!(parse(&s(&[])), Ok(Command::Watch(WatchArgs::default())));
+    fn defaults_to_dashboard_when_no_args() {
+        assert_eq!(parse(&s(&[])), Ok(Command::Dashboard { demo: false }));
     }
 
     #[test]

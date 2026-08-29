@@ -50,8 +50,23 @@ pub(crate) struct CompetitiveProfile {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CompetitiveUpdate {
     pub tier_after: u32,
+    pub ranked_rating_after: Option<u32>,
     pub rr_earned: i32,
     pub performance_bonus: i32,
+}
+
+impl CompetitiveProfile {
+    /// Respaldo cuando MMR no enlaza correctamente el acto vigente, pero el
+    /// historial competitivo sí entrega el último rango/RR confirmado.
+    pub(crate) fn from_latest_update(update: &CompetitiveUpdate) -> Option<Self> {
+        let ranked_rating = update.ranked_rating_after?;
+        (update.tier_after >= 3).then_some(Self {
+            tier: update.tier_after,
+            ranked_rating,
+            wins: 0,
+            games: 0,
+        })
+    }
 }
 
 pub(crate) struct PlayerProfileSource {
@@ -232,31 +247,46 @@ fn parse_own_competitive(
             "MMR no corresponde al jugador autenticado".into(),
         ));
     }
-    let season_id = payload
+    let latest = payload
         .get("LatestCompetitiveUpdate")
-        .and_then(Value::as_object)
+        .and_then(Value::as_object);
+    let season_id = latest
         .and_then(|update| update.get("SeasonID"))
-        .and_then(Value::as_str);
-    let Some(season_id) = season_id.filter(|season| !season.is_empty()) else {
+        .and_then(Value::as_str)
+        .filter(|season| !season.is_empty());
+    let seasonal = season_id.and_then(|season_id| {
+        payload
+            .get("QueueSkills")
+            .and_then(Value::as_object)
+            .and_then(|queues| queues.get("competitive"))
+            .and_then(Value::as_object)
+            .and_then(|queue| queue.get("SeasonalInfoBySeasonID"))
+            .and_then(Value::as_object)
+            .and_then(|seasons| seasons.get(season_id))
+            .and_then(Value::as_object)
+    });
+    if let Some(seasonal) = seasonal {
+        return Ok(Some(CompetitiveProfile {
+            tier: required_u32(seasonal, "CompetitiveTier")?,
+            ranked_rating: required_u32(seasonal, "RankedRating")?,
+            wins: optional_u32(seasonal, "NumberOfWins").unwrap_or(0),
+            games: optional_u32(seasonal, "NumberOfGames").unwrap_or(0),
+        }));
+    }
+    let Some(latest) = latest else {
         return Ok(None);
     };
-    let seasonal = payload
-        .get("QueueSkills")
-        .and_then(Value::as_object)
-        .and_then(|queues| queues.get("competitive"))
-        .and_then(Value::as_object)
-        .and_then(|queue| queue.get("SeasonalInfoBySeasonID"))
-        .and_then(Value::as_object)
-        .and_then(|seasons| seasons.get(season_id))
-        .and_then(Value::as_object);
-    let Some(seasonal) = seasonal else {
+    let Some(tier) = optional_u32(latest, "TierAfterUpdate").filter(|tier| *tier >= 3) else {
+        return Ok(None);
+    };
+    let Some(ranked_rating) = optional_u32(latest, "RankedRatingAfterUpdate") else {
         return Ok(None);
     };
     Ok(Some(CompetitiveProfile {
-        tier: required_u32(seasonal, "CompetitiveTier")?,
-        ranked_rating: required_u32(seasonal, "RankedRating")?,
-        wins: required_u32(seasonal, "NumberOfWins")?,
-        games: required_u32(seasonal, "NumberOfGames")?,
+        tier,
+        ranked_rating,
+        wins: 0,
+        games: 0,
     }))
 }
 
@@ -283,11 +313,19 @@ fn parse_own_competitive_updates(
                 .ok_or_else(|| ProviderError::Parse("cambio competitivo inválido".into()))?;
             Ok(CompetitiveUpdate {
                 tier_after: required_u32(entry, "TierAfterUpdate")?,
+                ranked_rating_after: optional_u32(entry, "RankedRatingAfterUpdate"),
                 rr_earned: required_i32(entry, "RankedRatingEarned")?,
                 performance_bonus: required_i32(entry, "RankedRatingPerformanceBonus")?,
             })
         })
         .collect()
+}
+
+fn optional_u32(object: &serde_json::Map<String, Value>, field: &str) -> Option<u32> {
+    object
+        .get(field)
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
 }
 
 fn required_u32(
@@ -407,7 +445,7 @@ mod tests {
             &serde_json::json!({
                 "Subject": "me",
                 "Matches": [
-                    {"MatchID": "discarded", "TierAfterUpdate": 18, "RankedRatingEarned": 20, "RankedRatingPerformanceBonus": 3},
+                    {"MatchID": "discarded", "TierAfterUpdate": 18, "RankedRatingAfterUpdate": 64, "RankedRatingEarned": 20, "RankedRatingPerformanceBonus": 3},
                     {"MatchID": "discarded-too", "TierAfterUpdate": 18, "RankedRatingEarned": -17, "RankedRatingPerformanceBonus": 0}
                 ]
             }),
@@ -417,8 +455,30 @@ mod tests {
         .unwrap();
 
         assert_eq!(updates.len(), 2);
+        assert_eq!(updates[0].ranked_rating_after, Some(64));
         assert_eq!(updates[0].rr_earned, 20);
         assert_eq!(updates[1].rr_earned, -17);
+    }
+
+    #[test]
+    fn falls_back_to_latest_competitive_update_when_season_link_is_missing() {
+        let competitive = parse_own_competitive(
+            &serde_json::json!({
+                "Subject": "me",
+                "LatestCompetitiveUpdate": {
+                    "TierAfterUpdate": 18,
+                    "RankedRatingAfterUpdate": 64
+                },
+                "QueueSkills": {"competitive": {"SeasonalInfoBySeasonID": {}}}
+            }),
+            "me",
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(competitive.tier, 18);
+        assert_eq!(competitive.ranked_rating, 64);
+        assert_eq!((competitive.wins, competitive.games), (0, 0));
     }
 
     #[test]

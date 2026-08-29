@@ -41,6 +41,7 @@ const HELP_ENDPOINT: &str = "/help";
 const ENTITLEMENTS_ENDPOINT: &str = "/entitlements/v1/token";
 const EXTERNAL_SESSIONS_ENDPOINT: &str = "/product-session/v1/external-sessions";
 const REGION_LOCALE_ENDPOINT: &str = "/riotclient/region-locale";
+const CLIENT_PLATFORM: &str = "ew0KCSJwbGF0Zm9ybVR5cGUiOiAiUEMiLA0KCSJwbGF0Zm9ybU9TIjogIldpbmRvd3MiLA0KCSJwbGF0Zm9ybU9TVmVyc2lvbiI6ICIxMC4wLjE5MDQyLjEuMjU2LjY0Yml0IiwNCgkicGxhdGZvcm1DaGlwc2V0IjogIlVua25vd24iDQp9";
 const WAMP_SUBSCRIBE: u8 = 5;
 const WAMP_EVENT: u8 = 8;
 const JSON_API_EVENT_TOPIC: &str = "OnJsonApiEvent";
@@ -50,6 +51,9 @@ const EVENT_PHASE_TTL: Duration = Duration::from_secs(15);
 /// VALORANT sigue abierto incluso después de volver al menú. Nunca usar el
 /// proceso como confirmación indefinida de `InMatch`.
 const IN_MATCH_PHASE_TTL: Duration = Duration::from_secs(60);
+/// Recupera la fase cuando el dashboard se abre después del evento inicial y
+/// confirma periódicamente que la partida todavía existe.
+const ACTIVE_PHASE_PROBE_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LocalWsEvent {
@@ -124,6 +128,8 @@ pub struct LocalClientSource {
     client: Client,
     lockfile_path: Option<PathBuf>,
     event_phase: Arc<Mutex<Option<EventPhase>>>,
+    last_phase_probe: Arc<Mutex<Option<Instant>>>,
+    glz_base_url: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -131,6 +137,13 @@ struct EventPhase {
     phase: GamePhase,
     observed_at: Instant,
     match_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ActivePhaseProbe {
+    InMatch(String),
+    AgentSelect(String),
+    NoActiveMatch,
 }
 
 impl LocalClientSource {
@@ -150,6 +163,8 @@ impl LocalClientSource {
             client,
             lockfile_path,
             event_phase: Arc::new(Mutex::new(None)),
+            last_phase_probe: Arc::new(Mutex::new(None)),
+            glz_base_url: None,
         }
     }
 
@@ -251,13 +266,216 @@ impl LocalClientSource {
 
     fn event_match_id(&self) -> Option<String> {
         let mut current = self.event_phase.lock().ok()?;
-        if current
-            .as_ref()
-            .is_some_and(|event| event.observed_at.elapsed() > EVENT_PHASE_TTL)
-        {
+        let expired = current.as_ref().is_some_and(|event| {
+            let ttl = if event.phase == GamePhase::InMatch {
+                IN_MATCH_PHASE_TTL
+            } else {
+                EVENT_PHASE_TTL
+            };
+            event.observed_at.elapsed() > ttl
+        });
+        if expired {
             *current = None;
         }
         current.as_ref().and_then(|event| event.match_id.clone())
+    }
+
+    fn phase_probe_due(&self) -> bool {
+        let Ok(mut last) = self.last_phase_probe.lock() else {
+            return false;
+        };
+        if last.is_some_and(|at| at.elapsed() < ACTIVE_PHASE_PROBE_INTERVAL) {
+            return false;
+        }
+        *last = Some(Instant::now());
+        true
+    }
+
+    /// Consulta autoritativa de solo lectura. A diferencia del WebSocket, estos
+    /// endpoints responden con el estado actual aunque VTracker se abra tarde.
+    fn probe_active_phase(&self, lockfile: &Lockfile) -> Result<ActivePhaseProbe, ProviderError> {
+        let tokens = self.tokens_from(lockfile)?;
+        let sessions = self.json_from(lockfile, EXTERNAL_SESSIONS_ENDPOINT)?;
+        let session = valorant_session_info(
+            &sessions,
+            puuid_from_access_token(&tokens.access_token).as_deref(),
+        )?;
+        let base = self.glz_base_url.clone().unwrap_or_else(|| {
+            format!(
+                "https://glz-{}-1.{}.a.pvp.net",
+                session.region, session.shard
+            )
+        });
+        if let Some(match_id) = self.remote_match_id(
+            &format!("{base}/core-game/v1/players/{}", session.own_puuid),
+            &session,
+            &tokens,
+            "Current Game Player",
+        )? {
+            return Ok(ActivePhaseProbe::InMatch(match_id));
+        }
+        if let Some(match_id) = self.remote_match_id(
+            &format!("{base}/pregame/v1/players/{}", session.own_puuid),
+            &session,
+            &tokens,
+            "Pre-Game Player",
+        )? {
+            return Ok(ActivePhaseProbe::AgentSelect(match_id));
+        }
+        Ok(ActivePhaseProbe::NoActiveMatch)
+    }
+
+    fn remote_match_id(
+        &self,
+        url: &str,
+        session: &ValorantSessionInfo,
+        tokens: &LocalTokens,
+        endpoint: &str,
+    ) -> Result<Option<String>, ProviderError> {
+        let response = self
+            .client
+            .get(url)
+            .header("X-Riot-ClientPlatform", CLIENT_PLATFORM)
+            .header("X-Riot-ClientVersion", &session.client_version)
+            .header("X-Riot-Entitlements-JWT", &tokens.entitlement_token)
+            .bearer_auth(&tokens.access_token)
+            .send()
+            .map_err(|_| ProviderError::Network(format!("no se pudo consultar {endpoint}")))?;
+        match response.status() {
+            status if status.is_success() => {
+                let payload = response
+                    .json::<Value>()
+                    .map_err(|_| ProviderError::Parse(format!("JSON inválido en {endpoint}")))?;
+                let match_id = payload
+                    .get("MatchID")
+                    .and_then(Value::as_str)
+                    .filter(|value| {
+                        !value.is_empty()
+                            && value.chars().all(|character| {
+                                character.is_ascii_alphanumeric() || character == '-'
+                            })
+                    })
+                    .map(ToOwned::to_owned)
+                    .ok_or_else(|| {
+                        ProviderError::Parse(format!("MatchID ausente en {endpoint}"))
+                    })?;
+                Ok(Some(match_id))
+            }
+            StatusCode::NOT_FOUND => Ok(None),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(ProviderError::Unauthorized(
+                format!("GLZ rechazó la sesión en {endpoint}"),
+            )),
+            StatusCode::TOO_MANY_REQUESTS => Err(ProviderError::RateLimited(format!(
+                "GLZ limitó temporalmente {endpoint}"
+            ))),
+            status => Err(ProviderError::Unavailable(format!(
+                "GLZ respondió HTTP {status} en {endpoint}"
+            ))),
+        }
+    }
+
+    /// La respuesta de Current Game solo informa la familia del modo. La cola
+    /// elegida permanece en la party y permite distinguir Competitivo/Normal.
+    fn current_queue(
+        &self,
+        session: &ValorantSessionInfo,
+        tokens: &LocalTokens,
+    ) -> Result<Option<String>, ProviderError> {
+        let base = self.glz_base_url.clone().unwrap_or_else(|| {
+            format!(
+                "https://glz-{}-1.{}.a.pvp.net",
+                session.region, session.shard
+            )
+        });
+        let player = self.remote_json(
+            &format!("{base}/parties/v1/players/{}", session.own_puuid),
+            session,
+            tokens,
+            "Party Player",
+        )?;
+        let Some(party_id) = player
+            .as_ref()
+            .and_then(|payload| payload.get("CurrentPartyID"))
+            .and_then(Value::as_str)
+            .filter(|value| {
+                !value.is_empty()
+                    && value
+                        .chars()
+                        .all(|character| character.is_ascii_alphanumeric() || character == '-')
+            })
+        else {
+            return Ok(None);
+        };
+        let party = self.remote_json(
+            &format!("{base}/parties/v1/parties/{party_id}"),
+            session,
+            tokens,
+            "Party",
+        )?;
+        Ok(party
+            .as_ref()
+            .and_then(|payload| payload.pointer("/MatchmakingData/QueueID"))
+            .and_then(Value::as_str)
+            .filter(|queue| !queue.is_empty())
+            .map(ToOwned::to_owned))
+    }
+
+    fn remote_json(
+        &self,
+        url: &str,
+        session: &ValorantSessionInfo,
+        tokens: &LocalTokens,
+        endpoint: &str,
+    ) -> Result<Option<Value>, ProviderError> {
+        let response = self
+            .client
+            .get(url)
+            .header("X-Riot-ClientPlatform", CLIENT_PLATFORM)
+            .header("X-Riot-ClientVersion", &session.client_version)
+            .header("X-Riot-Entitlements-JWT", &tokens.entitlement_token)
+            .bearer_auth(&tokens.access_token)
+            .send()
+            .map_err(|_| ProviderError::Network(format!("no se pudo consultar {endpoint}")))?;
+        match response.status() {
+            status if status.is_success() => response
+                .json::<Value>()
+                .map(Some)
+                .map_err(|_| ProviderError::Parse(format!("JSON inválido en {endpoint}"))),
+            StatusCode::NOT_FOUND => Ok(None),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(ProviderError::Unauthorized(
+                format!("GLZ rechazó la sesión en {endpoint}"),
+            )),
+            StatusCode::TOO_MANY_REQUESTS => Err(ProviderError::RateLimited(format!(
+                "GLZ limitó temporalmente {endpoint}"
+            ))),
+            status => Err(ProviderError::Unavailable(format!(
+                "GLZ respondió HTTP {status} en {endpoint}"
+            ))),
+        }
+    }
+
+    fn apply_phase_probe(&self, probe: ActivePhaseProbe) {
+        match probe {
+            ActivePhaseProbe::InMatch(match_id) => {
+                self.set_event_phase(GamePhase::InMatch, Some(match_id));
+            }
+            ActivePhaseProbe::AgentSelect(match_id) => {
+                self.set_event_phase(GamePhase::AgentSelect, Some(match_id));
+            }
+            ActivePhaseProbe::NoActiveMatch => {
+                let phase = self
+                    .event_phase
+                    .lock()
+                    .ok()
+                    .and_then(|current| current.as_ref().map(|event| event.phase));
+                if phase == Some(GamePhase::InMatch) {
+                    // `set_event_phase` conserva el MatchID para el resumen.
+                    self.set_event_phase(GamePhase::PostMatch, None);
+                } else if matches!(phase, Some(GamePhase::PreGame | GamePhase::AgentSelect)) {
+                    self.set_event_phase(GamePhase::Lobby, None);
+                }
+            }
+        }
     }
 
     /// Construye el contexto efímero para una única consulta post-partida.
@@ -300,6 +518,7 @@ impl LocalClientSource {
             &sessions,
             puuid_from_access_token(&tokens.access_token).as_deref(),
         )?;
+        let queue = self.current_queue(&session, &tokens).ok().flatten();
         Ok(LiveMatchRequest {
             match_id,
             region: session.region,
@@ -308,6 +527,7 @@ impl LocalClientSource {
             access_token: tokens.access_token,
             entitlement_token: tokens.entitlement_token,
             own_puuid: session.own_puuid,
+            queue,
         })
     }
 
@@ -515,6 +735,8 @@ impl Clone for LocalClientSource {
             client: self.client.clone(),
             lockfile_path: self.lockfile_path.clone(),
             event_phase: Arc::clone(&self.event_phase),
+            last_phase_probe: Arc::clone(&self.last_phase_probe),
+            glz_base_url: self.glz_base_url.clone(),
         }
     }
 }
@@ -708,6 +930,12 @@ impl GameStateSource for LocalClientSource {
 
         self.check_health(&lockfile)?;
         let coarse = game::detect().state;
+        if coarse == GameState::GameOpen
+            && self.phase_probe_due()
+            && let Ok(probe) = self.probe_active_phase(&lockfile)
+        {
+            self.apply_phase_probe(probe);
+        }
         if let Some(phase) = self.event_phase(coarse == GameState::GameOpen) {
             return Ok(state_from_event_phase(phase));
         }
@@ -955,6 +1183,130 @@ mod tests {
         let source = LocalClientSource::with_lockfile_path(Some(PathBuf::from("unused")));
         source.set_event_phase(GamePhase::InMatch, Some("match-1".into()));
         source.set_event_phase(GamePhase::PostMatch, None);
+
+        assert_eq!(source.event_match_id().as_deref(), Some("match-1"));
+    }
+
+    #[test]
+    fn active_probe_recovers_a_match_when_websocket_started_late() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 4096];
+                let size = stream.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(&request[..size]).to_ascii_lowercase();
+                let path = request.lines().next().unwrap_or_default();
+                let body = if path.starts_with("get /entitlements/v1/token ") {
+                    assert!(request.contains("authorization: basic"));
+                    serde_json::json!({"accessToken":"access", "token":"entitlement"})
+                } else if path.starts_with("get /product-session/v1/external-sessions ") {
+                    serde_json::json!({
+                        "valorant": {
+                            "productId":"valorant",
+                            "version":"version",
+                            "launchConfiguration": {
+                                "arguments":["-ares-deployment=la2", "-ares-puuid=player-1"]
+                            }
+                        }
+                    })
+                } else {
+                    assert!(path.starts_with("get /core-game/v1/players/player-1 "));
+                    assert!(request.contains("authorization: bearer access"));
+                    assert!(request.contains("x-riot-entitlements-jwt: entitlement"));
+                    serde_json::json!({"Subject":"player-1", "MatchID":"match-1"})
+                }
+                .to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        let path = temp_lockfile(&format!("riot:1:{port}:secret:http"));
+        let mut source = LocalClientSource::with_lockfile_path(Some(path.clone()));
+        source.glz_base_url = Some(format!("http://127.0.0.1:{port}"));
+        let lockfile = source.read_lockfile().unwrap();
+
+        let probe = source.probe_active_phase(&lockfile).unwrap();
+        source.apply_phase_probe(probe);
+
+        assert_eq!(source.event_phase(true), Some(GamePhase::InMatch));
+        assert_eq!(source.event_match_id().as_deref(), Some("match-1"));
+        server.join().unwrap();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn reads_current_queue_from_party_without_retaining_party_id() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 4096];
+                let size = stream.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(&request[..size]).to_ascii_lowercase();
+                let path = request.lines().next().unwrap_or_default();
+                assert!(request.contains("authorization: bearer access"));
+                assert!(request.contains("x-riot-entitlements-jwt: entitlement"));
+                let body = if path.starts_with("get /parties/v1/players/player-1 ") {
+                    serde_json::json!({"CurrentPartyID":"party-1"})
+                } else {
+                    assert!(path.starts_with("get /parties/v1/parties/party-1 "));
+                    serde_json::json!({"MatchmakingData":{"QueueID":"competitive"}})
+                }
+                .to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        let mut source = LocalClientSource::with_lockfile_path(Some(PathBuf::from("unused")));
+        source.glz_base_url = Some(format!("http://{address}"));
+        let session = ValorantSessionInfo {
+            shard: "na".into(),
+            region: "latam".into(),
+            client_version: "version".into(),
+            own_puuid: "player-1".into(),
+        };
+        let tokens = LocalTokens {
+            access_token: "access".into(),
+            entitlement_token: "entitlement".into(),
+        };
+
+        assert_eq!(
+            source.current_queue(&session, &tokens).unwrap().as_deref(),
+            Some("competitive")
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn authoritative_no_match_moves_previous_match_to_postmatch() {
+        let source = LocalClientSource::with_lockfile_path(Some(PathBuf::from("unused")));
+        source.set_event_phase(GamePhase::InMatch, Some("match-1".into()));
+
+        source.apply_phase_probe(ActivePhaseProbe::NoActiveMatch);
+
+        assert_eq!(source.event_phase(true), Some(GamePhase::PostMatch));
+        assert_eq!(source.event_match_id().as_deref(), Some("match-1"));
+    }
+
+    #[test]
+    fn in_match_identifier_uses_the_longer_active_phase_ttl() {
+        let source = LocalClientSource::with_lockfile_path(Some(PathBuf::from("unused")));
+        if let Ok(mut phase) = source.event_phase.lock() {
+            *phase = Some(EventPhase {
+                phase: GamePhase::InMatch,
+                observed_at: Instant::now() - EVENT_PHASE_TTL - Duration::from_secs(1),
+                match_id: Some("match-1".into()),
+            });
+        }
 
         assert_eq!(source.event_match_id().as_deref(), Some("match-1"));
     }

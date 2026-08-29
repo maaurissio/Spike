@@ -88,3 +88,19 @@
 **Límites técnicos:** solo lectura mediante HTTP del cliente/servicios ya autenticados; nunca lectura de memoria, inyección, captura de input ni automatización del juego. `Incognito` produce `Jugador oculto`, se excluye de la resolución de nombres y conserva únicamente su agente/rango/métricas normalizadas. Los PUUID y MatchID se usan dentro del proveedor durante la unión y se descartan antes de construir el estado de pantalla. Un fallo de Name Service o PD no elimina el roster base.
 
 **Relación con ADR-013:** sustituye únicamente su bloqueo de implementación. La advertencia de política continúa documentada y deberá resolverse antes de distribuir el producto; no se presenta esta decisión como aprobación de Riot.
+
+## ADR-015 — Estadísticas históricas exclusivamente de Ranked (2026-08-29)
+
+**Contexto:** usar la cola de la partida actual mezclaba Deathmatch y otros modos con el rendimiento competitivo. En modos sin rondas dejaba HS%/KAST/rango incompletos y hacía que la forma reciente no fuera comparable.
+
+**Decisión:** el historial visible, `ÚLT.5` y todas las métricas históricas del roster —K/D, HS%, KAST, WR, forma y respaldo de rango— usan siempre las cinco partidas `competitive` más recientes, sin importar el modo actual. Panel, Perfil e Historial propio aplican el mismo criterio.
+
+**Consecuencias:** una partida Deathmatch sigue mostrando su roster real, pero las estadísticas de cada participante representan únicamente Ranked. Si PD no entrega cinco Ranked, se muestra la cantidad realmente disponible; nunca se rellena con otros modos ni se inventan resultados.
+
+## ADR-016 — Presentación real alineada con la maqueta (2026-08-29)
+
+**Contexto:** la vista conectada no conservaba varios rasgos aprobados de la maqueta: colores semánticos, selección/detalle de jugadores y acceso Tracker. Además, `Jugador oculto` ocupaba espacio y no coincidía con el rótulo solicitado.
+
+**Decisión:** usar Noche como tema inicial, colorear rango/forma/métricas, separar columnas, mostrar identidades `Incognito` como `Jugador N` y habilitar `[↗]`/`g` únicamente para Riot IDs públicos resueltos. La URL usa dominio Tracker.gg fijo y un segmento codificado; nunca se construye para identidades ocultas o ausentes. La portada ASCII con nombre y versión queda aplazada por petición del usuario.
+
+**Consecuencias:** el roster real admite selección y detalle como la demo sin desanonimizar jugadores. Abrir un navegador siempre requiere la acción explícita del usuario y no modifica ni automatiza VALORANT.

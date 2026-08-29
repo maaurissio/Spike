@@ -1,6 +1,6 @@
 //! Composición en celdas de terminal basada en docs/mockups; sin I/O.
 use ratatui::{
-    layout::Rect,
+    layout::{Alignment, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph},
@@ -142,16 +142,9 @@ pub(super) fn content(app: &App, width: u16) -> Screen {
 }
 
 fn panel(s: &mut Screen, app: &App) {
-    s.section(
-        if app.demo.is_some() {
-            "NORTE / PERFIL PROPIO"
-        } else {
-            "PERFIL PROPIO"
-        },
-        s.palette.focus,
-    );
+    s.section("PERFIL PROPIO", s.palette.focus);
     profile_summary(s, app);
-    s.section("SESIÓN DE HOY", s.palette.focus);
+    s.section("ÚLTIMAS 5 RANKED", s.palette.focus);
     if let Some(demo) = &app.demo {
         let kills: u32 = demo.matches.iter().map(|m| m.kills).sum();
         let deaths: u32 = demo.matches.iter().map(|m| m.deaths).sum();
@@ -159,30 +152,103 @@ fn panel(s: &mut Screen, app: &App) {
             "3 partidas · 2 V / 1 D · K/D {:.2}\n{kills} kills / {deaths} muertes",
             kills as f64 / deaths as f64
         ));
+    } else if let Some(summary) = history_summary(app) {
+        s.text(summary);
+    } else if app.history_pending {
+        s.text("Cargando resultados y rendimiento…");
+    } else if app.history_failed {
+        s.text("No se pudo actualizar el historial · r para reintentar");
     } else {
-        s.text("Resumen de sesión: —\nTodavía no integrado.");
+        s.text("Aún no hay partidas disponibles en esta sesión.");
     }
-    s.section("PARTIDA", s.palette.good);
-    s.text(phase_label(app));
-    if app.demo.is_some() {
-        s.text("Ascent / Competitivo / Sova");
-    } else if let Some(context) = &app.live_match {
+    s.section(match_section_title(app), s.palette.focus);
+    s.row(Line::styled(phase_label(app), phase_style(s, app)));
+    if let Some(context) = &app.live_match {
         s.text(format!(
-            "{} / {} / {}",
+            "{} · {} · {}",
             context.map,
             context.mode,
-            context.agent.as_deref().unwrap_or("—")
+            context.agent.as_deref().unwrap_or("Agente no disponible")
         ));
+        if let Some(roster) = &context.roster {
+            let unnamed = roster
+                .players
+                .iter()
+                .filter(|player| !matches!(player.identity, DataAvailability::Available(_)))
+                .count();
+            s.text(format!(
+                "{} jugadores · {} {} sin nombre público",
+                roster.players.len(),
+                unnamed,
+                plural(unnamed, "perfil", "perfiles")
+            ));
+        }
+    } else if let Some(completed) = &app.completed_match {
+        s.text(format!(
+            "Última: {} · {} · {}",
+            outcome_text(completed.outcome),
+            completed.map,
+            title_text(completed.mode.label())
+        ));
+    } else if app
+        .state
+        .as_ref()
+        .is_some_and(|state| state.client_found && state.phase == GamePhase::Idle)
+    {
+        s.text("Tu perfil seguirá actualizándose mientras esperas.");
     }
-    s.row(Line::styled("[Enter] Abrir partida", s.palette.focus));
-    s.section("CONEXIÓN", s.palette.focus);
-    s.text(if app.demo.is_some() {
-        "DEMO · datos ficticios · sin conexión"
-    } else if app.state.as_ref().is_some_and(|v| v.client_found) {
-        "Cliente conectado · solo lectura"
+    s.section("FUENTES", s.palette.focus);
+    if app.demo.is_some() {
+        s.text("Cliente local       ● conectado\nContexto de partida disponible\nDatos Ranked        5/5");
     } else {
-        "Esperando al cliente"
-    });
+        let connected = app.state.as_ref().is_some_and(|state| state.client_found);
+        s.row(Line::from(vec![
+            Span::raw("Cliente local       "),
+            Span::styled(
+                if connected {
+                    "● conectado"
+                } else {
+                    "○ desconectado"
+                },
+                if connected {
+                    s.palette.good
+                } else {
+                    s.palette.pending
+                },
+            ),
+        ]));
+        s.row(Line::from(vec![
+            Span::raw("Contexto de partida "),
+            Span::styled(
+                if app.live_match.is_some() {
+                    "disponible"
+                } else {
+                    "en espera"
+                },
+                if app.live_match.is_some() {
+                    s.palette.good
+                } else {
+                    s.palette.dim
+                },
+            ),
+        ]));
+        let ranked = app.history.as_ref().map_or(0, Vec::len);
+        s.row(Line::from(vec![
+            Span::raw("Datos Ranked        "),
+            Span::styled(
+                if app.history_pending {
+                    "cargando…".into()
+                } else {
+                    format!("{ranked}/5")
+                },
+                if ranked == 5 {
+                    s.palette.good
+                } else {
+                    s.palette.pending
+                },
+            ),
+        ]));
+    }
 }
 
 fn profile_summary(s: &mut Screen, app: &App) {
@@ -190,36 +256,99 @@ fn profile_summary(s: &mut Screen, app: &App) {
         s.row(Line::styled("DIAMANTE 2 / Nivel 142", s.palette.rank));
         s.row(Line::styled("RR ██████░░░░ 64 / 100", s.palette.rank));
     } else {
-        if let Some(profile) = &app.own_profile {
-            s.text(format!("Nivel {} · {} XP", profile.level, profile.xp));
-        } else {
-            s.text("Nivel — · XP —");
+        match (&app.own_profile, &app.competitive) {
+            (Some(profile), Some(rank)) => {
+                s.row(Line::from(vec![
+                    Span::styled(
+                        title_text(&crate::ui::competitive_tier_label(rank.tier)),
+                        s.palette.rank,
+                    ),
+                    Span::styled(format!(" · Nivel {}", profile.level), s.palette.base),
+                ]));
+                let progress = rr_progress_line(rank.ranked_rating, &s.palette);
+                s.row(progress);
+                if rank.games > 0 {
+                    s.text(format!(
+                        "{} XP · {} victorias / {} competitivas",
+                        profile.xp, rank.wins, rank.games
+                    ));
+                } else {
+                    s.text(format!(
+                        "{} XP · rango confirmado por tu última Ranked",
+                        profile.xp
+                    ));
+                }
+            }
+            (Some(profile), None) => {
+                s.text(format!("Nivel {} · {} XP", profile.level, profile.xp));
+                s.text("Sin rango competitivo disponible.");
+            }
+            (None, _) if app.profile_pending => {
+                s.text("Cargando tu perfil, rango y RR…");
+            }
+            (None, _) if app.profile_failed => {
+                s.text("No se pudo cargar tu perfil · r para reintentar");
+            }
+            (None, _) => {
+                s.text("Abre Riot Client para cargar tu perfil.");
+            }
         }
-        if let Some(rank) = &app.competitive {
+        if app.own_profile.is_none()
+            && let Some(rank) = &app.competitive
+        {
             s.row(Line::styled(
-                crate::ui::competitive_tier_label(rank.tier),
+                title_text(&crate::ui::competitive_tier_label(rank.tier)),
                 s.palette.rank,
             ));
-            s.text(format!(
-                "{} RR · {} victorias / {} partidas",
-                rank.ranked_rating, rank.wins, rank.games
-            ));
-        } else {
-            s.text("Rango — · RR —");
+            let progress = rr_progress_line(rank.ranked_rating, &s.palette);
+            s.row(progress);
         }
+    }
+}
+
+fn rr_progress_line(rr: u32, palette: &Palette) -> Line<'static> {
+    const CELLS: usize = 10;
+    let rr = rr.min(100);
+    let filled = rr as usize * CELLS / 100;
+    Line::from(vec![
+        Span::styled("RR ", palette.base),
+        Span::styled("█".repeat(filled), palette.rank),
+        Span::styled("░".repeat(CELLS - filled), palette.border),
+        Span::styled(format!(" {rr} / 100"), palette.rank),
+    ])
+}
+
+fn match_section_title(app: &App) -> &'static str {
+    match app.state.as_ref().map(|state| state.phase) {
+        Some(GamePhase::InMatch) => "PARTIDA EN CURSO",
+        Some(GamePhase::PreGame | GamePhase::AgentSelect) => "PREPARANDO PARTIDA",
+        Some(GamePhase::PostMatch) => "ÚLTIMA PARTIDA",
+        _ => "ESTADO DE PARTIDA",
+    }
+}
+
+fn phase_style(s: &Screen, app: &App) -> Style {
+    match app.state.as_ref().map(|state| state.phase) {
+        Some(GamePhase::InMatch | GamePhase::PreGame | GamePhase::AgentSelect) => s.palette.good,
+        Some(GamePhase::ClientClosed) => s.palette.pending,
+        _ => s.palette.base,
     }
 }
 
 fn profile(s: &mut Screen, app: &App) {
     s.section("PERFIL PROPIO", s.palette.focus);
     profile_summary(s, app);
-    s.section("RENDIMIENTO", s.palette.focus);
+    s.section("ÚLTIMAS 5 RANKED", s.palette.focus);
     if app.demo.is_some() {
         s.text("Competitivo / últimas 20 partidas\nK/D 1.18 · WR 55% · HS 26%\n11 victorias / 9 derrotas");
         s.section("POR AGENTE", s.palette.focus);
         s.text("AGENTE     PJ    K/D    WR\nSova       12    1.24   58%\nOmen        5    1.08   40%\nKilljoy     3    1.11   67%");
+    } else if let Some(summary) = history_summary(app) {
+        s.text(summary);
+    } else if app.history_pending {
+        s.text("Calculando tu rendimiento reciente…");
     } else {
-        s.text("K/D — · WR — · HS —\nAgregados pendientes en esta vista.\nDisponibles por CLI: stats --limit 5");
+        s.text("No hay detalles recientes disponibles.");
     }
     s.section("CAMBIOS DE RR", s.palette.focus);
     if let Some(demo) = &app.demo {
@@ -234,14 +363,22 @@ fn profile(s: &mut Screen, app: &App) {
                 if m.won { s.palette.good } else { s.palette.bad },
             ));
         }
+    } else if app.profile_pending {
+        s.text("Cargando cambios competitivos…");
     } else if app.competitive_updates.is_empty() {
-        s.text("Sin cambios disponibles.");
+        s.text("No hay cambios competitivos recientes.");
     } else {
         for update in &app.competitive_updates {
             s.row(Line::styled(
                 format!(
-                    "{:+} RR · bono {}",
-                    update.rr_earned, update.performance_bonus
+                    "{:+} RR · {}{}",
+                    update.rr_earned,
+                    crate::ui::competitive_tier_label(update.tier_after),
+                    if update.performance_bonus > 0 {
+                        format!(" · +{} rendimiento", update.performance_bonus)
+                    } else {
+                        String::new()
+                    }
                 ),
                 if update.rr_earned >= 0 {
                     s.palette.good
@@ -294,8 +431,7 @@ fn match_view(s: &mut Screen, app: &App) {
         return;
     }
     if let Some(completed) = &app.completed_match {
-        s.section("POSTPARTIDA / RESULTADO PROPIO", s.palette.focus);
-        s.text(completed);
+        postmatch(s, completed);
         return;
     }
     s.section("PARTIDA", s.palette.focus);
@@ -335,18 +471,18 @@ fn match_view(s: &mut Screen, app: &App) {
         if let Some(roster) = &context.roster {
             if roster.participants().next().is_some() {
                 s.section("PARTICIPANTES", s.palette.focus);
-                live_roster(s, roster, RosterSide::Participant);
+                live_roster(s, app, roster, RosterSide::Participant);
             } else {
                 s.section("ALIADOS", s.palette.good);
-                live_roster(s, roster, RosterSide::Ally);
+                live_roster(s, app, roster, RosterSide::Ally);
                 s.section("ENEMIGOS", s.palette.bad);
-                live_roster(s, roster, RosterSide::Enemy);
+                live_roster(s, app, roster, RosterSide::Enemy);
             }
         }
     } else {
         s.section("ALIADOS", s.palette.good);
         if let Some(roster) = &context.roster {
-            live_roster(s, roster, RosterSide::Ally);
+            live_roster(s, app, roster, RosterSide::Ally);
         } else {
             s.text(format!(
                 "Tú / {}\nRoster todavía no disponible.",
@@ -355,36 +491,108 @@ fn match_view(s: &mut Screen, app: &App) {
         }
         s.section("TUS RONDAS", s.palette.focus);
         s.row(Line::styled("—K   /   —D", s.palette.pending));
-        s.text("Datos en vivo aún no disponibles.");
+        s.text("Kills actuales no disponibles en esta fuente.");
         s.section("ENEMIGOS", s.palette.bad);
         if let Some(roster) = &context.roster {
-            live_roster(s, roster, RosterSide::Enemy);
+            live_roster(s, app, roster, RosterSide::Enemy);
         } else {
             s.text("Roster todavía no disponible.");
         }
     }
+    if app.detail
+        && let Some(roster) = &context.roster
+        && let Some(player) = roster.players.get(app.player_index)
+    {
+        live_player_detail(s, app, player);
+    }
 }
 
-fn live_roster(s: &mut Screen, roster: &RosterSnapshot, side: RosterSide) {
+fn postmatch(s: &mut Screen, completed: &super::PostMatch) {
+    let result_style = match completed.outcome {
+        MatchOutcome::Win => s.palette.good,
+        MatchOutcome::Loss => s.palette.bad,
+        MatchOutcome::Draw | MatchOutcome::Unknown => s.palette.focus,
+    };
+    s.section(outcome_text(completed.outcome), result_style);
+    let score = score_text(completed.own_score, completed.opponent_score);
+    s.row(Line::styled(
+        format!(
+            "{}{} · {} · {}",
+            score.map_or_else(String::new, |score| format!("{score} · ")),
+            completed.map,
+            title_text(completed.mode.label()),
+            completed.agent
+        ),
+        result_style,
+    ));
+    s.section("TU RESULTADO", s.palette.focus);
+    s.text(format!(
+        "K / D / A    {} / {} / {}\nK/D            {}\nPuntos         {}",
+        completed.stats.kills,
+        completed.stats.deaths,
+        completed.stats.assists,
+        kd_text(completed.stats.kills, completed.stats.deaths),
+        completed
+            .stats
+            .combat_score
+            .map_or_else(|| "No disponible".into(), |score| score.to_string())
+    ));
+    if !completed.rounds.is_empty() {
+        s.section(
+            &format!("TUS RONDAS · {} JUGADAS", completed.rounds.len()),
+            s.palette.focus,
+        );
+        s.row(Line::styled(
+            "RONDA   CIERRE             K   D",
+            s.palette.dim,
+        ));
+        for round in &completed.rounds {
+            s.row(Line::from(format!(
+                "{:>3}     {:<18} {:>1}   {:>1}",
+                round.number, round.result, round.kills, round.deaths
+            )));
+        }
+    } else {
+        s.section("DETALLE", s.palette.focus);
+        s.text("Este modo no utiliza rondas con Spike.");
+    }
+}
+
+fn live_roster(s: &mut Screen, app: &App, roster: &RosterSnapshot, side: RosterSide) {
     let wide = s.width >= 70;
+    let tracker_column = s.width >= 78;
     let players = roster
         .players
         .iter()
-        .filter(|player| player.side == side)
+        .enumerate()
+        .filter(|(_, player)| player.side == side)
         .collect::<Vec<_>>();
     if players.is_empty() {
         s.text("Sin jugadores disponibles.");
         return;
     }
-    s.row(Line::styled(
-        if wide {
-            "  JUGADOR       AGENTE    RANGO      K/D   HS%  KAST%  WR%   ÚLT.5"
-        } else {
-            "  JUGADOR   AGENTE   RANGO  K/D"
-        },
-        s.palette.dim,
-    ));
-    for player in players {
+    let mut header = vec![
+        Span::styled("  ", s.palette.dim),
+        Span::styled(cell("JUGADOR", if wide { 16 } else { 10 }), s.palette.dim),
+        Span::styled(if wide { "  " } else { " " }, s.palette.dim),
+        Span::styled(cell("AGENTE", if wide { 11 } else { 9 }), s.palette.dim),
+        Span::styled(" ", s.palette.dim),
+        Span::styled(cell("RANGO", if wide { 11 } else { 8 }), s.palette.dim),
+        Span::styled(cell("K/D", if wide { 6 } else { 5 }), s.palette.dim),
+    ];
+    if wide {
+        header.extend([
+            Span::styled(cell("HS%", 6), s.palette.dim),
+            Span::styled(cell("KAST%", 7), s.palette.dim),
+            Span::styled(cell("WR%", 6), s.palette.dim),
+            Span::styled(cell("ÚLT.5", 6), s.palette.dim),
+        ]);
+        if tracker_column {
+            header.push(Span::styled("TRK", s.palette.dim));
+        }
+    }
+    s.row(Line::from(header));
+    for (index, player) in players {
         let marker = if player.is_self { "▶ " } else { "  " };
         let name = roster_identity(player);
         let agent = available_text(&player.agent, "Agente —");
@@ -404,21 +612,108 @@ fn live_roster(s: &mut Screen, roster: &RosterSnapshot, side: RosterSide) {
         };
         let mut spans = vec![
             Span::styled(marker, s.palette.focus),
-            Span::styled(cell(&name, if wide { 14 } else { 10 }), style),
-            Span::styled(cell(&agent, if wide { 10 } else { 9 }), s.palette.dim),
+            Span::styled(cell(&name, if wide { 16 } else { 10 }), style),
+            Span::raw(if wide { "  " } else { " " }),
+            Span::styled(cell(&agent, if wide { 11 } else { 9 }), s.palette.dim),
+            Span::raw(" "),
             Span::styled(cell(&rank, if wide { 11 } else { 8 }), s.palette.rank),
             Span::styled(cell(&metrics[0], if wide { 6 } else { 5 }), style),
         ];
         if wide {
             spans.extend([
-                Span::styled(cell(&metrics[1], 6), style),
-                Span::styled(cell(&metrics[2], 7), style),
+                Span::styled(cell(&metrics[1], 6), s.palette.focus),
+                Span::styled(cell(&metrics[2], 7), s.palette.focus),
                 Span::styled(cell(&metrics[3], 6), style),
-                Span::styled(cell(&metrics[4], 6), style),
             ]);
+            let recent = stats_recent(player);
+            for outcome in recent {
+                spans.push(Span::styled(
+                    outcome_short(*outcome),
+                    match outcome {
+                        MatchOutcome::Win => s.palette.good,
+                        MatchOutcome::Loss => s.palette.bad,
+                        MatchOutcome::Draw => s.palette.pending,
+                        MatchOutcome::Unknown => s.palette.dim,
+                    },
+                ));
+            }
+            let recent_count = recent.len();
+            spans.push(Span::raw(" ".repeat(6_usize.saturating_sub(recent_count))));
+            if tracker_column {
+                spans.push(Span::styled(
+                    if super::tracker_url(player).is_some() {
+                        "[↗]"
+                    } else {
+                        " — "
+                    },
+                    if super::tracker_url(player).is_some() {
+                        s.palette.focus
+                    } else {
+                        s.palette.dim
+                    },
+                ));
+            }
         }
-        s.row(Line::from(spans));
+        s.selected(Line::from(spans), index == app.player_index, app);
     }
+}
+
+fn stats_recent(player: &RosterPlayer) -> &[MatchOutcome] {
+    match &player.stats {
+        DataAvailability::Available(stats) => &stats.recent,
+        DataAvailability::Hidden
+        | DataAvailability::NotAvailable
+        | DataAvailability::ApprovalRequired => &[],
+    }
+}
+
+fn live_player_detail(s: &mut Screen, app: &App, player: &RosterPlayer) {
+    let name = roster_identity(player);
+    let agent = available_text(&player.agent, "Agente —");
+    s.section(&format!("{name} / {agent}"), s.palette.focus);
+    let rank = available_text(&player.rank, "Rango —");
+    if let DataAvailability::Available(stats) = &player.stats {
+        let metrics = roster_metrics(stats);
+        s.row(Line::from(vec![
+            Span::styled(format!("{rank} · "), s.palette.rank),
+            Span::raw(format!(
+                "{} Ranked · K/D {} · WR {}",
+                stats.matches, metrics[0], metrics[3]
+            )),
+        ]));
+        s.text(format!(
+            "HS {} · KAST {} · forma {}",
+            metrics[1], metrics[2], metrics[4]
+        ));
+    } else {
+        s.row(Line::styled(
+            format!("{rank} · estadísticas Ranked no disponibles"),
+            s.palette.pending,
+        ));
+    }
+    let has_tracker = super::tracker_url(player).is_some();
+    let tracker = if app.tracker_notice {
+        if !has_tracker {
+            "Tracker.gg no disponible: falta un Riot ID público."
+        } else if app.tracker_open_failed {
+            "No se pudo abrir Tracker.gg en el navegador."
+        } else {
+            "Tracker.gg abierto en el navegador."
+        }
+    } else if has_tracker {
+        "[g] Abrir perfil en Tracker.gg"
+    } else {
+        "Tracker.gg no disponible para este jugador."
+    };
+    s.row(Line::styled(
+        tracker,
+        if has_tracker {
+            s.palette.focus
+        } else {
+            s.palette.dim
+        },
+    ));
+    s.anchor = Some(s.lines.len().saturating_sub(1));
 }
 
 fn roster_metrics(stats: &HistoricalStats) -> [String; 5] {
@@ -454,7 +749,7 @@ fn roster_metrics(stats: &HistoricalStats) -> [String; 5] {
 fn roster_identity(player: &RosterPlayer) -> String {
     match &player.identity {
         DataAvailability::Available(value) => value.clone(),
-        DataAvailability::Hidden => "Jugador oculto".into(),
+        DataAvailability::Hidden => format!("Jugador {}", player.slot),
         DataAvailability::NotAvailable | DataAvailability::ApprovalRequired => {
             format!("Jugador {}", player.slot)
         }
@@ -608,7 +903,7 @@ fn demo_postmatch(s: &mut Screen, app: &App) {
 }
 
 fn history(s: &mut Screen, app: &App) {
-    s.section("HISTORIAL PROPIO", s.palette.focus);
+    s.section("HISTORIAL RANKED", s.palette.focus);
     if let Some(demo) = &app.demo {
         let wide = s.width >= 70;
         s.text(if wide {
@@ -652,28 +947,86 @@ fn history(s: &mut Screen, app: &App) {
         if entries.is_empty() {
             s.text("No hay partidas recientes.");
         } else {
-            s.text("  MODO               CUÁNDO");
-            for (i, entry) in entries.iter().enumerate() {
-                s.selected(
-                    Line::from(format!(
-                        "{}{}{}",
-                        if i == app.history_index { "› " } else { "  " },
-                        cell(&entry.queue, 19),
-                        relative_time(entry.started_at_ms)
-                    )),
-                    i == app.history_index,
-                    app,
+            let wide = s.width >= 70;
+            s.row(Line::styled(
+                if wide {
+                    "  RES.      MAPA         AGENTE      K / D / A     MODO         CUÁNDO"
+                } else {
+                    "  RES.  MAPA       K/D/A       CUÁNDO"
+                },
+                s.palette.dim,
+            ));
+            for (i, item) in entries.iter().enumerate() {
+                let details = item.details.as_ref();
+                let result = details.map_or("—".into(), |details| {
+                    let score =
+                        score_text(details.own_score, details.opponent_score).unwrap_or_default();
+                    format!("{} {score}", outcome_short(details.outcome))
+                });
+                let map = details.map_or("Sin detalle", |details| details.map.as_str());
+                let agent = details.map_or("—", |details| details.agent.as_str());
+                let kda = details.map_or("—".into(), |details| {
+                    format!(
+                        "{}/{}/{}",
+                        details.stats.kills, details.stats.deaths, details.stats.assists
+                    )
+                });
+                let mut row = format!(
+                    "{}{}{}",
+                    if i == app.history_index { "› " } else { "  " },
+                    cell(&result, if wide { 10 } else { 6 }),
+                    cell(map, if wide { 13 } else { 11 }),
                 );
+                if wide {
+                    row.push_str(&cell(agent, 12));
+                }
+                row.push_str(&cell(&kda, if wide { 14 } else { 12 }));
+                if wide {
+                    row.push_str(&cell(&title_text(&item.entry.queue), 13));
+                }
+                row.push_str(&relative_time(item.entry.started_at_ms));
+                let style = details.map_or(s.palette.base, |details| match details.outcome {
+                    MatchOutcome::Win => s.palette.good,
+                    MatchOutcome::Loss => s.palette.bad,
+                    MatchOutcome::Draw | MatchOutcome::Unknown => s.palette.base,
+                });
+                s.selected(Line::styled(row, style), i == app.history_index, app);
             }
             if app.detail {
                 s.section("PARTIDA SELECCIONADA", s.palette.focus);
-                let entry = &entries[app.history_index.min(entries.len() - 1)];
-                s.text(format!(
-                    "{} / {}\nMapa — · K/D/A — · RR —\nDetalle enriquecido aún no integrado.",
-                    entry.queue,
-                    relative_time(entry.started_at_ms)
-                ));
+                let item = &entries[app.history_index.min(entries.len() - 1)];
+                if let Some(details) = &item.details {
+                    let score = score_text(details.own_score, details.opponent_score)
+                        .map_or_else(String::new, |score| format!(" {score}"));
+                    s.text(format!(
+                        "{}{} · {} · {}\n{} · K/D/A {}/{}/{} · K/D {}\nPuntos {} · {}",
+                        outcome_text(details.outcome),
+                        score,
+                        details.map,
+                        title_text(&item.entry.queue),
+                        details.agent,
+                        details.stats.kills,
+                        details.stats.deaths,
+                        details.stats.assists,
+                        kd_text(details.stats.kills, details.stats.deaths),
+                        details
+                            .stats
+                            .combat_score
+                            .map_or_else(|| "—".into(), |score| score.to_string()),
+                        relative_time(item.entry.started_at_ms)
+                    ));
+                } else {
+                    s.text(format!(
+                        "{} · {}\nNo se pudo obtener el detalle de esta partida.",
+                        title_text(&item.entry.queue),
+                        relative_time(item.entry.started_at_ms)
+                    ));
+                }
                 s.anchor = Some(s.lines.len().saturating_sub(1));
+            }
+            s.section("RESUMEN", s.palette.focus);
+            if let Some(summary) = history_summary(app) {
+                s.text(summary);
             }
         }
     } else {
@@ -692,48 +1045,133 @@ fn history(s: &mut Screen, app: &App) {
 
 fn settings(s: &mut Screen, app: &App) {
     let settings = &app.settings;
-    s.section("APARIENCIA", s.palette.focus);
+    s.section("PREFERENCIAS", s.palette.focus);
     s.selected(
         Line::from(format!(
-            "{}[t] Tema: {}",
-            if settings.selected == 2 { "› " } else { "  " },
-            settings.draft.theme.label()
-        )),
-        settings.selected == 2,
-        app,
-    );
-    s.text("Vista previa; s guarda / r descarta.");
-    s.section("GENERAL", s.palette.focus);
-    s.selected(
-        Line::from(format!(
-            "{}Detección: {} s (1–60)",
+            "{}Actualizar estado       cada {} segundos",
             if settings.selected == 0 { "› " } else { "  " },
             settings.draft.interval.as_secs()
         )),
         settings.selected == 0,
         app,
     );
+    s.text("Frecuencia con que VTracker revisa cambios del cliente.");
     s.selected(
         Line::from(format!(
-            "{}Log cambios: [{}]",
+            "{}Guardar cambios de estado   {}",
             if settings.selected == 1 { "› " } else { "  " },
             if settings.draft.log_transitions {
-                "x"
+                "Sí"
             } else {
-                " "
+                "No"
             }
         )),
         settings.selected == 1,
         app,
     );
+    s.text("Crea un registro local de fases; nunca guarda credenciales.");
+    s.selected(
+        Line::from(format!(
+            "{}Tema de la interfaz       {}",
+            if settings.selected == 2 { "› " } else { "  " },
+            settings.draft.theme.label()
+        )),
+        settings.selected == 2,
+        app,
+    );
+    s.text("La vista previa se aplica de inmediato; debes guardarla.");
+    s.section("GUARDADO", s.palette.focus);
     s.text(settings.status());
-    s.section("PRIVACIDAD", s.palette.focus);
-    s.text("Identidad oculta: respetar\nDatos ausentes: —\nSin memoria ni controles del juego.");
-    s.section("IMÁGENES", s.palette.focus);
-    s.text("Retratos opcionales: pendientes.\nLa interfaz funciona sin imágenes.");
+    s.text("[s] Guardar cambios   [r] Descartar cambios");
+    s.section("SEGURIDAD", s.palette.focus);
+    s.text("Solo lectura: no controla VALORANT ni accede a su memoria.\nLos nombres ocultos y datos no disponibles se respetan.");
+    s.section("CÓMO CAMBIAR", s.palette.focus);
+    s.text("↑/↓ elegir · +/- cambiar · Espacio activar/desactivar");
     if app.demo.is_some() {
         s.text("DEMO: guardar solo cambia esta sesión.");
     }
+}
+
+fn history_summary(app: &App) -> Option<String> {
+    let details = app
+        .history
+        .as_ref()?
+        .iter()
+        .filter_map(|item| item.details.as_ref())
+        .collect::<Vec<_>>();
+    if details.is_empty() {
+        return None;
+    }
+    let wins = details
+        .iter()
+        .filter(|details| details.outcome == MatchOutcome::Win)
+        .count();
+    let losses = details
+        .iter()
+        .filter(|details| details.outcome == MatchOutcome::Loss)
+        .count();
+    let kills = details.iter().map(|details| details.stats.kills).sum();
+    let deaths = details.iter().map(|details| details.stats.deaths).sum();
+    let assists = details.iter().map(|details| details.stats.assists).sum();
+    Some(format!(
+        "{} {} · {} {} · {} {}\nK/D {} · KDA {} · {} K / {} D / {} A",
+        details.len(),
+        plural(details.len(), "partida", "partidas"),
+        wins,
+        plural(wins, "victoria", "victorias"),
+        losses,
+        plural(losses, "derrota", "derrotas"),
+        kd_text(kills, deaths),
+        kd_text(kills.saturating_add(assists), deaths),
+        kills,
+        deaths,
+        assists
+    ))
+}
+
+fn plural<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a str {
+    if count == 1 { singular } else { plural }
+}
+
+fn kd_text(kills: u32, deaths: u32) -> String {
+    if deaths == 0 {
+        return if kills == 0 {
+            "—".into()
+        } else {
+            "∞".into()
+        };
+    }
+    format!("{:.2}", f64::from(kills) / f64::from(deaths))
+}
+
+fn score_text(own: Option<u32>, opponent: Option<u32>) -> Option<String> {
+    Some(format!("{}-{}", own?, opponent?))
+}
+
+fn outcome_short(outcome: MatchOutcome) -> &'static str {
+    match outcome {
+        MatchOutcome::Win => "V",
+        MatchOutcome::Loss => "D",
+        MatchOutcome::Draw => "E",
+        MatchOutcome::Unknown => "—",
+    }
+}
+
+fn outcome_text(outcome: MatchOutcome) -> &'static str {
+    match outcome {
+        MatchOutcome::Win => "VICTORIA",
+        MatchOutcome::Loss => "DERROTA",
+        MatchOutcome::Draw => "EMPATE",
+        MatchOutcome::Unknown => "PARTIDA FINALIZADA",
+    }
+}
+
+fn title_text(value: &str) -> String {
+    let mut characters = value.chars();
+    let Some(first) = characters.next() else {
+        return String::new();
+    };
+    first.to_uppercase().collect::<String>() + characters.as_str()
 }
 
 fn phase_label(app: &App) -> &'static str {
@@ -747,6 +1185,7 @@ fn phase_label(app: &App) -> &'static str {
     match app.state.as_ref().map(|v| v.phase) {
         None | Some(GamePhase::Unknown) => "Conectando…",
         Some(GamePhase::GameOpen) => "VALORANT abierto · esperando partida",
+        Some(GamePhase::Idle) => "No estás en una partida",
         Some(phase) => phase.label(),
     }
 }
@@ -759,6 +1198,10 @@ pub(super) fn render(area: Rect, frame: &mut ratatui::Frame<'_>, app: &mut App) 
             Paragraph::new("Amplía la terminal a 38×10.\nq salir").style(palette.pending),
             area,
         );
+        return;
+    }
+    if startup_pending(app) {
+        render_startup(area, frame, palette, app);
         return;
     }
     if let Some(demo) = &app.demo {
@@ -882,18 +1325,19 @@ pub(super) fn render(area: Rect, frame: &mut ratatui::Frame<'_>, app: &mut App) 
         "←/→ vista · Enter contenido"
     } else {
         match app.selected_tab {
-            0 => "Enter partida",
+            0 if app.has_match_context() => "Enter abrir partida",
+            0 => "3 perfil · 4 historial",
             1 if app.demo.as_ref().is_some_and(|d| d.post) => "p partida · Esc volver",
-            1 if app.demo.is_some() => "↑↓ jugador · Enter · g TRK",
-            3 => "↑↓ partida · Enter detalle · r",
-            4 => "↑↓ +/- · s guardar · r descartar",
+            1 if app.has_selectable_roster() => "↑↓ · Enter detalle · g Tracker",
+            3 => "↑↓/clic partida · Enter detalle · r",
+            4 => "↑↓/clic · +/- · s guardar · r descartar",
             _ => "r actualizar · PgUp/PgDn",
         }
     };
     let controls = if app.demo.is_some() && app.selected_tab == 1 {
-        "1–5 Tab t · p fase · Esc · q salir"
+        "1–5 · t · p fase · Esc · q salir"
     } else {
-        "1–5 Tab · t tema · Esc · q salir"
+        "1–5 · t · Esc · q salir"
     };
     let footer = if footer_rows == 1 {
         format!("{hint} · {controls}")
@@ -907,6 +1351,55 @@ pub(super) fn render(area: Rect, frame: &mut ratatui::Frame<'_>, app: &mut App) 
     frame.render_widget(
         Paragraph::new(footer).style(palette.dim),
         Rect::new(area.x + 1, body.bottom() + 1, area.width - 2, footer_rows),
+    );
+}
+
+fn startup_pending(app: &App) -> bool {
+    if app.demo.is_some() || app.completed_match.is_some() || app.live_match.is_some() {
+        return false;
+    }
+    match app.state.as_ref() {
+        None => true,
+        Some(state) => state.client_found && app.own_profile.is_none() && !app.profile_failed,
+    }
+}
+
+fn render_startup(area: Rect, frame: &mut ratatui::Frame<'_>, palette: Palette, app: &App) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(palette.border)
+        .title(Line::styled(" VTRACKER ", palette.focus));
+    frame.render_widget(block, area);
+    let height = 7_u16.min(area.height.saturating_sub(2));
+    let top = area.y + area.height.saturating_sub(height) / 2;
+    let inner = Rect::new(area.x + 2, top, area.width.saturating_sub(4), height);
+    let (status, detail) = if app.state.is_none() {
+        (
+            "Buscando Riot Client…",
+            "Comprobando el estado de tu sesión",
+        )
+    } else {
+        (
+            "Cargando tu perfil y rango…",
+            "El historial continuará en segundo plano",
+        )
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(
+                "INICIANDO VTRACKER",
+                palette.focus.add_modifier(Modifier::BOLD),
+            ),
+            Line::raw(""),
+            Line::styled(status, palette.pending),
+            Line::styled(detail, palette.dim),
+            Line::raw(""),
+            Line::styled("Solo lectura · no controla VALORANT", palette.dim),
+            Line::styled("q para salir", palette.dim),
+        ])
+        .alignment(Alignment::Center),
+        inner,
     );
 }
 
@@ -990,7 +1483,10 @@ mod tests {
                 for (width, height) in [(1, 1), (30, 8), (38, 10), (38, 26), (72, 24), (120, 40)] {
                     let text = snapshot(&mut app, width, height);
                     if width >= 38 {
-                        assert!(text.contains("q salir"));
+                        assert!(
+                            text.contains("q salir"),
+                            "{width}x{height} tab {tab}\n{text}"
+                        );
                     }
                 }
             }
@@ -1056,21 +1552,24 @@ mod tests {
             assert!(text.contains("TU PARTICIPACIÓN"));
             assert!(!text.contains("ENEMIGOS") && !text.contains("TUS RONDAS"));
         }
-        let completed = crate::providers::match_detail::CompletedMatch {
-            own_puuid: "not-for-display".into(),
-            rounds: None,
-            summary: Some(crate::providers::match_detail::MatchSummary {
-                mode: crate::models::GameMode::Deathmatch,
-                stats: crate::models::PlayerMatchStats {
-                    kills: 2,
-                    deaths: 1,
-                    assists: 0,
-                    ..Default::default()
-                },
-            }),
-        };
-        let summary = super::super::completed_match_content(&completed);
-        assert!(summary.ends_with("2  1  0  —"));
+        app.live_match = None;
+        app.completed_match = Some(super::super::PostMatch {
+            mode: crate::models::GameMode::Deathmatch,
+            map: "Ascent".into(),
+            agent: "Sova".into(),
+            outcome: MatchOutcome::Win,
+            stats: crate::models::PlayerMatchStats {
+                kills: 2,
+                deaths: 1,
+                assists: 0,
+                ..Default::default()
+            },
+            own_score: None,
+            opponent_score: None,
+            rounds: vec![],
+        });
+        let summary = snapshot(&mut app, 72, 24);
+        assert!(summary.contains("VICTORIA") && summary.contains("2 / 1 / 0"));
         assert!(!summary.contains("not-for-display"));
     }
 
@@ -1129,7 +1628,7 @@ mod tests {
                         RosterSide::Ally,
                         1,
                         true,
-                        DataAvailability::Available("Tú".into()),
+                        DataAvailability::Available("Norte#LAS".into()),
                         "Omen",
                         "Diamante 1",
                     ),
@@ -1146,14 +1645,144 @@ mod tests {
             ),
         });
 
-        let text = snapshot(&mut app, 72, 24);
-        assert!(text.contains("Tú") && text.contains("Omen") && text.contains("Diamante 1"));
-        assert!(
-            text.contains("Jugador oculto") && text.contains("Jett") && text.contains("Radiante")
-        );
+        let text = snapshot(&mut app, 100, 30);
+        assert!(text.contains("Norte#LAS") && text.contains("Omen") && text.contains("Diamante 1"));
+        assert!(text.contains("Jugador 1") && text.contains("Jett") && text.contains("Radiante"));
+        assert!(!text.contains("Jugador oculto"));
         assert!(text.contains("K/D") && text.contains("HS%") && text.contains("KAST%"));
         assert!(text.contains("1.50") && text.contains("50.0%") && text.contains("VD"));
+        assert!(text.contains("TRK") && text.contains("[↗]"));
         assert!(!text.contains("puuid") && !text.contains("local-websocket"));
+
+        app.detail = true;
+        let detail = snapshot(&mut app, 100, 30);
+        assert!(detail.contains("[g] Abrir perfil en Tracker.gg"));
+    }
+
+    #[test]
+    fn real_panel_profile_history_and_settings_show_player_facing_content() {
+        let mut app = App::new(&Config::default());
+        app.update_state(StateInfo::new(
+            GamePhase::Idle,
+            GameState::Idle,
+            Confidence::High,
+            "local-client",
+            true,
+            false,
+        ));
+        app.own_profile = Some(crate::providers::profile::OwnProfile {
+            level: 142,
+            xp: 4_500,
+        });
+        app.competitive = Some(crate::providers::profile::CompetitiveProfile {
+            tier: 18,
+            ranked_rating: 64,
+            wins: 8,
+            games: 14,
+        });
+        app.history = Some(vec![super::super::HistoryItem {
+            entry: crate::providers::history::HistoryEntry {
+                queue: "competitivo".into(),
+                started_at_ms: u64::MAX,
+            },
+            details: Some(super::super::HistoryDetails {
+                map: "Ascent".into(),
+                agent: "Sova".into(),
+                outcome: MatchOutcome::Win,
+                stats: crate::models::PlayerMatchStats {
+                    kills: 20,
+                    deaths: 10,
+                    assists: 5,
+                    combat_score: Some(4_200),
+                    ..Default::default()
+                },
+                own_score: Some(13),
+                opponent_score: Some(8),
+            }),
+        }]);
+
+        app.select_tab(0);
+        let panel = snapshot(&mut app, 100, 30);
+        assert!(panel.contains("Nivel 142") && panel.contains("1 partida"));
+        assert!(panel.contains("Diamante 1") && panel.contains("RR ██████░░░░ 64 / 100"));
+        assert!(panel.contains("No estás en una partida"));
+        assert!(panel.contains("K/D 2.00") && panel.contains("FUENTES"));
+
+        app.select_tab(2);
+        let profile = snapshot(&mut app, 100, 30);
+        assert!(profile.contains("20 K / 10 D / 5 A"));
+        assert!(!profile.contains("pendiente") && !profile.contains("CLI"));
+
+        app.select_tab(3);
+        app.detail = true;
+        let history = snapshot(&mut app, 100, 30);
+        for value in ["VICTORIA", "13-8", "Ascent", "Sova", "20/10/5"] {
+            assert!(history.contains(value), "missing {value}\n{history}");
+        }
+
+        app.select_tab(1);
+        app.completed_match = Some(super::super::PostMatch {
+            mode: crate::models::GameMode::Competitive,
+            map: "Ascent".into(),
+            agent: "Sova".into(),
+            outcome: MatchOutcome::Win,
+            stats: crate::models::PlayerMatchStats {
+                kills: 20,
+                deaths: 10,
+                assists: 5,
+                combat_score: Some(4_200),
+                ..Default::default()
+            },
+            own_score: Some(13),
+            opponent_score: Some(8),
+            rounds: vec![
+                super::super::PostRound {
+                    number: 1,
+                    result: "eliminación".into(),
+                    kills: 2,
+                    deaths: 0,
+                },
+                super::super::PostRound {
+                    number: 2,
+                    result: "desactivada".into(),
+                    kills: 0,
+                    deaths: 1,
+                },
+            ],
+        });
+        let postmatch = snapshot(&mut app, 100, 30);
+        assert!(postmatch.contains("TU RESULTADO") && postmatch.contains("TUS RONDAS"));
+
+        app.select_tab(4);
+        let settings = snapshot(&mut app, 100, 30);
+        assert!(settings.contains("Actualizar estado"));
+        assert!(settings.contains("Guardar cambios de estado"));
+        assert!(settings.contains("Solo lectura"));
+        assert!(!settings.contains("Log cambios") && !settings.contains("Retratos opcionales"));
+    }
+
+    #[test]
+    fn pristine_app_renders_startup_screen_before_the_first_observation() {
+        let mut app = App::new(&Config::default());
+        let startup = snapshot(&mut app, 72, 24);
+
+        assert!(startup.contains("INICIANDO VTRACKER"));
+        assert!(startup.contains("Buscando Riot Client"));
+        assert!(startup.contains("Comprobando el estado de tu sesión"));
+        assert!(startup.contains("Solo lectura"));
+        assert!(!startup.contains("1 Panel") && !startup.contains("ESTADO DE PARTIDA"));
+
+        app.update_state(StateInfo::new(
+            GamePhase::GameOpen,
+            GameState::GameOpen,
+            Confidence::High,
+            "local-client",
+            true,
+            true,
+        ));
+        let profile_loading = snapshot(&mut app, 72, 24);
+        assert!(profile_loading.contains("Cargando tu perfil y rango"));
+        assert!(profile_loading.contains("historial continuará en segundo plano"));
     }
 
     #[test]

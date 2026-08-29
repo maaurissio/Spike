@@ -25,6 +25,7 @@ pub(crate) enum RosterSide {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct HistoricalStats {
     pub matches: u32,
+    pub competitive_tier: Option<u64>,
     pub decided_matches: u32,
     pub wins: u32,
     pub kills: u32,
@@ -318,6 +319,7 @@ mod tests {
     fn derives_roster_rates_with_integer_precision() {
         let stats = HistoricalStats {
             matches: 5,
+            competitive_tier: Some(18),
             decided_matches: 5,
             wins: 3,
             kills: 47,

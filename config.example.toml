@@ -9,9 +9,9 @@ interval_seconds = 3
 # Guarda cada cambio de estado en %APPDATA%\vtracker\watch.log.
 log_transitions = false
 
-# Tema TUI: system (paleta del terminal), dark, light o mono.
+# Tema TUI: dark (paleta recomendada), system, light o mono.
 # En dashboard: t previsualiza; Ajustes / s guarda.
-theme = "system"
+theme = "dark"
 
 # ── Perfil propio (se muestra al iniciar con cliente disponible) ─────────────
 # Riot ID del jugador principal. Requiere RSO/opt-in para datos privados.

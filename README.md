@@ -21,7 +21,7 @@ cargo run -- doctor
 
 En una terminal interactiva el panel se actualiza automáticamente. Para probar estados sin ejecutar VALORANT se puede usar `VTRACKER_STATE=closed`, `idle` o `game`.
 
-El detector de procesos por sí solo no puede distinguir lobby, selección de agente o partida. El proveedor local puede elevar la confianza cuando recibe una URI conocida del WebSocket; si no recibe una reciente, el panel conserva el estado honesto de procesos y muestra "modo no confirmado".
+El detector de procesos por sí solo no puede distinguir lobby, selección de agente o partida. El proveedor local eleva la confianza cuando recibe una URI conocida del WebSocket. Si el dashboard se abre después de comenzar la partida y no existe un evento anterior para reproducir, una consulta autoritativa y acotada a `Current Game Player`/`Pre-Game Player` recupera la fase y el MatchID efímero; si tampoco responde, el panel conserva el estado honesto de procesos y muestra "modo no confirmado".
 
 La configuración opcional está en `%APPDATA%\vtracker\config.toml`; consulta [`config.example.toml`](config.example.toml) para el formato. Si `log_transitions = true`, los cambios de estado se guardan en `%APPDATA%\vtracker\watch.log`.
 
@@ -31,13 +31,14 @@ Consulta la [lista de tareas](TASKS.md) para el trabajo realizado, prioridades y
 
 ## Dashboard interactivo
 
-Ejecuta `vtracker dashboard` (alias `tui`). Abrir el ejecutable sin argumentos sigue iniciando `watch`.
+Abre `vtracker` sin argumentos para iniciar la interfaz. `vtracker dashboard` y `vtracker tui` son alias explícitos; el monitor textual anterior permanece disponible con `vtracker watch`.
 
 - `1–5` o `←/→`: cambiar vista. `Tab`/`Shift+Tab`: alternar foco entre pestañas y contenido; `Enter` entra al contenido o abre el detalle seleccionado.
-- `↑/↓` selecciona jugadores (demo), partidas o ajustes. `PgUp/PgDn` desplaza el contenido; la selección se mantiene visible en ventanas pequeñas.
-- `r`: actualizar datos propios bajo demanda; el historial se carga al entrar en su pestaña.
+- `↑/↓` selecciona jugadores reales o ficticios, partidas o ajustes. `Enter` abre el detalle del jugador y `g` abre Tracker.gg cuando su Riot ID es público. `PgUp/PgDn` desplaza el contenido.
+- `r`: actualizar datos bajo demanda; las cinco Ranked propias se cargan automáticamente en segundo plano.
 - `t`: previsualizar Sistema, Noche, Claro o Sin color. En **Ajustes**, `s` guarda el tema junto al intervalo/registro; `r` descarta el borrador. `+/-` edita y `Espacio` alterna el registro o tema seleccionado. Cerrar sin guardar descarta los cambios.
 - `Esc`: cerrar detalle o volver a Partida. `q` o `Ctrl+C`: salir y restaurar la terminal.
+- Mouse: clic en pestañas, filas del historial y opciones de Ajustes; la rueda desplaza el contenido. El teclado sigue siendo el método completo y funciona aunque la terminal no entregue eventos de mouse.
 
 La presentación nativa sigue [`docs/mockups`](docs/mockups/README.md): bordes de caracteres, cinco vistas, tablas compactas y orden **Aliados → Tus rondas → Enemigos**. A 72 columnas la partida de demostración cabe en 24 filas; a 38 columnas, en 26. En ventanas más bajas se habilita desplazamiento; por debajo de 38×10 se solicita ampliar la terminal.
 
@@ -49,11 +50,13 @@ Para ver la maqueta completa en Rust, sin VALORANT:
 
 **DEMO** está siempre identificado: todos sus jugadores y estadísticas son ficticios. No crea proveedores reales, no lee configuración personal ni guarda en disco. `p` alterna partida/postpartida, `g` explica por qué el enlace a Tracker no está disponible, `[`/`]` pagina timelines largos. No abre perfiles externos. El HTML original se conserva intacto como referencia.
 
-En modo normal se conserva el contexto propio y se añade el roster real desde `Current Game Match` más una resolución de nombres visibles en Name Service. La TUI muestra aliados/enemigos o participantes según el modo, nunca fixtures de la demo. Para cada participante consulta hasta cinco partidas de la cola relevante y deduplica `match-details` compartidos con concurrencia máxima de seis. Las filas `Incognito` conservan el nombre oculto, muestran el agente y reciben métricas cuando PD entrega historial. Marcador y rondas en vivo siguen pendientes.
+En modo normal se conserva el contexto propio y se añade el roster real desde `Current Game Match` más una resolución de nombres visibles en Name Service. La cola de la party distingue `Competitivo` de `Normal`; si no está disponible, una partida con spike se identifica honestamente como `Estándar (bomba)`. La TUI muestra aliados/enemigos o participantes según el modo, nunca fixtures de la demo. Para cada participante consulta exclusivamente sus cinco Ranked más recientes y deduplica `match-details` compartidos con concurrencia máxima de seis, aunque la partida actual sea Deathmatch u otro modo. Las filas `Incognito` se presentan como `Jugador N`, muestran el agente y reciben métricas cuando PD entrega historial. K/D, HS%, KAST, WR y forma son históricos de Ranked; kills, marcador y rondas de la partida actual no están presentes en esta fuente en vivo y el detalle se obtiene al terminar.
 
-Las consultas se ejecutan en un trabajador con colas acotadas y una sola operación a la vez; el teclado sigue disponible durante la carga. Un refresh fallido conserva los datos anteriores de la sesión y avisa en la vista. El resumen postpartida permanece al volver al menú, hasta otra partida o el cierre del cliente. Las respuestas atrasadas de fases/sesiones anteriores se descartan.
+Panel y Perfil cargan nivel, rango, RR y las cinco Ranked recientes en cualquier fase con Riot Client conectado. Historial enriquece hasta cinco Ranked con resultado, marcador, mapa, agente, K/D/A y puntos mediante detalles finales; una falla individual conserva la fila básica. Postpartida presenta victoria/derrota, marcador, mapa, modo, agente, K/D/A y timeline propio sin retener MatchID ni PUUID en el estado de pantalla.
 
-Están disponibles para edición el intervalo local (1–60 s), `log_transitions` y `theme` (`"system"`, `"dark"`, `"light"`, `"mono"`). Sistema hereda fondo/texto y colores ANSI del terminal; no detecta el tema de Windows. TTL y autoinicio siguen pendientes. El registro se habilita únicamente después de guardar ese cambio; nunca contiene credenciales. No hay caché de historial en disco ni polling periódico de estadísticas remotas.
+Las consultas se ejecutan en un trabajador con colas acotadas; el historial limita su enriquecimiento a cinco detalles concurrentes por lote y la interfaz sigue disponible durante la carga. Un refresh fallido conserva los datos anteriores de la sesión y avisa en la vista. El resumen postpartida permanece al volver al menú, hasta otra partida o el cierre del cliente. Las respuestas atrasadas de fases/sesiones anteriores se descartan.
+
+Están disponibles para edición el intervalo local (1–60 s), `log_transitions` y `theme` (`"system"`, `"dark"`, `"light"`, `"mono"`). `dark` es el valor inicial y reproduce la paleta recomendada; Sistema hereda fondo/texto del terminal y conserva colores semánticos brillantes. TTL y autoinicio siguen pendientes. El registro se habilita únicamente después de guardar ese cambio; nunca contiene credenciales. No hay caché de historial en disco ni polling periódico de estadísticas remotas.
 
 ## Documentación
 
@@ -82,7 +85,7 @@ La [primera maqueta de interfaz](docs/mockups/vtracker-maqueta.html) muestra el 
 | Dato | Fuente | Cuándo |
 |---|---|---|
 | Fase (`Lobby`/`PreGame`/`AgentSelect`/`InMatch`/`PostMatch`) | WebSocket local | En vivo, event-driven; mapeo de URIs aún en validación |
-| Roster 10 jugadores (campos presentes técnicamente) | GLZ Pre-Game/Current Game | **No habilitado:** requiere definición y aprobación de Riot; nunca desanonimizar |
+| Roster 10 jugadores (prototipo técnico local) | GLZ Pre-Game/Current Game | En vivo; respeta `Incognito`, sin desanonimizar ni exponer identificadores |
 | Perfil propio, MMR, historial | PD con tokens locales | En vivo/post |
 | **Desglose por ronda** (`roundResults[]`: kills/deaths/resultado por ronda) | PD `match-details` | Al terminar la partida |
 
@@ -184,7 +187,7 @@ Verificación con `vtracker doctor` y `VTRACKER_STATE` en Windows (`tasklist /FO
 
 > El detector (`src/game/mod.rs:75`) solo distingue estas 3 señales. `LocalClientSource` añade fases finas solo tras un evento WebSocket inequívoco y las descarta después de 15 segundos sin actualización, para no presentar una fase antigua como actual.
 
-Tests: `cargo test` — 158 pruebas para `config`, `cli`, `game`, `diagnostics`, `providers` (lockfile, REST local, WAMP, contexto propio en vivo, perfil/MMR, historial, postpartida y agregados por modo/mapa/agente), `analytics`, `cache`, `watch` y TUI.
+Tests: `cargo test` — 187 pruebas para `config`, `cli`, `game`, `diagnostics`, `providers` (lockfile, REST local, WAMP, roster en vivo, perfil/MMR, historial Ranked enriquecido, postpartida y agregados por modo/mapa/agente), `analytics`, `cache`, `watch` y TUI, incluidos el arranque por defecto, la portada, progreso de RR, enlaces seguros de Tracker y mouse.
 
 ## Experiencia de usuario final — visión
 
@@ -193,10 +196,10 @@ Estado objetivo una vez completado el desarrollo (Prioridades 2-5):
 1. **Al iniciar el PC / abrir VALORANT** — VTracker (nombre final por definir) se inicia en segundo plano si `autostart = true` en `config.toml` (`src/config/mod.rs:1`). No hace polling innecesario; espera eventos del `Game Engine`.
 2. **Perfil propio** — al arrancar con cliente disponible muestra tu perfil vinculado (`RIOT_ID` configurado en `config.toml` o `.env`) con stats derivadas (K/D, WR, HS%, ADR/ACS si la fuente los expone) calculadas por `Analytics Engine` desde `Raw Data` cacheada.
 3. **Encontrando partida / Agent Select** — mostrar el roster y estadísticas disponibles y permitidos para esa fase, desde fuentes previamente validadas. No anticipar identidades ni datos que la fuente o sus restricciones oculten.
-4. **En partida (`InMatch`) — función principal:** mostrar mapa, modo y roster de aliados/enemigos (diez jugadores en 5v5), con agentes, rangos y estadísticas históricas disponibles y permitidos. Actualmente solo está implementado el contexto propio; falta el roster.
+4. **En partida (`InMatch`) — función principal:** muestra mapa, cola y roster de aliados/enemigos (diez jugadores en 5v5), con agentes, rangos y estadísticas históricas disponibles. La implementación existe; aún requiere más validación real de nombres, rangos ausentes y transiciones entre modos.
 5. **Al terminar la partida (`PostMatch`)** — en modos con rondas, desglose `Ronda | Resultado | Kills | Muertes`; en Deathmatch, Team Deathmatch o Escalation, resumen propio final de K/D/A y puntos. Todo desde `match-details` y sin exponer IDs.
 
-La TUI siempre es opcional: `vtracker watch` para modo live, y comandos `player`/`match`/`history` para consultas puntuales.
+La TUI es la experiencia principal y se abre con `vtracker`. `vtracker watch` conserva el monitor textual para diagnóstico, y `player`/`match`/`history` permiten consultas puntuales.
 
 ## Autoinicio (autostart) — diseño previsto
 
@@ -292,7 +295,8 @@ La interfaz debe adaptarse a terminales pequeñas y grandes, sin depender de una
 ## Comandos previstos
 
 ```text
-vtracker watch [--once] [--interval SEGUNDOS]   # modo live (MVP actual)
+vtracker                                           # interfaz principal
+vtracker watch [--once] [--interval SEGUNDOS]     # monitor textual/diagnóstico
 vtracker doctor                                  # diagnóstico local + providers (sin exponer secretos)
 vtracker config show|validate                   # ver/validar %APPDATA%\vtracker\config.toml
 vtracker config edit --interval 5 --log-transitions true  # cambio atómico y explícito

@@ -78,7 +78,6 @@ impl RosterStatsSource {
         &self,
         request: &RosterStatsRequest,
         subjects: &[String],
-        queue: Option<&str>,
     ) -> HashMap<String, HistoricalStats> {
         let subjects = unique_subjects(subjects);
         let mut histories = HashMap::<String, Vec<String>>::new();
@@ -90,7 +89,7 @@ impl RosterStatsSource {
                     .cloned()
                     .map(|subject| {
                         scope.spawn(move || {
-                            let history = self.fetch_history(request, &subject, queue);
+                            let history = self.fetch_history(request, &subject);
                             (subject, history)
                         })
                     })
@@ -151,7 +150,6 @@ impl RosterStatsSource {
         &self,
         request: &RosterStatsRequest,
         subject: &str,
-        queue: Option<&str>,
     ) -> Result<Vec<String>, ProviderError> {
         if !safe_identifier(subject) {
             return Err(ProviderError::Parse(
@@ -163,13 +161,11 @@ impl RosterStatsSource {
             .clone()
             .unwrap_or_else(|| format!("https://pd.{}.a.pvp.net", request.shard));
         let url = format!("{base}/match-history/v1/history/{subject}");
-        let mut builder = self
-            .client
-            .get(url)
-            .query(&[("startIndex", "0"), ("endIndex", "5")]);
-        if let Some(queue) = queue {
-            builder = builder.query(&[("queue", queue)]);
-        }
+        let builder = self.client.get(url).query(&[
+            ("startIndex", "0"),
+            ("endIndex", "5"),
+            ("queue", "competitive"),
+        ]);
         let response = authenticated(builder, request).send().map_err(|_| {
             ProviderError::Network("no se pudo consultar historial de roster".into())
         })?;
@@ -305,6 +301,12 @@ fn aggregate_match(payload: &Value, subject: &str, total: &mut HistoricalStats) 
     };
 
     total.matches = total.matches.saturating_add(1);
+    if total.competitive_tier.is_none() {
+        total.competitive_tier = player
+            .get("competitiveTier")
+            .and_then(Value::as_u64)
+            .filter(|tier| *tier > 0);
+    }
     total.kills = total.kills.saturating_add(kills);
     total.deaths = total.deaths.saturating_add(deaths);
     total.assists = total.assists.saturating_add(assists);
@@ -526,10 +528,13 @@ mod tests {
     #[test]
     fn aggregates_hidden_player_combat_shots_kast_and_outcome() {
         let mut stats = HistoricalStats::default();
+        let mut payload = fixture(4_000);
+        payload["players"][0]["competitiveTier"] = serde_json::json!(18);
 
-        assert!(aggregate_match(&fixture(4_000), "hidden", &mut stats));
+        assert!(aggregate_match(&payload, "hidden", &mut stats));
 
         assert_eq!(stats.matches, 1);
+        assert_eq!(stats.competitive_tier, Some(18));
         assert_eq!(stats.decided_matches, 1);
         assert_eq!(stats.wins, 1);
         assert_eq!((stats.kills, stats.deaths, stats.assists), (1, 1, 0));
@@ -617,11 +622,7 @@ mod tests {
             entitlement_token: "entitlement".into(),
         };
 
-        let stats = source.fetch(
-            &request,
-            &["visible".into(), "hidden".into()],
-            Some("competitive"),
-        );
+        let stats = source.fetch(&request, &["visible".into(), "hidden".into()]);
 
         assert_eq!(stats.len(), 2);
         assert_eq!(stats["hidden"].kd_hundredths(), Some(200));

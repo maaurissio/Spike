@@ -97,7 +97,7 @@ fn player_view(
 }
 pub fn print_help() {
     println!(
-        "vtracker {VERSION}\n\nUSO:\n  vtracker dashboard [--demo]        # TUI; demo ficticia sin conexión\n  vtracker watch [--once] [--interval SEGUNDOS]\n  vtracker player\n  vtracker history [--limit 1..20]\n  vtracker stats [--limit 1..5]\n  vtracker doctor\n  vtracker config show|validate\n  vtracker config edit [--interval SEGUNDOS] [--log-transitions true|false]\n\nVARIABLES:\n  VTRACKER_STATE=closed|idle|game  Simula un estado para pruebas."
+        "vtracker {VERSION}\n\nUSO:\n  vtracker                           # interfaz principal\n  vtracker dashboard [--demo]        # interfaz explícita; demo ficticia sin conexión\n  vtracker watch [--once] [--interval SEGUNDOS]\n  vtracker player\n  vtracker history [--limit 1..20]\n  vtracker stats [--limit 1..5]\n  vtracker doctor\n  vtracker config show|validate\n  vtracker config edit [--interval SEGUNDOS] [--log-transitions true|false]\n\nVARIABLES:\n  VTRACKER_STATE=closed|idle|game  Simula un estado para pruebas."
     );
 }
 
@@ -178,12 +178,16 @@ pub fn player_view_profile(
     );
     if let Some(competitive) = competitive {
         view.push_str(&format!(
-            "Rango           {} · {} RR\nCompetitivo     {}/{} victorias\n",
+            "Rango           {} · {} RR\n",
             competitive_tier_label(competitive.tier),
             competitive.ranked_rating,
-            competitive.wins,
-            competitive.games,
         ));
+        if competitive.games > 0 {
+            view.push_str(&format!(
+                "Competitivo     {}/{} victorias\n",
+                competitive.wins, competitive.games,
+            ));
+        }
     }
     if !updates.is_empty() {
         view.push_str("Cambios RR      ");
@@ -261,7 +265,10 @@ mod tests {
     use super::*;
     use crate::{
         game::GameState,
-        models::{GameMode, MatchRounds, PlayerRoundStat, Round, RoundResult, Team},
+        models::{
+            GameMode, MatchOutcome, MatchRounds, PlayerMatch, PlayerMatchStats, PlayerRoundStat,
+            Round, RoundResult, Team,
+        },
         providers::capabilities::{Confidence, GamePhase},
         providers::live_match::LiveMatchContext,
         providers::match_detail::CompletedMatch,
@@ -328,6 +335,21 @@ mod tests {
                 .unwrap(),
             ),
             summary: None,
+            totals: crate::providers::match_detail::OwnMatchTotals {
+                stats: PlayerMatch {
+                    outcome: MatchOutcome::Win,
+                    rounds_played: 1,
+                    stats: PlayerMatchStats {
+                        kills: 2,
+                        deaths: 1,
+                        ..Default::default()
+                    },
+                },
+                map: "Ascent".into(),
+                agent: "Sova".into(),
+                own_score: Some(13),
+                opponent_score: Some(9),
+            },
         };
 
         let view = player_view(&info, None, None, Some(&completed_match));
@@ -352,7 +374,7 @@ mod tests {
             rounds: None,
             summary: Some(crate::providers::match_detail::MatchSummary {
                 mode: GameMode::Deathmatch,
-                stats: crate::models::PlayerMatchStats {
+                stats: PlayerMatchStats {
                     kills: 25,
                     deaths: 20,
                     assists: 4,
@@ -360,6 +382,23 @@ mod tests {
                     ..Default::default()
                 },
             }),
+            totals: crate::providers::match_detail::OwnMatchTotals {
+                stats: PlayerMatch {
+                    outcome: MatchOutcome::Unknown,
+                    rounds_played: 0,
+                    stats: PlayerMatchStats {
+                        kills: 25,
+                        deaths: 20,
+                        assists: 4,
+                        combat_score: Some(2500),
+                        ..Default::default()
+                    },
+                },
+                map: "Ascent".into(),
+                agent: "Sova".into(),
+                own_score: None,
+                opponent_score: None,
+            },
         };
 
         let view = player_view(&info, None, None, Some(&completed_match));
@@ -428,6 +467,7 @@ mod tests {
             }),
             &[crate::providers::profile::CompetitiveUpdate {
                 tier_after: 18,
+                ranked_rating_after: Some(50),
                 rr_earned: 20,
                 performance_bonus: 3,
             }],

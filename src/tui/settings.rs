@@ -165,9 +165,9 @@ mod tests {
         settings.selected = 2;
         settings.adjust(true);
         settings.adjust(false);
-        assert_eq!(settings.draft.theme, crate::config::Theme::System);
+        assert_eq!(settings.draft.theme, crate::config::Theme::Dark);
         settings.adjust(false);
-        assert_eq!(settings.draft.theme, crate::config::Theme::Mono);
-        assert_eq!(settings.active.theme, crate::config::Theme::System);
+        assert_eq!(settings.draft.theme, crate::config::Theme::System);
+        assert_eq!(settings.active.theme, crate::config::Theme::Dark);
     }
 }

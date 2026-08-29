@@ -70,10 +70,11 @@ Región/shard se derivan del log (`https://glz-(.+?)-1.(.+?).a.pvp.net`) o de la
 | `GET /pre-game/v1/matches/{preGameMatchId}` | **Roster completo en Agent Select**: 10 jugadores con `Subject(puuid)`, `CharacterID` (agente), `PlayerIdentity` (card/title), `SeasonalBadgeInfo` (rank) | Solo en `AgentSelect` |
 | `GET /core-game/v1/players/{puuid}` | Estado del jugador en partida | Solo en `InMatch` |
 | `GET /core-game/v1/matches/{matchId}` | **Roster en partida** + `MapID`, `ModeID`, `ProvisioningFlow`, `Players[]` con `TeamID`, `CharacterID` | Solo en `InMatch` (`PostGameDetails: null` en vivo) |
+| `GET /parties/v1/players/{puuid}` + `/parties/v1/parties/{partyId}` | `MatchmakingData.QueueID` para distinguir Competitivo/Normal | Con sesión y party activas |
 
 **Uso en VTracker:**
 * Detectar fase: `PreGame → AgentSelect → InMatch` vía WebSocket o polling de `Pre-Game`/`Current Game`.
-* Prototipo actual: mostrar equipos/participantes, agentes, rango disponible y nombres visibles. `Incognito` se excluye de Name Service y aparece como `Jugador oculto`.
+* Prototipo actual: mostrar equipos/participantes, agentes, rango disponible y nombres visibles. `Incognito` se excluye de Name Service y aparece como `Jugador N`, según su slot visible.
 
 ## 5. PD — datos del jugador y rondas
 
@@ -88,7 +89,7 @@ Todos requieren los 4 headers de §3. `shard` = `na`/`eu`/`ap`/`kr`/`pbe`.
 | `GET /match-history/v1/history/{puuid}?start=0&end=20` | **Historial**: `History[]` con `MatchID`, `GameStartTime`, `QueueID` | Siempre |
 | `GET /competitiveupdates/v1/competitiveupdates/{puuid}?start=0&end=20` | **Progreso competitivo** con cambio de RR | Siempre |
 | `GET /match-details/v1/matches/{matchId}` | **Desglose por ronda** `roundResults[]` | **Post-partida (garantizado)** |
-| `GET /name-service/v2/players` (PUT) | Resolución puuid → `gameName#tagLine` | Siempre |
+| `PUT /name-service/v2/players` | Resolución puuid → `gameName#tagLine` | Siempre |
 
 **Desglose por ronda — modelo `roundResults[]`:**
 
@@ -114,7 +115,7 @@ Reglas para VTracker (ADR-008):
 * `deaths` por ronda: `0..=2` (Clove self-revive y Sage res permiten 2; Phoenix ult no genera kill/death — "matar a la nada").
 * K/D agregado de partida sale de `players[].stats.kills/deaths` del scoreboard oficial, **no** de contar `kills[]` (evita sobreconteo por Phoenix).
 * HS% histórico del roster suma `damage[].headshots/bodyshots/legshots`; KAST cuenta Kill, Assist, Survived o Trade por un compañero dentro de 5 s. La ventana es propia y documentada, no se atribuye a Tracker.gg.
-* El proveedor del roster usa el PUUID solo durante la unión historial/detalle, incluye `Incognito`, deduplica MatchID compartidos y entrega a la TUI únicamente métricas normalizadas.
+* El proveedor del roster usa el PUUID solo durante la unión historial/detalle, incluye `Incognito`, consulta siempre las cinco Ranked más recientes, deduplica MatchID compartidos y entrega a la TUI únicamente métricas normalizadas.
 * Si `match-details` responde a mitad de partida (raro, a verificar en 2C): el timeline se llena columna por columna. Si 404 → degradación a post-partida.
 
 ## 6. WebSocket local — eventos en vivo
@@ -124,6 +125,8 @@ Reglas para VTracker (ADR-008):
 Suscribirse a eventos vía `/help` → `OnJsonApiDoc` y filtrar `OnJsonApiDoc` / `OnJsonPvpMatch` / `OnJsonPreGameMatch`. Librerías de referencia: `valorant-websocket-logger` y `valorant-websocket-log-viewer` (techchrism).
 
 **Uso en VTracker:** transiciones `Lobby → PreGame → AgentSelect → InMatch → PostMatch` **event-driven** (sin polling). Fallback: polling cada N segundos si el WebSocket no está disponible.
+
+**Inicio tardío validado (2026-08-29):** el WebSocket no reenvía la transición que ocurrió antes de la suscripción. Con el juego abierto, VTracker consulta como máximo cada 5 s `Current Game Player` y, ante 404, `Pre-Game Player`; una respuesta recupera la fase y el MatchID efímero. Esta ruta detectó correctamente una Ranked en curso (`InMatch`) sin leer memoria ni inspeccionar payloads del juego.
 
 ## 7. Flujo de autenticación paso a paso (implementable)
 

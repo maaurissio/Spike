@@ -8,12 +8,16 @@ mod worker;
 
 use std::{
     io,
+    process::Command as ProcessCommand,
     sync::mpsc::TryRecvError,
     time::{Duration, Instant},
 };
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -21,6 +25,10 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 
 use crate::{
     config::Config,
+    models::{
+        GameMode, MatchOutcome, PlayerMatchStats,
+        roster::{DataAvailability, RosterPlayer},
+    },
     providers::{
         StateInfo,
         capabilities::GamePhase,
@@ -37,6 +45,82 @@ use worker::{Context, Reply, Request, Worker};
 const TABS: [&str; 5] = ["Panel", "Partida", "Perfil", "Historial", "Ajustes"];
 const INPUT_TIMEOUT: Duration = Duration::from_millis(100);
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct HistoryDetails {
+    map: String,
+    agent: String,
+    outcome: MatchOutcome,
+    stats: PlayerMatchStats,
+    own_score: Option<u32>,
+    opponent_score: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct HistoryItem {
+    entry: HistoryEntry,
+    details: Option<HistoryDetails>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PostRound {
+    number: u32,
+    result: String,
+    kills: u8,
+    deaths: u8,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PostMatch {
+    mode: GameMode,
+    map: String,
+    agent: String,
+    outcome: MatchOutcome,
+    stats: PlayerMatchStats,
+    own_score: Option<u32>,
+    opponent_score: Option<u32>,
+    rounds: Vec<PostRound>,
+}
+
+impl PostMatch {
+    fn from_completed(completed: CompletedMatch) -> Self {
+        let mode = completed
+            .rounds
+            .as_ref()
+            .map(|rounds| rounds.mode)
+            .or_else(|| completed.summary.as_ref().map(|summary| summary.mode))
+            .unwrap_or_default();
+        let rounds = completed
+            .rounds
+            .as_ref()
+            .into_iter()
+            .flat_map(|rounds| &rounds.rounds)
+            .filter_map(|round| {
+                round
+                    .players
+                    .iter()
+                    .find(|player| player.puuid == completed.own_puuid)
+                    .map(|player| PostRound {
+                        number: round.round_num,
+                        result: round.round_result.label().into(),
+                        kills: player.kills,
+                        deaths: player.deaths,
+                    })
+            })
+            .collect();
+        let totals = completed.totals;
+        Self {
+            mode,
+            map: totals.map,
+            agent: totals.agent,
+            outcome: totals.stats.outcome,
+            stats: totals.stats.stats,
+            own_score: totals.own_score,
+            opponent_score: totals.opponent_score,
+            rounds,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Focus {
     Tabs,
@@ -50,17 +134,21 @@ struct App {
     history_index: usize,
     detail: bool,
     tracker_notice: bool,
+    tracker_open_failed: bool,
     round_page: usize,
     follow_selection: bool,
     selected_tab: usize,
     state: Option<StateInfo>,
     live_match: Option<LiveMatchContext>,
-    completed_match: Option<String>,
+    completed_match: Option<PostMatch>,
     own_profile: Option<OwnProfile>,
     competitive: Option<CompetitiveProfile>,
     competitive_updates: Vec<CompetitiveUpdate>,
-    history: Option<Vec<HistoryEntry>>,
+    history: Option<Vec<HistoryItem>>,
     history_failed: bool,
+    profile_pending: bool,
+    profile_requested: bool,
+    profile_failed: bool,
     settings: Settings,
     observation_pending: bool,
     context_pending: bool,
@@ -85,6 +173,7 @@ impl App {
             history_index: 0,
             detail: false,
             tracker_notice: false,
+            tracker_open_failed: false,
             round_page: 0,
             follow_selection: true,
             selected_tab: 0,
@@ -96,6 +185,9 @@ impl App {
             competitive_updates: Vec::new(),
             history: None,
             history_failed: false,
+            profile_pending: false,
+            profile_requested: false,
+            profile_failed: false,
             settings: Settings::new(config),
             observation_pending: false,
             context_pending: false,
@@ -125,8 +217,37 @@ impl App {
         self.scroll = 0;
         self.detail = false;
         self.tracker_notice = false;
+        self.tracker_open_failed = false;
         self.follow_selection = true;
         self.dirty = true;
+    }
+
+    fn has_match_context(&self) -> bool {
+        self.demo.is_some()
+            || self.live_match.is_some()
+            || self.completed_match.is_some()
+            || self.state.as_ref().is_some_and(|state| {
+                matches!(
+                    state.phase,
+                    GamePhase::PreGame
+                        | GamePhase::AgentSelect
+                        | GamePhase::InMatch
+                        | GamePhase::PostMatch
+                )
+            })
+    }
+
+    fn selected_live_player(&self) -> Option<&RosterPlayer> {
+        self.live_match
+            .as_ref()?
+            .roster
+            .as_ref()?
+            .players
+            .get(self.player_index)
+    }
+
+    fn has_selectable_roster(&self) -> bool {
+        self.demo.as_ref().is_some_and(|demo| !demo.post) || self.selected_live_player().is_some()
     }
 
     fn update_state(&mut self, state: StateInfo) -> bool {
@@ -156,6 +277,9 @@ impl App {
                 self.own_profile = None;
                 self.competitive = None;
                 self.competitive_updates.clear();
+                self.profile_pending = false;
+                self.profile_requested = false;
+                self.profile_failed = false;
                 self.history = None;
                 self.history_index = 0;
                 self.history_failed = false;
@@ -196,14 +320,31 @@ impl App {
                 }
                 self.context_failed = data.is_err();
                 match data {
-                    Ok(Context::Live(context)) => self.live_match = Some(context),
-                    Ok(Context::Completed(summary)) => self.completed_match = Some(summary),
-                    Ok(Context::Profile(profile, competitive, updates)) => {
-                        self.own_profile = Some(profile);
-                        self.competitive = competitive;
-                        self.competitive_updates = updates;
+                    Ok(Context::Live(context)) => {
+                        self.player_index = context
+                            .roster
+                            .as_ref()
+                            .and_then(|roster| {
+                                roster.players.iter().position(|player| player.is_self)
+                            })
+                            .unwrap_or(0);
+                        self.live_match = Some(context);
                     }
+                    Ok(Context::Completed(summary)) => self.completed_match = Some(summary),
                     Err(()) => {} // Conservar el último dato de esta sesión al fallar un refresh.
+                }
+            }
+            Reply::Profile { epoch, data } => {
+                self.profile_pending = false;
+                if epoch != self.epoch {
+                    self.dirty = true;
+                    return;
+                }
+                self.profile_failed = data.is_err();
+                if let Ok((profile, competitive, updates)) = data {
+                    self.own_profile = Some(profile);
+                    self.competitive = competitive;
+                    self.competitive_updates = updates;
                 }
             }
             Reply::History { epoch, data } => {
@@ -240,9 +381,22 @@ impl App {
         if self.demo.is_some() {
             return;
         }
+        let connected = self.state.as_ref().is_some_and(|state| state.client_found);
+        // El perfil es barato y alimenta Panel/Perfil en cualquier fase; no
+        // debe quedar esperando detrás del enriquecimiento completo del roster.
+        if connected
+            && !self.profile_pending
+            && !self.profile_requested
+            && worker.submit(Request::Profile { epoch: self.epoch })
+        {
+            self.profile_pending = true;
+            self.profile_requested = true;
+            self.profile_failed = false;
+            self.dirty = true;
+        }
         if !self.context_pending
             && !self.context_requested
-            && let Some(phase @ (GamePhase::Idle | GamePhase::InMatch | GamePhase::PostMatch)) =
+            && let Some(phase @ (GamePhase::InMatch | GamePhase::PostMatch)) =
                 self.state.as_ref().map(|info| info.phase)
             && worker.submit(Request::Context {
                 phase,
@@ -253,7 +407,7 @@ impl App {
             self.context_requested = true;
             self.dirty = true;
         }
-        if self.selected_tab == 3 && self.history.is_none() && !self.history_failed {
+        if connected && self.history.is_none() && !self.history_failed {
             self.request_history(worker);
         }
     }
@@ -289,6 +443,7 @@ impl App {
                 if self.detail {
                     self.detail = false;
                     self.tracker_notice = false;
+                    self.tracker_open_failed = false;
                     self.scroll = 0;
                 } else {
                     self.select_tab(1);
@@ -338,7 +493,17 @@ impl App {
             }
             KeyCode::Char('r') if self.selected_tab == 4 => self.settings.discard(),
             KeyCode::Char('r') if self.selected_tab == 3 => self.request_history(worker),
-            KeyCode::Char('r') if !self.context_pending => self.context_requested = false,
+            KeyCode::Char('r') => {
+                if !self.context_pending {
+                    self.context_requested = false;
+                }
+                if !self.profile_pending {
+                    self.profile_requested = false;
+                }
+                if !self.history_pending && matches!(self.selected_tab, 0 | 2) {
+                    self.request_history(worker);
+                }
+            }
             KeyCode::Char('p') if self.selected_tab == 1 && self.demo.is_some() => {
                 let demo = self.demo.as_mut().unwrap();
                 demo.post = !demo.post;
@@ -356,9 +521,21 @@ impl App {
             {
                 self.detail = true;
                 self.tracker_notice = true;
+                self.tracker_open_failed = false;
                 self.follow_selection = true;
             }
-            KeyCode::Enter if self.selected_tab == 0 => self.select_tab(1),
+            KeyCode::Char('g') if self.selected_tab == 1 && self.demo.is_none() => {
+                self.detail = true;
+                self.tracker_notice = true;
+                self.tracker_open_failed = self
+                    .selected_live_player()
+                    .and_then(tracker_url)
+                    .is_some_and(|url| open_tracker(&url).is_err());
+                self.follow_selection = true;
+            }
+            KeyCode::Enter if self.selected_tab == 0 && self.has_match_context() => {
+                self.select_tab(1)
+            }
             KeyCode::Enter if self.selected_tab == 3 => {
                 if let Some(demo) = &mut self.demo {
                     demo.post = true;
@@ -368,16 +545,15 @@ impl App {
                 }
                 self.follow_selection = true;
             }
-            KeyCode::Enter
-                if self.selected_tab == 1 && self.demo.as_ref().is_some_and(|d| !d.post) =>
-            {
+            KeyCode::Enter if self.selected_tab == 1 && self.has_selectable_roster() => {
                 self.detail = !self.detail;
                 self.tracker_notice = false;
+                self.tracker_open_failed = false;
                 self.follow_selection = true;
             }
             KeyCode::Up | KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('k')
                 if self.selected_tab == 3
-                    || (self.selected_tab == 1 && self.demo.as_ref().is_some_and(|d| !d.post)) =>
+                    || (self.selected_tab == 1 && self.has_selectable_roster()) =>
             {
                 let down = matches!(key.code, KeyCode::Down | KeyCode::Char('j'));
                 let (index, count) = if self.selected_tab == 3 {
@@ -389,10 +565,16 @@ impl App {
                         ),
                     )
                 } else {
-                    (
-                        &mut self.player_index,
-                        self.demo.as_ref().unwrap().players.len(),
-                    )
+                    let count = self.demo.as_ref().map_or_else(
+                        || {
+                            self.live_match
+                                .as_ref()
+                                .and_then(|context| context.roster.as_ref())
+                                .map_or(0, |roster| roster.players.len())
+                        },
+                        |demo| demo.players.len(),
+                    );
+                    (&mut self.player_index, count)
                 };
                 if count > 0 {
                     *index = if down {
@@ -402,6 +584,7 @@ impl App {
                     };
                 }
                 self.tracker_notice = false;
+                self.tracker_open_failed = false;
                 self.follow_selection = true;
             }
             KeyCode::Up | KeyCode::Char('k') => self.scroll = self.scroll.saturating_sub(1),
@@ -413,6 +596,125 @@ impl App {
         }
         self.dirty = true;
     }
+
+    fn mouse(&mut self, mouse: MouseEvent, width: u16) {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                self.scroll = self.scroll.saturating_sub(3);
+                self.follow_selection = false;
+                self.dirty = true;
+                return;
+            }
+            MouseEventKind::ScrollDown => {
+                self.scroll = self.scroll.saturating_add(3);
+                self.follow_selection = false;
+                self.dirty = true;
+                return;
+            }
+            MouseEventKind::Down(MouseButton::Left) => {}
+            _ => return,
+        }
+
+        let tab_rows = if width < 72 { 2 } else { 1 };
+        if mouse.row == 1 || (tab_rows == 2 && mouse.row == 2) {
+            let row = usize::from(mouse.row.saturating_sub(1));
+            let indices: Vec<usize> = if tab_rows == 1 {
+                (0..TABS.len()).collect()
+            } else if row == 0 {
+                (0..3).collect()
+            } else {
+                (3..5).collect()
+            };
+            let mut x = 1_u16;
+            for index in indices {
+                let label_width = u16::try_from(format!(" {} {} ", index + 1, TABS[index]).len())
+                    .unwrap_or(u16::MAX);
+                if mouse.column >= x && mouse.column < x.saturating_add(label_width) {
+                    self.select_tab(index);
+                    self.focus = Focus::Content;
+                    return;
+                }
+                x = x.saturating_add(label_width);
+            }
+        }
+
+        let body_y = 2 + tab_rows;
+        if mouse.row < body_y {
+            return;
+        }
+        let line = usize::from(mouse.row - body_y + self.scroll);
+        if self.selected_tab == 3 {
+            let count = self.history.as_ref().map_or(0, Vec::len);
+            if (2..2 + count).contains(&line) {
+                self.history_index = line - 2;
+                self.detail = false;
+                self.follow_selection = true;
+                self.dirty = true;
+            }
+        } else if self.selected_tab == 4 {
+            let selected = match line {
+                1 => Some(0),
+                3 => Some(1),
+                5 => Some(2),
+                _ => None,
+            };
+            if let Some(selected) = selected {
+                self.settings.selected = selected;
+                self.follow_selection = true;
+                self.dirty = true;
+            }
+        }
+    }
+}
+
+fn tracker_url(player: &RosterPlayer) -> Option<String> {
+    let DataAvailability::Available(identity) = &player.identity else {
+        return None;
+    };
+    let (name, tag) = identity.rsplit_once('#')?;
+    if name.is_empty() || tag.is_empty() || identity == "Tú" {
+        return None;
+    }
+    Some(format!(
+        "https://tracker.gg/valorant/profile/riot/{}/overview",
+        encode_path_segment(identity)
+    ))
+}
+
+fn encode_path_segment(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX[usize::from(byte & 0x0F)]));
+        }
+    }
+    encoded
+}
+
+fn open_tracker(url: &str) -> io::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        ProcessCommand::new("rundll32.exe")
+            .arg("url.dll,FileProtocolHandler")
+            .arg(url)
+            .spawn()?;
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        ProcessCommand::new("open").arg(url).spawn()?;
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        ProcessCommand::new("xdg-open").arg(url).spawn()?;
+        Ok(())
+    }
 }
 
 /// Restaura la terminal incluso si falla la inicialización o hay un panic.
@@ -421,7 +723,12 @@ struct TerminalGuard;
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show);
+        let _ = execute!(
+            io::stdout(),
+            DisableMouseCapture,
+            LeaveAlternateScreen,
+            crossterm::cursor::Show
+        );
     }
 }
 
@@ -436,7 +743,7 @@ pub(crate) fn run(config: Config, demo: bool) -> io::Result<()> {
     enable_raw_mode()?;
     let _guard = TerminalGuard;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
     run_loop(&mut terminal, config, demo)
 }
@@ -488,6 +795,7 @@ fn run_loop(
         if event::poll(INPUT_TIMEOUT)? {
             match event::read()? {
                 Event::Key(key) => app.key(key, &worker),
+                Event::Mouse(mouse) => app.mouse(mouse, terminal.size()?.width),
                 Event::Resize(_, _) => {
                     app.dirty = true;
                     app.follow_selection = true;
@@ -497,46 +805,6 @@ fn run_loop(
         }
     }
     Ok(())
-}
-
-fn completed_match_content(completed: &CompletedMatch) -> String {
-    if let Some(rounds) = completed.rounds.as_ref() {
-        let mut content = format!(
-            "Última partida · {} · {} rondas\n\nRonda  Resultado        K  D\n",
-            rounds.mode.label(),
-            rounds.rounds.len(),
-        );
-        for round in &rounds.rounds {
-            if let Some(player) = round
-                .players
-                .iter()
-                .find(|player| player.puuid == completed.own_puuid)
-            {
-                content.push_str(&format!(
-                    "{:>2}     {:<16} {:>1}  {:>1}\n",
-                    round.round_num,
-                    round.round_result.label(),
-                    player.kills,
-                    player.deaths,
-                ));
-            }
-        }
-        return content;
-    }
-    if let Some(summary) = completed.summary.as_ref() {
-        return format!(
-            "Última partida · {}\n\nK  D  A  Puntos\n{}  {}  {}  {}",
-            summary.mode.label(),
-            summary.stats.kills,
-            summary.stats.deaths,
-            summary.stats.assists,
-            summary
-                .stats
-                .combat_score
-                .map_or_else(|| "—".into(), |score| score.to_string()),
-        );
-    }
-    "Última partida\n\nEl resumen propio aún no está disponible.".into()
 }
 
 #[cfg(test)]
@@ -589,6 +857,64 @@ mod tests {
     }
 
     #[test]
+    fn tracker_links_use_only_public_riot_ids_and_encode_the_path() {
+        let player = |identity| RosterPlayer {
+            side: crate::models::roster::RosterSide::Ally,
+            slot: 1,
+            is_self: true,
+            identity,
+            agent: DataAvailability::NotAvailable,
+            rank: DataAvailability::NotAvailable,
+            stats: DataAvailability::NotAvailable,
+        };
+
+        let visible = player(DataAvailability::Available("Ñorte uno#LAS".into()));
+        assert_eq!(
+            tracker_url(&visible).as_deref(),
+            Some("https://tracker.gg/valorant/profile/riot/%C3%91orte%20uno%23LAS/overview")
+        );
+        assert!(tracker_url(&player(DataAvailability::Hidden)).is_none());
+        assert!(tracker_url(&player(DataAvailability::Available("Tú".into()))).is_none());
+    }
+
+    #[test]
+    fn mouse_selects_tabs_history_rows_settings_and_scrolls() {
+        let mut app = App::new(&Config::default());
+        let click = |column, row| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        app.mouse(click(12, 1), 80);
+        assert_eq!(app.selected_tab, 1);
+
+        app.mouse(click(5, 2), 60);
+        assert_eq!(app.selected_tab, 3);
+
+        app.history = Some(vec![history_item(200), history_item(100)]);
+        app.select_tab(3);
+        app.mouse(click(5, 6), 80);
+        assert_eq!(app.history_index, 1);
+
+        app.select_tab(4);
+        app.mouse(click(5, 8), 80);
+        assert_eq!(app.settings.selected, 2);
+
+        app.mouse(
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 5,
+                row: 10,
+                modifiers: KeyModifiers::NONE,
+            },
+            80,
+        );
+        assert_eq!(app.scroll, 3);
+    }
+
+    #[test]
     fn dashboard_uses_player_facing_status_only() {
         let mut app = App::new(&Config::default());
         app.update_state(StateInfo::new(
@@ -608,13 +934,10 @@ mod tests {
     #[test]
     fn history_view_never_exposes_match_identifiers() {
         let mut app = App::new(&Config::default());
-        app.history = Some(vec![HistoryEntry {
-            queue: "competitivo".into(),
-            started_at_ms: 0,
-        }]);
+        app.history = Some(vec![history_item(0)]);
 
         let text = history_content(&app);
-        assert!(text.contains("competitivo"));
+        assert!(text.contains("Competitivo"));
         assert!(!text.contains("match"));
     }
 
@@ -629,27 +952,55 @@ mod tests {
         )
     }
 
+    fn history_item(started_at_ms: u64) -> HistoryItem {
+        HistoryItem {
+            entry: HistoryEntry {
+                queue: "competitivo".into(),
+                started_at_ms,
+            },
+            details: None,
+        }
+    }
+
+    fn post_match(round_count: u32) -> PostMatch {
+        PostMatch {
+            mode: GameMode::Competitive,
+            map: "Ascent".into(),
+            agent: "Sova".into(),
+            outcome: MatchOutcome::Win,
+            stats: PlayerMatchStats {
+                kills: 15,
+                deaths: 10,
+                assists: 4,
+                combat_score: Some(3_988),
+                ..Default::default()
+            },
+            own_score: Some(13),
+            opponent_score: Some(9),
+            rounds: (1..=round_count)
+                .map(|number| PostRound {
+                    number,
+                    result: "eliminación".into(),
+                    kills: 1,
+                    deaths: 0,
+                })
+                .collect(),
+        }
+    }
+
     #[test]
     fn ignores_late_context_and_history_from_a_closed_session() {
         let mut app = App::new(&Config::default());
         app.update_state(phase_info(GamePhase::Idle));
-        let generation = app.generation;
         let epoch = app.epoch;
         app.update_state(phase_info(GamePhase::ClientClosed));
-        app.apply(Reply::Context {
-            generation,
-            data: Ok(Context::Profile(
-                OwnProfile { level: 50, xp: 10 },
-                None,
-                vec![],
-            )),
+        app.apply(Reply::Profile {
+            epoch,
+            data: Ok((OwnProfile { level: 50, xp: 10 }, None, vec![])),
         });
         app.apply(Reply::History {
             epoch,
-            data: Ok(vec![HistoryEntry {
-                queue: "competitivo".into(),
-                started_at_ms: 0,
-            }]),
+            data: Ok(vec![history_item(0)]),
         });
         assert!(app.own_profile.is_none());
         assert!(app.history.is_none());
@@ -662,19 +1013,19 @@ mod tests {
         app.update_state(phase_info(GamePhase::PostMatch));
         app.apply(Reply::Context {
             generation: app.generation,
-            data: Ok(Context::Completed("Rondas propias".into())),
+            data: Ok(Context::Completed(post_match(2))),
         });
         app.update_state(phase_info(GamePhase::GameOpen));
-        assert_eq!(app.completed_match.as_deref(), Some("Rondas propias"));
-        app.history = Some(vec![HistoryEntry {
-            queue: "competitivo".into(),
-            started_at_ms: 0,
-        }]);
+        assert_eq!(
+            app.completed_match.as_ref().map(|item| item.map.as_str()),
+            Some("Ascent")
+        );
+        app.history = Some(vec![history_item(0)]);
         app.apply(Reply::History {
             epoch: app.epoch,
             data: Err(()),
         });
-        assert!(history_content(&app).contains("competitivo"));
+        assert!(history_content(&app).contains("Competitivo"));
         assert!(history_content(&app).contains("Última consulta"));
         app.update_state(phase_info(GamePhase::ClientClosed));
         assert!(app.completed_match.is_none());
@@ -700,18 +1051,18 @@ mod tests {
 
     #[test]
     fn history_refresh_preserves_selected_match_and_closes_removed_detail() {
-        let entry = |started_at_ms| HistoryEntry {
-            queue: "competitivo".into(),
-            started_at_ms,
-        };
         let mut app = App::new(&Config::default());
         app.selected_tab = 3;
-        app.history = Some(vec![entry(200), entry(100)]);
+        app.history = Some(vec![history_item(200), history_item(100)]);
         app.history_index = 1;
         app.detail = true;
         app.apply(Reply::History {
             epoch: app.epoch,
-            data: Ok(vec![entry(300), entry(200), entry(100)]),
+            data: Ok(vec![
+                history_item(300),
+                history_item(200),
+                history_item(100),
+            ]),
         });
         assert_eq!(app.history_index, 2);
         assert!(app.detail);
@@ -723,7 +1074,7 @@ mod tests {
         assert!(app.detail);
         app.apply(Reply::History {
             epoch: app.epoch,
-            data: Ok(vec![entry(400), entry(300)]),
+            data: Ok(vec![history_item(400), history_item(300)]),
         });
         assert!(!app.detail);
         assert!(app.history_index < app.history.as_ref().unwrap().len());
@@ -758,7 +1109,7 @@ mod tests {
         .unwrap();
         let mut app = App::new(&Config::default());
         app.selected_tab = 3;
-        app.schedule_data(&worker);
+        app.request_history(&worker);
         assert_eq!(
             started_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
             "history"
@@ -800,7 +1151,7 @@ mod tests {
             }
         }
         app.selected_tab = 1;
-        app.completed_match = Some(format!("{}Ronda final", "Ronda propia\n".repeat(30)));
+        app.completed_match = Some(post_match(30));
         app.scroll = 30;
         app.follow_selection = false;
         let mut terminal = Terminal::new(TestBackend::new(80, 15)).unwrap();
@@ -814,6 +1165,6 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect();
-        assert!(text.contains("Ronda final"));
+        assert!(text.contains(" 30") && text.contains("eliminación"));
     }
 }

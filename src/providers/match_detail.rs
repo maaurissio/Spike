@@ -51,6 +51,7 @@ pub(crate) struct CompletedMatch {
     pub own_puuid: String,
     pub rounds: Option<MatchRounds>,
     pub summary: Option<MatchSummary>,
+    pub totals: OwnMatchTotals,
 }
 
 /// Resumen final propio de un modo que no tiene timeline de rondas.
@@ -64,6 +65,8 @@ pub(crate) struct OwnMatchTotals {
     pub stats: crate::models::PlayerMatch,
     pub map: String,
     pub agent: String,
+    pub own_score: Option<u32>,
+    pub opponent_score: Option<u32>,
 }
 
 /// Consulta de solo lectura a `pd.{shard}.a.pvp.net` para una partida concluida.
@@ -169,6 +172,7 @@ fn parse_completed_match(
     own_puuid: &str,
 ) -> Result<CompletedMatch, ProviderError> {
     let mode = completed_game_mode(payload)?;
+    let totals = parse_own_match_totals(payload, own_puuid)?;
     let (rounds, summary) = if mode.supports_round_timeline() {
         (Some(parse_completed_match_details(payload)?), None)
     } else {
@@ -178,6 +182,7 @@ fn parse_completed_match(
         own_puuid: own_puuid.to_owned(),
         rounds,
         summary,
+        totals,
     })
 }
 
@@ -217,6 +222,17 @@ fn completed_game_mode(payload: &Value) -> Result<GameMode, ProviderError> {
         .unwrap_or(false)
     {
         return Err(parse_error("match-details aún no está finalizado"));
+    }
+    let queue = match_info
+        .get("queueID")
+        .or_else(|| match_info.get("queueId"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
+    if let Some(queue) = queue {
+        let mode = parse_game_mode(queue)?;
+        if mode != GameMode::Unknown {
+            return Ok(mode);
+        }
     }
     parse_game_mode(required_text(match_info, "gameMode")?)
 }
@@ -282,19 +298,23 @@ fn parse_own_match_totals(
         .filter(|value| !value.is_empty())
         .map(crate::providers::live_match::agent_label)
         .unwrap_or_else(|| "no disponible".into());
-    let outcome = player
-        .get("teamId")
-        .and_then(Value::as_str)
-        .and_then(|team_id| {
-            payload
-                .get("teams")
-                .and_then(Value::as_array)
-                .and_then(|teams| {
-                    teams
-                        .iter()
-                        .find(|team| team.get("teamId").and_then(Value::as_str) == Some(team_id))
-                })
+    let own_team_id = player.get("teamId").and_then(Value::as_str);
+    let teams = payload.get("teams").and_then(Value::as_array);
+    let own_team = own_team_id.and_then(|team_id| {
+        teams.and_then(|teams| {
+            teams
+                .iter()
+                .find(|team| team.get("teamId").and_then(Value::as_str) == Some(team_id))
         })
+    });
+    let opponent = own_team_id.and_then(|team_id| {
+        teams.and_then(|teams| {
+            teams
+                .iter()
+                .find(|team| team.get("teamId").and_then(Value::as_str) != Some(team_id))
+        })
+    });
+    let outcome = own_team
         .and_then(|team| team.get("won").and_then(Value::as_bool))
         .map(|won| {
             if won {
@@ -321,6 +341,14 @@ fn parse_own_match_totals(
         },
         map,
         agent,
+        own_score: own_team
+            .and_then(|team| team.get("roundsWon"))
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok()),
+        opponent_score: opponent
+            .and_then(|team| team.get("roundsWon"))
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok()),
     })
 }
 
@@ -408,7 +436,8 @@ fn parse_player_round_stat(
 }
 
 fn parse_game_mode(value: &str) -> Result<GameMode, ProviderError> {
-    match value.to_ascii_lowercase().as_str() {
+    let value = value.to_ascii_lowercase();
+    let mode = match value.as_str() {
         "competitive" => Ok(GameMode::Competitive),
         "unrated" | "standard" => Ok(GameMode::Unrated),
         "customgame" | "custom" => Ok(GameMode::Custom),
@@ -416,8 +445,18 @@ fn parse_game_mode(value: &str) -> Result<GameMode, ProviderError> {
         "deathmatch" => Ok(GameMode::Deathmatch),
         "teamdeathmatch" => Ok(GameMode::TeamDeathmatch),
         "escalation" => Ok(GameMode::Escalation),
+        _ if value.contains("bombgamemode") || value.ends_with("/bomb") => Ok(GameMode::Unrated),
+        _ if value.contains("teamdeathmatch") || value.contains("hurm") => {
+            Ok(GameMode::TeamDeathmatch)
+        }
+        _ if value.contains("deathmatch") => Ok(GameMode::Deathmatch),
+        _ if value.contains("swiftplay") => Ok(GameMode::Swiftplay),
+        _ if value.contains("escalation") || value.contains("gunprogression") => {
+            Ok(GameMode::Escalation)
+        }
         _ => Ok(GameMode::Unknown),
-    }
+    }?;
+    Ok(mode)
 }
 
 fn parse_team(value: &str) -> Result<Team, ProviderError> {
@@ -509,7 +548,15 @@ mod tests {
 
     fn fixture() -> Value {
         serde_json::json!({
-            "matchInfo": {"matchId": "match", "gameMode": "Competitive", "isCompleted": true},
+            "matchInfo": {"matchId": "match", "mapId": "/Game/Maps/Ascent/Ascent", "gameMode": "Competitive", "isCompleted": true},
+            "players": [
+                {"subject":"me", "teamId":"Blue", "characterId":"8e253930-4c05-31dd-1b6c-968525494517", "stats":{"kills":1,"deaths":1,"assists":0,"roundsPlayed":2,"score":400}},
+                {"subject":"them", "teamId":"Red", "stats":{"kills":1,"deaths":1,"assists":0,"roundsPlayed":2,"score":250}}
+            ],
+            "teams": [
+                {"teamId":"Blue", "won":true, "roundsWon":1},
+                {"teamId":"Red", "won":false, "roundsWon":1}
+            ],
             "roundResults": [
                 {
                     "roundNum": 0,
@@ -574,10 +621,10 @@ mod tests {
     #[test]
     fn summarizes_own_deathmatch_without_retaining_a_round_timeline() {
         let payload = serde_json::json!({
-            "matchInfo": {"matchId": "dm", "gameMode": "Deathmatch", "isCompleted": true},
+            "matchInfo": {"matchId": "dm", "mapId": "/Game/Maps/Ascent/Ascent", "gameMode": "Deathmatch", "isCompleted": true},
             "players": [
                 {"subject": "other", "stats": {"kills": 40, "deaths": 10, "assists": 2, "score": 4000}},
-                {"subject": "me", "stats": {"kills": 25, "deaths": 20, "assists": 4, "score": 2500}}
+                {"subject": "me", "characterId":"8e253930-4c05-31dd-1b6c-968525494517", "stats": {"kills": 25, "deaths": 20, "assists": 4, "score": 2500}}
             ]
         });
 
@@ -601,7 +648,7 @@ mod tests {
                     {"subject": "other", "teamId": "Red", "stats": {"kills": 30, "deaths": 10, "assists": 2, "roundsPlayed": 20, "score": 5000}},
                     {"subject": "me", "teamId": "Blue", "characterId": "8e253930-4c05-31dd-1b6c-968525494517", "stats": {"kills": 20, "deaths": 15, "assists": 5, "roundsPlayed": 20, "score": 4000}}
                 ],
-                "teams": [{"teamId": "Blue", "won": true}, {"teamId": "Red", "won": false}]
+                "teams": [{"teamId": "Blue", "won": true, "roundsWon": 13}, {"teamId": "Red", "won": false, "roundsWon": 9}]
             }),
             "me",
         )
@@ -612,6 +659,26 @@ mod tests {
         assert_eq!(totals.stats.stats.assists, 5);
         assert_eq!(totals.map, "Ascent");
         assert_eq!(totals.agent, "Omen");
+        assert_eq!(
+            (totals.own_score, totals.opponent_score),
+            (Some(13), Some(9))
+        );
+    }
+
+    #[test]
+    fn prefers_queue_over_internal_bomb_mode_name() {
+        let payload = serde_json::json!({
+            "matchInfo": {
+                "gameMode":"/Game/GameModes/Bomb/BombGameMode.BombGameMode_C",
+                "queueID":"competitive",
+                "isCompleted":true
+            }
+        });
+
+        assert_eq!(
+            completed_game_mode(&payload).unwrap(),
+            GameMode::Competitive
+        );
     }
 
     #[test]

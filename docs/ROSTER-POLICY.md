@@ -9,7 +9,7 @@
 VTracker conserva el roster de la partida actual como requisito principal. Por
 decisión explícita del usuario (ADR-014), el desarrollo local consulta equipos,
 agentes, rango disponible y nombres no ocultos desde los servicios ya usados por
-el cliente. Las identidades `Incognito` se muestran como `Jugador oculto` y no se
+el cliente. Las identidades `Incognito` se muestran como `Jugador N` y no se
 envían a Name Service.
 
 El modelo que recibe la interfaz no contiene PUUID ni match ID. La advertencia
@@ -26,7 +26,7 @@ como producto aprobado por Riot.
 | Nombre visible en partida | Implementado | Name Service se consulta una vez; jugadores `Incognito` quedan excluidos. |
 | Agente y rango del roster | Implementado cuando el campo está presente | Sale de `Current Game Match`; ausencia explícita, sin inventar. |
 | HS, KAST, K/D, WR e historial | Implementado en el prototipo local | Hasta cinco partidas por jugador desde PD; detalles deduplicados, concurrencia máxima seis y degradación por fila. Su distribución requiere la revisión indicada abajo. |
-| Identidad oculta | Implementado | Se muestra `Jugador oculto` con su agente; el PUUID efímero permite agregar estadísticas, pero no se consulta ni muestra el Riot ID. |
+| Identidad oculta | Implementado | Se muestra `Jugador N` con su agente; el PUUID efímero permite agregar estadísticas Ranked, pero no se consulta ni muestra el Riot ID. |
 | Modelo normalizado aliado/enemigo/participante | Implementado con fuente real | Representa campos disponibles u ocultos y no retiene IDs. |
 
 ## Fuentes oficiales

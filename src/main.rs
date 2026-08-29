@@ -20,8 +20,11 @@ use cli::{Command, ConfigCommand};
 use config::Config;
 use providers::{
     GameStateSource, HistorySource, LiveMatchSource, LocalClientSource, MatchDetailSource,
-    PlayerProfileSource, ProcessGameStateSource, capabilities::GamePhase,
-    live_match::LiveMatchContext, match_detail::CompletedMatch, profile::OwnProfile,
+    PlayerProfileSource, ProcessGameStateSource,
+    capabilities::GamePhase,
+    live_match::LiveMatchContext,
+    match_detail::CompletedMatch,
+    profile::{CompetitiveProfile, OwnProfile},
     resolve_with_fallback,
 };
 use ui::{draw_watch, history_view, player_view_profile, print_help, stats_view};
@@ -122,10 +125,15 @@ fn run_player() {
     let source = PlayerProfileSource::new();
     match local.profile_request().and_then(|request| {
         source.fetch_own(&request).map(|profile| {
-            let competitive = source.fetch_own_competitive(&request).ok().flatten();
+            let mut competitive = source.fetch_own_competitive(&request).ok().flatten();
             let updates = source
                 .fetch_own_competitive_updates(&request, 5)
                 .unwrap_or_default();
+            if competitive.is_none() {
+                competitive = updates
+                    .first()
+                    .and_then(CompetitiveProfile::from_latest_update);
+            }
             (profile, competitive, updates)
         })
     }) {

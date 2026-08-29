@@ -1,12 +1,12 @@
 # DESIGN-UI — Especificación de interfaz (TUI)
 
-> **Prioridad de producto (2026-08-28, ADR-011):** el roster de aliados y enemigos (diez jugadores en 5v5), con agentes, rangos y estadísticas históricas disponibles y permitidos, es la función principal; no es opcional. La implementación real actual solo muestra contexto propio. La demo visual en Rust no cumple por sí sola este requisito. Validar fuentes y permisos antes de ampliar consultas; representar identidades ocultas y datos ausentes sin eludir restricciones.
+> **Prioridad de producto (2026-08-28, ADR-011):** el roster de aliados y enemigos (diez jugadores en 5v5), con agentes, rangos y estadísticas históricas disponibles y permitidos, es la función principal; no es opcional. La implementación real ya conecta el roster y sus cinco Ranked históricas, pero todavía requiere revalidación en partidas reales tras cada corrección. La demo visual en Rust no cumple por sí sola este requisito. Representar identidades ocultas y datos ausentes sin eludir restricciones.
 
 > **Actualización 2026-08-28:** la referencia visual aprobada es ahora [`mockups/README.md`](mockups/README.md), trasladada a `src/tui/view.rs` (ADR-012). El contenido inferior conserva exploraciones anteriores, no sustituye la nueva maqueta. En la implementación actual: `1–5` cambia vista, `Tab` mueve foco, `t` cambia tema y `Esc` vuelve; Aliados → Tus rondas → Enemigos también en ancho grande. La demo es ficticia y aislada; no implica integración del roster o rondas en vivo.
 
 > **Bocetos históricos:** los diagramas y atajos anteriores que aparecen más abajo son exploratorios y quedan subordinados a la maqueta aprobada y ADR-012. Los requisitos de datos y privacidad mantienen su vigencia.
 
-> Estado: en refinamiento (pre-código). Define las vistas, layouts adaptativos y navegación. Principios base en `Arquitectura-inicial.md:12` (Elm/TEA, `AppState` solo presentación). Specs relacionados: `SPEC-ROUNDS.md`, `DECISIONS.md`.
+> Estado: implementado parcialmente y en refinamiento con pruebas reales. Define las vistas, layouts adaptativos y navegación. Principios base en `Arquitectura-inicial.md:12` (Elm/TEA, `AppState` solo presentación). Specs relacionados: `SPEC-ROUNDS.md`, `DECISIONS.md`.
 
 ## 1. Vistas
 
@@ -16,7 +16,7 @@
 
 **Formato compacto vigente:** el usuario sustituyó las letras apiladas por cantidades (`1K`, `4K`, `0D`, `2D`). El timeline entre equipos ocupa tres líneas: kills, número de ronda y muertes. Sin tarjetas, separadores extra ni grandes resúmenes. La ronda actual lleva `*` y `—K / —D` hasta disponer de datos confirmados; cero significa cero confirmado. Priorizar el espacio de una terminal no maximizada; las partidas largas deberán paginar por bloques según el ancho.
 
-**Acceso a Tracker.gg solicitado:** columna textual `TRK` con `[↗]` y atajo `g` para el jugador seleccionado; también desde su detalle. Abrir el perfil externo correspondiente en el navegador solo por acción del usuario y cuando exista un Riot ID completo y visible obtenido de una fuente validada. No inferir identidades ocultas ni permitir que una URL arbitraria controle el destino. En la maqueta, la apertura está deshabilitada por usar nombres ficticios; el control permite explorar el flujo, no visitar un perfil real. `t` conserva el cambio de tema.
+**Acceso a Tracker.gg:** columna textual `TRK` con `[↗]` y atajo `g` para el jugador real seleccionado; también desde su detalle. Abre el perfil externo únicamente por acción del usuario y cuando exista un Riot ID completo y visible. El dominio es fijo y el Riot ID se codifica como segmento; `Jugador N` y datos ausentes no generan enlace. En la demo continúa deshabilitado por usar nombres ficticios. `t` conserva el cambio de tema.
 
 **Distribución solicitada el 2026-08-28 (prevalece sobre los mockups anteriores):** en la vista de partida, el orden es **Aliados → Tus rondas → Enemigos**. Mostrar kills y muertes propias por ronda completada y su acumulado; identificar la ronda en curso como pendiente hasta contar con un snapshot confirmado. El timeline no debe quedar relegado a postpartida. La maqueta HTML refleja este orden; obtener los datos durante una partida real sigue pendiente de validación. Sin datos confirmados, mostrar indisponibilidad, no estadísticas inventadas. Esta decisión de presentación no habilita por sí sola una nueva fuente de datos.
 
@@ -24,9 +24,13 @@
 |---|---|---|
 | **LIVE MATCH** | Partida en curso: rosters + timeline de rondas + sesión | Este spec |
 | **PostMatch** | Resumen completo al terminar: timeline íntegro + stats finales | Este spec |
-| **Dashboard** | Perfil propio + estado del cliente + resumen | Futuro |
-| **History** | Historial propio con filtros | Futuro |
-| **Settings** | Configuración (intervalo, autostart, perfil, TTL) | Futuro |
+| **Dashboard** | Perfil propio + estado del cliente + rendimiento reciente | Implementado; salud detallada sigue en `doctor` |
+| **History** | Resultado, score, mapa, agente, K/D/A, modo y antigüedad | Implementado; filtros pendientes |
+| **Settings** | Intervalo, registro y tema con lenguaje de usuario | Base implementada; autostart/perfil/TTL pendientes |
+
+La TUI Rust acepta mouse opcional para pestañas, selección de historial/ajustes y rueda. No depende de él: todos los flujos conservan atajos de teclado y la captura se deshabilita al salir.
+
+El binario sin argumentos abre la TUI. Durante el arranque se muestra una portada sin pestañas: primero comunica la búsqueda de Riot Client y luego la carga del perfil/rango. En cuanto el perfil queda disponible —o falla de forma recuperable— aparece el Panel; el historial continúa cargando en segundo plano. Fuera de partida, el Panel prioriza rango, nivel, barra de RR y rendimiento reciente antes del estado de partida. `watch` queda como monitor textual explícito.
 
 ## 2. Vista LIVE MATCH — composición
 
@@ -101,7 +105,9 @@ Los atajos finales se confirman al implementar P5; configurables después del MV
 
 | Estado | Muestra |
 |---|---|
-| Cargando | Spinner/`…` por sección independiente (rosters y timeline cargan por separado) |
+| Inicio sin observación | Portada centrada: búsqueda de Riot Client; todavía no muestra pestañas ni datos vacíos |
+| Perfil inicial | La misma portada informa que carga perfil/rango; el historial no bloquea la entrada al Panel |
+| Carga posterior | Mensaje por sección independiente; roster e historial cargan por separado |
 | Sin datos de ronda aún | Timeline vacío con `R1 R2…` atenuadas |
 | Provider falló | Último dato conocido + aviso recuperable en la barra inferior (nunca pantalla vacía) |
 | Modo sin rondas | Sin sección de rondas (ADR-004) |

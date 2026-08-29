@@ -40,17 +40,30 @@ impl Palette {
                 Color::Rgb(130, 87, 8),
                 Color::Rgb(219, 234, 242),
             ),
-            // Sistema hereda fondo/texto y usa los colores ANSI del terminal.
-            Theme::System | Theme::Mono => (
+            // Sistema conserva fondo/texto del terminal, pero usa una paleta
+            // semántica brillante y estable cercana al prototipo.
+            Theme::System => (
+                Color::Reset,
+                Color::Reset,
+                Color::DarkGray,
+                Color::DarkGray,
+                Color::LightCyan,
+                Color::LightGreen,
+                Color::LightRed,
+                Color::LightMagenta,
+                Color::LightYellow,
+                Color::Reset,
+            ),
+            Theme::Mono => (
                 Color::Reset,
                 Color::Reset,
                 Color::Reset,
                 Color::Reset,
-                Color::Cyan,
-                Color::Green,
-                Color::Red,
-                Color::Magenta,
-                Color::Yellow,
+                Color::Reset,
+                Color::Reset,
+                Color::Reset,
+                Color::Reset,
+                Color::Reset,
                 Color::Reset,
             ),
         };

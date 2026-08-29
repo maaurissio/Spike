@@ -1,6 +1,6 @@
 # Build
 /target
-/target-verify
+/target-*
 /debug
 /release
 
