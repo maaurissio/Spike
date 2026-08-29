@@ -1,5 +1,7 @@
 # SPEC-ROUNDS — Tracking y visualización de rondas
 
+> **Presentación vigente (2026-08-28):** el usuario reemplazó las K/D apiladas por cantidades por ronda: fila `1K 0K 4K …`, fila `R1 R2 R3 …` y fila `1D 0D 2D …`. Tres líneas entre aliados y enemigos; ronda en curso `—K / —D`, no ceros inventados. Esta revisión prevalece sobre los diagramas históricos de §5. No cambia las condiciones de disponibilidad de datos ni las fuentes autorizadas.
+
 > Estado: especificación en refinamiento (pre-código). Decisiones estructurales en `docs/DECISIONS.md`. Este documento define el modelo de datos, reglas de negocio, rutas de datos y casos borde del feature de rondas.
 
 ## 1. Alcance por modo (ADR-004)

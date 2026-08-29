@@ -1,12 +1,24 @@
 # DESIGN-UI — Especificación de interfaz (TUI)
 
+> **Prioridad de producto (2026-08-28, ADR-011):** el roster de aliados y enemigos (diez jugadores en 5v5), con agentes, rangos y estadísticas históricas disponibles y permitidos, es la función principal; no es opcional. La implementación real actual solo muestra contexto propio. La demo visual en Rust no cumple por sí sola este requisito. Validar fuentes y permisos antes de ampliar consultas; representar identidades ocultas y datos ausentes sin eludir restricciones.
+
 > **Actualización 2026-08-28:** la referencia visual aprobada es ahora [`mockups/README.md`](mockups/README.md), trasladada a `src/tui/view.rs` (ADR-012). El contenido inferior conserva exploraciones anteriores, no sustituye la nueva maqueta. En la implementación actual: `1–5` cambia vista, `Tab` mueve foco, `t` cambia tema y `Esc` vuelve; Aliados → Tus rondas → Enemigos también en ancho grande. La demo es ficticia y aislada; no implica integración del roster o rondas en vivo.
 
-> **⚠️ CONCEPTUAL — NO es el diseño final.** Todos los mockups, layouts, colores y navegación de este documento son **exploratorios**: sirven para validar requisitos, flujos y casos borde antes de implementar. El diseño final se definirá durante la implementación de Prioridad 5 (con Ratatui real, pruebas en pantalla y feedback del usuario). Nada de aquí es vinculante visualmente; lo vinculante son los requisitos y reglas de comportamiento.
+> **Bocetos históricos:** los diagramas y atajos anteriores que aparecen más abajo son exploratorios y quedan subordinados a la maqueta aprobada y ADR-012. Los requisitos de datos y privacidad mantienen su vigencia.
 
 > Estado: en refinamiento (pre-código). Define las vistas, layouts adaptativos y navegación. Principios base en `Arquitectura-inicial.md:12` (Elm/TEA, `AppState` solo presentación). Specs relacionados: `SPEC-ROUNDS.md`, `DECISIONS.md`.
 
 ## 1. Vistas
+
+**Criterio transversal confirmado:** todas las vistas deben parecer y comportarse como una terminal, no como una web con tipografía monoespaciada. Usar filas y columnas de caracteres, bordes textuales, una línea por jugador, atajos visibles y densidad adecuada para ventanas no maximizadas. La maqueta actual explora 72 y 38 columnas. Los controles HTML son solo un mecanismo de demostración: se representan como texto y deberán implementarse con eventos de terminal en Rust.
+
+**Color e imágenes (revisión 2026-08-28):** la maqueta aplica una paleta semántica con temas Sistema/Noche/Claro/Sin color y mantiene rótulos en texto. Imágenes opcionales en Perfil/detalle son una propuesta pendiente; no forman parte del requisito base ni del render actual. Compatibilidad, referencias y limitaciones de tamaño en [mockups/REFERENCES.md](mockups/REFERENCES.md).
+
+**Formato compacto vigente:** el usuario sustituyó las letras apiladas por cantidades (`1K`, `4K`, `0D`, `2D`). El timeline entre equipos ocupa tres líneas: kills, número de ronda y muertes. Sin tarjetas, separadores extra ni grandes resúmenes. La ronda actual lleva `*` y `—K / —D` hasta disponer de datos confirmados; cero significa cero confirmado. Priorizar el espacio de una terminal no maximizada; las partidas largas deberán paginar por bloques según el ancho.
+
+**Acceso a Tracker.gg solicitado:** columna textual `TRK` con `[↗]` y atajo `g` para el jugador seleccionado; también desde su detalle. Abrir el perfil externo correspondiente en el navegador solo por acción del usuario y cuando exista un Riot ID completo y visible obtenido de una fuente validada. No inferir identidades ocultas ni permitir que una URL arbitraria controle el destino. En la maqueta, la apertura está deshabilitada por usar nombres ficticios; el control permite explorar el flujo, no visitar un perfil real. `t` conserva el cambio de tema.
+
+**Distribución solicitada el 2026-08-28 (prevalece sobre los mockups anteriores):** en la vista de partida, el orden es **Aliados → Tus rondas → Enemigos**. Mostrar kills y muertes propias por ronda completada y su acumulado; identificar la ronda en curso como pendiente hasta contar con un snapshot confirmado. El timeline no debe quedar relegado a postpartida. La maqueta HTML refleja este orden; obtener los datos durante una partida real sigue pendiente de validación. Sin datos confirmados, mostrar indisponibilidad, no estadísticas inventadas. Esta decisión de presentación no habilita por sí sola una nueva fuente de datos.
 
 | Vista | Propósito | Estado |
 |---|---|---|
@@ -43,7 +55,7 @@
 **Roster (x2: equipo/enemigos)** — columnas: `Player | Rank | K/D | Last 5 | TRACKER`.
 * `K/D` = **histórico pre-partida** (lo que la fuente da en vivo; el K/D de la partida actual solo existe post-partida — honestidad de datos).
 * `Last 5` = W/L de últimas 5 partidas.
-* `TRACKER` = enlace a perfil web externo (opcional, configurable).
+* `TRACKER` = acceso al perfil web externo mediante clic o `g`; deshabilitado si falta una identidad verificada o está oculta. Función solicitada y pendiente de integración real.
 * Navegación por flechas para seleccionar jugador (ver §5).
 
 **Timeline de rondas** — especificación completa en `SPEC-ROUNDS.md:5`. Solo en modos con ronda.

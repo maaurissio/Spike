@@ -2,6 +2,8 @@
 
 Primera propuesta visual, valorada positivamente por el usuario el 2026-08-28. Referencia para implementar la TUI; no representa funcionalidad ya integrada en Rust.
 
+**Estado del traspaso (2026-08-28):** la presentación está implementada en Rust mediante `vtracker dashboard --demo`, con datos ficticios, sin red ni persistencia. El texto inferior describe la maqueta HTML original. Roster real, rondas en vivo, imágenes y apertura de Tracker siguen pendientes; la demo no cumple el requisito principal de integración (ADR-011/012).
+
 **Revisión de terminal:** toda la maqueta se representa con celdas monoespaciadas y bordes de caracteres, no como una web con tarjetas. Una línea por jugador, pestañas textuales y atajos visibles en las cinco vistas. Dos anchos: 72 columnas y 38 columnas para ventanas pequeñas; en la versión compacta se omiten WR y últimas cinco de la tabla. Clics y teclas 1–5 permiten navegar, flechas seleccionan jugadores, Enter abre la selección enfocada, Tab mueve el foco y Esc vuelve a Partida. Sigue siendo una simulación HTML de la TUI, no el ejecutable Rust.
 
 **Revisión de color (2026-08-28):** encabezados integrados en bordes de caracteres, cian para foco, verde para aliados/victorias/kills, coral para enemigos/derrotas/muertes, violeta para Diamante y ámbar para datos pendientes. Las etiquetas siguen siendo suficientes sin color. `t` recorre Sistema, Noche, Claro y Sin color, desde cualquier vista o desde Ajustes. Tras compactar las rondas, la vista de partida ocupa 24 líneas a 72 columnas y 26 a 38 columnas sin detalle expandido. Los diez jugadores y el timeline permanecen visibles.

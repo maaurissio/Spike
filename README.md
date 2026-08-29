@@ -4,6 +4,10 @@
 
 VTracker es una aplicación de terminal para observar el estado de VALORANT, consultar datos autorizados de partidas y jugadores, y presentar estadísticas de forma rápida y con bajo consumo de recursos.
 
+**Objetivo principal confirmado el 2026-08-28:** mostrar aliados y enemigos de la partida (diez jugadores en 5v5), con sus agentes, rangos y estadísticas históricas disponibles y permitidos. El perfil propio, historial y resumen postpartida son complementos. **El roster aún no está implementado:** la versión actual solo muestra contexto propio. Véase [ADR-011](docs/DECISIONS.md#adr-011--roster-de-la-partida-como-requisito-principal-2026-08-28).
+
+Las referencias históricas a acceso mediante tokens locales describen una vía técnica, no una autorización de uso de datos de terceros. Antes de implementar el roster se deben validar fuentes, términos y consentimiento aplicable; las identidades ocultas y datos restringidos se respetan y los campos ausentes se muestran como no disponibles.
+
 El proyecto incluye un MVP de `watch`: detecta de forma no invasiva los procesos locales del cliente/juego y presenta el estado en terminal. Si Riot Client está abierto, comprueba su API local en `127.0.0.1` usando el lockfile y escucha metadatos del WebSocket local; no accede a memoria ni automatiza el juego.
 
 ## MVP: `watch`
@@ -52,6 +56,10 @@ Las consultas se ejecutan en un trabajador con colas acotadas y una sola operaci
 Están disponibles para edición el intervalo local (1–60 s), `log_transitions` y `theme` (`"system"`, `"dark"`, `"light"`, `"mono"`). Sistema hereda fondo/texto y colores ANSI del terminal; no detecta el tema de Windows. TTL y autoinicio siguen pendientes. El registro se habilita únicamente después de guardar ese cambio; nunca contiene credenciales. No hay caché de historial en disco ni polling periódico de estadísticas remotas.
 
 ## Documentación
+
+### Maqueta interactiva
+
+La [primera maqueta de interfaz](docs/mockups/vtracker-maqueta.html) muestra el roster de diez jugadores, perfil, historial, ajustes y postpartida con datos ficticios. Descarga el HTML y ábrelo en tu navegador para interactuar; GitHub muestra su código, no la interfaz. [Archivos y notas de diseño](docs/mockups/README.md). Su presentación ya está trasladada a Rust en `dashboard --demo`; la integración del roster y sus datos reales sigue pendiente.
 
 | Documento | Contenido |
 |---|---|
@@ -183,8 +191,8 @@ Estado objetivo una vez completado el desarrollo (Prioridades 2-5):
 
 1. **Al iniciar el PC / abrir VALORANT** — VTracker (nombre final por definir) se inicia en segundo plano si `autostart = true` en `config.toml` (`src/config/mod.rs:1`). No hace polling innecesario; espera eventos del `Game Engine`.
 2. **Perfil propio** — al arrancar con cliente disponible muestra tu perfil vinculado (`RIOT_ID` configurado en `config.toml` o `.env`) con stats derivadas (K/D, WR, HS%, ADR/ACS si la fuente los expone) calculadas por `Analytics Engine` desde `Raw Data` cacheada.
-3. **Encontrando partida / Agent Select** — al detectar `PreGame`/`AgentSelect` vía **Local Client API** (lockfile, sin API key), consulta el roster en vivo y muestra ranks/WR del equipo.
-4. **En partida (`InMatch`)** — contexto vivo propio del game actual: mapa, modo y agente. No se muestra composición ni perfiles de otros jugadores.
+3. **Encontrando partida / Agent Select** — mostrar el roster y estadísticas disponibles y permitidos para esa fase, desde fuentes previamente validadas. No anticipar identidades ni datos que la fuente o sus restricciones oculten.
+4. **En partida (`InMatch`) — función principal:** mostrar mapa, modo y roster de aliados/enemigos (diez jugadores en 5v5), con agentes, rangos y estadísticas históricas disponibles y permitidos. Actualmente solo está implementado el contexto propio; falta el roster.
 5. **Al terminar la partida (`PostMatch`)** — en modos con rondas, desglose `Ronda | Resultado | Kills | Muertes`; en Deathmatch, Team Deathmatch o Escalation, resumen propio final de K/D/A y puntos. Todo desde `match-details` y sin exponer IDs.
 
 La TUI siempre es opcional: `vtracker watch` para modo live, y comandos `player`/`match`/`history` para consultas puntuales.
@@ -307,7 +315,7 @@ vtracker cache <subcomando>                      # inspeccionar/limpiar caché L
 
 ## Estado actual y conformidad
 
-MVP local y Prioridad 1 completados. **Implementado:** `LocalClientSource` lee el lockfile y valida `GET /help`, entitlements, sesión externa, región/locale y el handshake/suscripción WAMP, exclusivamente en `127.0.0.1`; su listener persistente acepta solo URIs de fase inequívocas y descarta payloads. Los tokens nunca se imprimen ni persisten. GLZ entrega contexto propio de partida y PD entrega perfil propio (nivel, XP, MMR/RR y cambios competitivos), historial propio, postpartida y agregados propios de las últimas 1–5 partidas por modo, mapa y agente. La base de `vtracker dashboard` usa Ratatui/Crossterm y solo renderiza cuando hay cambios. **Siguiente:** completar las vistas con datos propios y validar transiciones reales. Nombre `VTracker` temporal hasta release.
+MVP local y Prioridad 1 completados. **Implementado:** `LocalClientSource` lee el lockfile y valida `GET /help`, entitlements, sesión externa, región/locale y el handshake/suscripción WAMP, exclusivamente en `127.0.0.1`; su listener persistente acepta solo URIs de fase inequívocas y descarta payloads. Los tokens nunca se imprimen ni persisten. GLZ entrega contexto propio de partida y PD entrega perfil propio (nivel, XP, MMR/RR y cambios competitivos), historial propio, postpartida y agregados propios de las últimas 1–5 partidas por modo, mapa y agente. La base de `vtracker dashboard` usa Ratatui/Crossterm y solo renderiza cuando hay cambios. **Siguiente:** validar fuentes y permisos para el roster, implementar aliados/enemigos con rangos y estadísticas disponibles y permitidos (ADR-011), y validar transiciones reales. Nombre `VTracker` temporal hasta release.
 
 **Compromiso ISO:** se adoptan principios **ISO 9001 (Calidad) + ISO 14001 (Ambiental) + ISO 27001 (Seguridad)** como sistema integrado PHVA desde el inicio (ver `docs/ISO.md` y `Arquitectura-inicial.md:21`). No es burocracia vacía: tests + `clippy`/`fmt` (calidad), `cargo` eficiente + caché (ambiental), `.env` + `doctor` enmascarado + RSO (seguridad). Certificación formal opcional a medio plazo.
 
