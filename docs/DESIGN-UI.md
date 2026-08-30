@@ -31,7 +31,7 @@
 
 La TUI Rust acepta mouse opcional para pestañas, selección de historial/ajustes y rueda. No depende de él: todos los flujos conservan atajos de teclado y la captura se deshabilita al salir.
 
-El binario sin argumentos abre la TUI. Durante el arranque se muestra una portada sin pestañas: primero comunica la búsqueda de Riot Client y luego la carga del perfil/rango. En cuanto el perfil queda disponible —o falla de forma recuperable— aparece Resumen; el historial continúa cargando en segundo plano. Fuera de partida, Resumen prioriza rango, nivel, barra de RR y rendimiento reciente antes del estado de partida. Las fuentes y el diagnóstico interno no aparecen en estas vistas; `doctor` y `watch` conservan esa información técnica.
+El binario sin argumentos abre la TUI. Durante los primeros tres segundos muestra un splash centrado con el logotipo ASCII `VTracker` y `v0.1 | for fun`; el trabajo local comienza en segundo plano y el logo tiene una variante compacta para terminales angostas. Si al terminar el splash aún falta el perfil, una portada sin pestañas comunica la búsqueda de Riot Client o la carga del perfil/rango. En cuanto el perfil queda disponible —o falla de forma recuperable— aparece Resumen; el historial continúa cargando en segundo plano. Fuera de partida, Resumen prioriza rango, nivel, barra de RR y rendimiento reciente antes del estado de partida. Las fuentes y el diagnóstico interno no aparecen en estas vistas; `doctor` y `watch` conservan esa información técnica.
 
 ## 2. Vista LIVE MATCH — composición
 
@@ -60,7 +60,7 @@ El binario sin argumentos abre la TUI. Durante el arranque se muestra una portad
 **Roster (x2: equipo/enemigos)** — columnas: `Player | Rank | K/D | Last 5 | TRACKER`.
 * `K/D` = **histórico pre-partida** (lo que la fuente da en vivo; el K/D de la partida actual solo existe post-partida — honestidad de datos).
 * `Last 5` = W/L de últimas 5 partidas.
-* `TRACKER` = acceso al perfil web externo mediante clic o `g`; deshabilitado si falta una identidad verificada o está oculta. Función solicitada y pendiente de integración real.
+* `TRACKER` = acceso al perfil web externo mediante `g`; deshabilitado si falta una identidad verificada o está oculta fuera de la propia party. En Windows se abre mediante la asociación HTTPS nativa del sistema.
 * Navegación por flechas para seleccionar jugador (ver §5).
 
 **Timeline de rondas** — especificación completa en `SPEC-ROUNDS.md:5`. Solo en modos con ronda.
@@ -107,7 +107,8 @@ Los atajos finales se confirman al implementar P5; configurables después del MV
 | Estado | Muestra |
 |---|---|
 | Inicio sin observación | Portada centrada: búsqueda de Riot Client; todavía no muestra pestañas ni datos vacíos |
-| Perfil inicial | La misma portada informa que carga perfil/rango; el historial no bloquea la entrada a Resumen |
+| Perfil inicial | Después del splash de tres segundos, la portada informa que carga perfil/rango; el historial no bloquea la entrada a Resumen |
+| Carga de partida | Gauge modal alimentado por etapas reales del worker: sesión local, partida/resultado detectado y preparación de roster o postpartida |
 | Carga posterior | Mensaje por sección independiente; roster e historial cargan por separado |
 | Sin datos de ronda aún | Timeline vacío con `R1 R2…` atenuadas |
 | Provider falló | Último dato conocido + aviso recuperable en la barra inferior (nunca pantalla vacía) |

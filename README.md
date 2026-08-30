@@ -29,7 +29,7 @@ La aplicación funciona en modo de solo lectura. No controla el juego, no simula
 - Historial con resultado, marcador, mapa, agente, K/D/A, HS%, ACS y ADR.
 - Detalle de la última partida y rendimiento por ronda cuando VALORANT entrega esos datos.
 
-Los nombres ocultos permanecen ocultos y se muestran como `Jugador 1`, `Jugador 2`, etc. Si un dato no está disponible, VTracker muestra `—` en vez de inventarlo.
+Los nombres ocultos permanecen como `Jugador 1`, `Jugador 2`, etc. La única excepción son integrantes de tu propia premade: si el cliente ya te permite verlos por compartir grupo, VTracker usa esa misma identidad. Si un dato no está disponible, muestra `—` en vez de inventarlo.
 
 ## Cómo iniciar VTracker
 
@@ -75,6 +75,6 @@ Las kills y muertes de cada ronda se obtienen de los resultados finales. La apli
 - No lee memoria del juego.
 - No inyecta código ni automatiza controles.
 - No guarda credenciales ni identificadores internos en la interfaz.
-- Respeta los nombres ocultos y los datos no disponibles.
+- Respeta los nombres ocultos fuera de tu propia party y los datos no disponibles.
 
 VTracker no está afiliado con Riot Games. VALORANT y Riot Games son marcas registradas de Riot Games, Inc.

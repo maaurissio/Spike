@@ -44,6 +44,11 @@ pub(super) enum Reply {
         generation: u64,
         data: Result<Context, ()>,
     },
+    ContextProgress {
+        generation: u64,
+        percent: u16,
+        label: &'static str,
+    },
     Profile {
         epoch: u64,
         data: Result<
@@ -94,18 +99,24 @@ impl Worker {
 
     pub fn start() -> io::Result<Self> {
         let mut sources = None;
-        Self::spawn(move |request, stop| {
+        Self::spawn_with_progress(move |request, stop, progress| {
             sources
                 .get_or_insert_with(Sources::new)
-                .handle(request, stop)
+                .handle(request, stop, progress)
         })
     }
 
     pub(super) fn spawn(
         mut handle: impl FnMut(Request, &AtomicBool) -> Reply + Send + 'static,
     ) -> io::Result<Self> {
+        Self::spawn_with_progress(move |request, stop, _| handle(request, stop))
+    }
+
+    fn spawn_with_progress(
+        mut handle: impl FnMut(Request, &AtomicBool, &mut dyn FnMut(Reply)) -> Reply + Send + 'static,
+    ) -> io::Result<Self> {
         let (requests, incoming) = mpsc::sync_channel(4);
-        let (outgoing, replies) = mpsc::sync_channel(4);
+        let (outgoing, replies) = mpsc::sync_channel(8);
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = Arc::clone(&stop);
         thread::Builder::new()
@@ -115,7 +126,10 @@ impl Worker {
                     if stopped.load(Ordering::Acquire) {
                         break;
                     }
-                    let reply = handle(request, &stopped);
+                    let mut progress = |reply| {
+                        let _ = outgoing.send(reply);
+                    };
+                    let reply = handle(request, &stopped, &mut progress);
                     if stopped.load(Ordering::Acquire) || outgoing.send(reply).is_err() {
                         break;
                     }
@@ -176,7 +190,12 @@ impl Sources {
         }
     }
 
-    fn handle(&mut self, request: Request, stop: &AtomicBool) -> Reply {
+    fn handle(
+        &mut self,
+        request: Request,
+        stop: &AtomicBool,
+        progress: &mut dyn FnMut(Reply),
+    ) -> Reply {
         match request {
             Request::Observe { log } => {
                 let state = if self.simulation {
@@ -199,7 +218,7 @@ impl Sources {
             }
             Request::Context { phase, generation } => Reply::Context {
                 generation,
-                data: self.context(phase, stop),
+                data: self.context(phase, generation, stop, progress),
             },
             Request::Profile { epoch } => Reply::Profile {
                 epoch,
@@ -220,24 +239,54 @@ impl Sources {
         }
     }
 
-    fn context(&self, phase: GamePhase, stop: &AtomicBool) -> Result<Context, ()> {
+    fn context(
+        &self,
+        phase: GamePhase,
+        generation: u64,
+        stop: &AtomicBool,
+        progress: &mut dyn FnMut(Reply),
+    ) -> Result<Context, ()> {
         if self.simulation || stop.load(Ordering::Acquire) {
             return Err(());
         }
+        progress(Reply::ContextProgress {
+            generation,
+            percent: 15,
+            label: "Leyendo la sesión local",
+        });
         match phase {
-            GamePhase::PreGame | GamePhase::AgentSelect | GamePhase::InMatch => self
-                .local
-                .live_match_request(phase)
-                .and_then(|request| self.live.fetch(&request))
-                .map(Context::Live)
-                .map_err(|_| ()),
-            GamePhase::PostMatch => self
-                .local
-                .match_detail_request()
-                .and_then(|request| self.details.fetch_completed(&request))
-                .map(super::PostMatch::from_completed)
-                .map(Context::Completed)
-                .map_err(|_| ()),
+            GamePhase::PreGame | GamePhase::AgentSelect | GamePhase::InMatch => {
+                let request = self.local.live_match_request(phase).map_err(|_| ())?;
+                progress(Reply::ContextProgress {
+                    generation,
+                    percent: 45,
+                    label: "Partida detectada",
+                });
+                let context = self.live.fetch(&request).map_err(|_| ())?;
+                progress(Reply::ContextProgress {
+                    generation,
+                    percent: 90,
+                    label: "Preparando jugadores y estadísticas",
+                });
+                Ok(Context::Live(context))
+            }
+            GamePhase::PostMatch => {
+                let request = self.local.match_detail_request().map_err(|_| ())?;
+                progress(Reply::ContextProgress {
+                    generation,
+                    percent: 45,
+                    label: "Resultado encontrado",
+                });
+                let completed = self.details.fetch_completed(&request).map_err(|_| ())?;
+                progress(Reply::ContextProgress {
+                    generation,
+                    percent: 90,
+                    label: "Preparando el resumen final",
+                });
+                Ok(Context::Completed(super::PostMatch::from_completed(
+                    completed,
+                )))
+            }
             _ => Err(()),
         }
     }

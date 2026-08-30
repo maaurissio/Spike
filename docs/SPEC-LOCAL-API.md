@@ -71,11 +71,11 @@ Región/shard se derivan del log (`https://glz-(.+?)-1.(.+?).a.pvp.net`) o de la
 | `GET /core-game/v1/players/{puuid}` | Estado del jugador en partida | Solo en `InMatch` |
 | `GET /core-game/v1/matches/{matchId}` | **Roster en partida** + `MapID`, `ModeID`, `ProvisioningFlow`, `Players[]` con `TeamID`, `CharacterID` | Solo en `InMatch` (`PostGameDetails: null` en vivo) |
 | `GET /parties/v1/players/{puuid}` + `/parties/v1/parties/{partyId}` | `MatchmakingData.QueueID` para distinguir Competitivo/Normal | Con sesión y party activas |
-| `GET /chat/v4/presences` | Party efímera de los jugadores presentes; se normaliza a Grupo/Solo sin enviar PartyID a la TUI y cada miembro de una premade recibe un `•` de color compartido | Agent Select/InMatch |
+| `GET /chat/v4/presences` | Party efímera y `queueId`; admite campos planos o `partyPresenceData` anidado, reintenta brevemente la carga de presencias y normaliza a Grupo/Solo sin enviar PartyID a la TUI | Agent Select/InMatch |
 
 **Uso en VTracker:**
 * Detectar fase: `PreGame → AgentSelect → InMatch` vía WebSocket o polling de `Pre-Game`/`Current Game`.
-* Prototipo actual: mostrar equipos/participantes, agentes, rango disponible y nombres visibles. `Incognito` se excluye de Name Service y aparece como `Jugador N`, según su slot visible.
+* Prototipo actual: mostrar equipos/participantes, agentes, rango disponible y nombres visibles. `Incognito` se excluye de Name Service y aparece como `Jugador N`, salvo miembros de la propia party cuya identidad el cliente ya revela al usuario local.
 
 ## 5. PD — datos del jugador y rondas
 

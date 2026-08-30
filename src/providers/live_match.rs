@@ -108,8 +108,9 @@ impl LiveMatchSource {
         }
     }
 
-    /// Una sola resolución por partida. Las identidades marcadas como ocultas
-    /// se excluyen de la solicitud y nunca se reconstruyen.
+    /// Una sola resolución por partida. Las identidades ocultas se excluyen,
+    /// salvo la cuenta local y quienes comparten su party: el propio cliente
+    /// ya presenta esos nombres al usuario que formó el grupo.
     fn fetch_visible_names(
         &self,
         request: &LiveMatchRequest,
@@ -118,10 +119,17 @@ impl LiveMatchSource {
         let subjects = players
             .iter()
             .filter(|player| {
-                !player
+                let subject = player
+                    .get("Subject")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let hidden = player
                     .pointer("/PlayerIdentity/Incognito")
                     .and_then(Value::as_bool)
-                    .unwrap_or(false)
+                    .unwrap_or(false);
+                !hidden
+                    || subject == request.own_puuid.as_str()
+                    || same_own_party(&request.party_ids, &request.own_puuid, subject)
             })
             .filter_map(|player| player.get("Subject").and_then(Value::as_str))
             .filter(|subject| !subject.is_empty())
@@ -196,9 +204,14 @@ fn parse_live_match_with_names_and_stats(
     let object = payload
         .as_object()
         .ok_or_else(|| ProviderError::Parse("partida actual inválida".into()))?;
+    let payload_queue = object
+        .get("QueueID")
+        .or_else(|| object.get("QueueId"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
     let mode = display_mode(
         &required_asset_any(object, &["ModeID", "Mode", "QueueID"])?,
-        queue,
+        queue.or(payload_queue),
     );
     let map = required_asset(object, "MapID")?;
     let players = roster_players(payload, own_puuid);
@@ -283,7 +296,8 @@ fn normalize_roster(
                 .pointer("/PlayerIdentity/Incognito")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            let identity = if hidden && !is_self {
+            let own_party_member = same_own_party(party_ids, own_puuid, subject);
+            let identity = if hidden && !is_self && !own_party_member {
                 DataAvailability::Hidden
             } else {
                 names
@@ -321,7 +335,7 @@ fn normalize_roster(
                 .pointer("/PlayerIdentity/HideAccountLevel")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            let level = if hide_level && !is_self {
+            let level = if hide_level && !is_self && !own_party_member {
                 DataAvailability::Hidden
             } else {
                 player
@@ -356,6 +370,16 @@ fn normalize_roster(
         .collect();
     RosterSnapshot::new(normalized)
         .map_err(|error| ProviderError::Parse(format!("roster inválido: {error}")))
+}
+
+fn same_own_party(party_ids: &HashMap<String, String>, own_puuid: &str, subject: &str) -> bool {
+    if subject.is_empty() || subject == own_puuid {
+        return false;
+    }
+    party_ids
+        .get(own_puuid)
+        .zip(party_ids.get(subject))
+        .is_some_and(|(own_party, other_party)| own_party == other_party)
 }
 
 /// Current Game usa `Players`; Agent Select expone únicamente el equipo aliado
@@ -436,7 +460,7 @@ fn display_mode(mode: &str, queue: Option<&str>) -> String {
         Some("deathmatch") => "Deathmatch".into(),
         Some("teamdeathmatch") => "Team Deathmatch".into(),
         Some("escalation") => "Escalation".into(),
-        _ if mode.eq_ignore_ascii_case("bomb") => "Estándar (bomba)".into(),
+        _ if mode.eq_ignore_ascii_case("bomb") => "Estándar".into(),
         _ => mode.to_owned(),
     }
 }
@@ -638,6 +662,7 @@ mod tests {
             ("me".to_owned(), "MiCuenta#LAS".to_owned()),
             ("ally".to_owned(), "Aliado#LAN".to_owned()),
             ("enemy".to_owned(), "Rival#BR".to_owned()),
+            ("enemy-two".to_owned(), "RivalDos#BR".to_owned()),
             ("hidden-secret".to_owned(), "No debe aparecer".to_owned()),
         ]);
         let stats = HashMap::from([(
@@ -659,8 +684,9 @@ mod tests {
                 "MapID": "/Game/Maps/Triad/Triad",
                 "Players": [
                     {"Subject":"me", "TeamID":"Blue", "CharacterID":"8e253930-4c05-31dd-1b6c-968525494517", "CompetitiveTier":18, "PlayerIdentity":{"AccountLevel":142}},
-                    {"Subject":"ally", "TeamID":"Blue", "CharacterID":"320b2a48-4d9b-a075-30f1-1f93a9b638fa", "CompetitiveTier":12, "PlayerIdentity":{"AccountLevel":90}},
+                    {"Subject":"ally", "TeamID":"Blue", "CharacterID":"320b2a48-4d9b-a075-30f1-1f93a9b638fa", "CompetitiveTier":12, "PlayerIdentity":{"AccountLevel":90,"Incognito":true,"HideAccountLevel":true}},
                     {"Subject":"enemy", "TeamID":"Red", "CharacterID":"add6443a-41bd-e414-f6ad-e58d267f4e95", "CompetitiveTier":27},
+                    {"Subject":"enemy-two", "TeamID":"Red", "CharacterID":"320b2a48-4d9b-a075-30f1-1f93a9b638fa", "CompetitiveTier":21},
                     {"Subject":"hidden-secret", "TeamID":"Red", "CharacterID":"569fdd95-4d10-43ab-ca70-79becc718b46", "PlayerIdentity":{"Incognito":true}}
                 ]
             }),
@@ -673,6 +699,7 @@ mod tests {
                 ("me".into(), "party-a".into()),
                 ("ally".into(), "party-a".into()),
                 ("enemy".into(), "party-b".into()),
+                ("enemy-two".into(), "party-b".into()),
                 ("hidden-secret".into(), "party-c".into()),
             ]),
         )
@@ -680,7 +707,7 @@ mod tests {
         let roster = context.roster.unwrap();
 
         assert_eq!(roster.allies().count(), 2);
-        assert_eq!(roster.enemies().count(), 2);
+        assert_eq!(roster.enemies().count(), 3);
         assert_eq!(
             roster.players[1].identity,
             DataAvailability::Available("Aliado#LAN".into())
@@ -689,24 +716,29 @@ mod tests {
             roster.players[2].rank,
             DataAvailability::Available("Radiante".into())
         );
-        assert_eq!(roster.players[3].identity, DataAvailability::Hidden);
+        assert_eq!(roster.players[4].identity, DataAvailability::Hidden);
         assert_eq!(roster.players[0].level, DataAvailability::Available(142));
-        assert_eq!(roster.players[3].level, DataAvailability::Available(77));
+        assert_eq!(roster.players[1].level, DataAvailability::Available(90));
+        assert_eq!(roster.players[4].level, DataAvailability::Available(77));
         assert_eq!(
             roster.players[1].premade,
             DataAvailability::Available("Grupo A".into())
         );
         assert_eq!(
             roster.players[2].premade,
-            DataAvailability::Available("Solo".into())
+            DataAvailability::Available("Grupo B".into())
         );
         assert_eq!(
-            roster.players[3].rank,
+            roster.players[3].premade,
+            DataAvailability::Available("Grupo B".into())
+        );
+        assert_eq!(
+            roster.players[4].rank,
             DataAvailability::Available("Diamante 1".into())
         );
         assert_eq!(context.mode, "Competitivo");
         assert!(matches!(
-            &roster.players[3].stats,
+            &roster.players[4].stats,
             DataAvailability::Available(stats) if stats.kd_hundredths() == Some(150)
         ));
         let debug = format!("{roster:?}");
@@ -766,7 +798,7 @@ mod tests {
         assert_eq!(roster.allies().count(), 2);
         assert_eq!(roster.participants().count(), 0);
         assert_eq!(roster.players[0].level, DataAvailability::Available(142));
-        assert_eq!(roster.players[1].level, DataAvailability::Hidden);
+        assert_eq!(roster.players[1].level, DataAvailability::Available(90));
         assert_eq!(
             roster.players[0].premade,
             DataAvailability::Available("Grupo A".into())
@@ -797,7 +829,7 @@ mod tests {
     fn translates_verified_queues_and_keeps_bomb_fallback_honest() {
         assert_eq!(display_mode("Bomb", Some("competitive")), "Competitivo");
         assert_eq!(display_mode("Bomb", Some("unrated")), "Normal");
-        assert_eq!(display_mode("Bomb", None), "Estándar (bomba)");
+        assert_eq!(display_mode("Bomb", None), "Estándar");
     }
 
     #[test]
@@ -841,9 +873,13 @@ mod tests {
             let lower = request.to_ascii_lowercase();
             assert!(lower.starts_with("put /name-service/v2/players http/1.1"));
             assert!(lower.contains("authorization: bearer access"));
-            assert!(request.contains(r#"["visible"]"#));
-            assert!(!request.contains("hidden"));
-            let body = r#"[{"Subject":"visible","GameName":"Nombre","TagLine":"LAS"}]"#;
+            assert!(request.contains("visible"));
+            assert!(request.contains("hidden-party"));
+            assert!(!request.contains("hidden-enemy"));
+            let body = r#"[
+                {"Subject":"visible","GameName":"Nombre","TagLine":"LAS"},
+                {"Subject":"hidden-party","GameName":"Amigo","TagLine":"LAS"}
+            ]"#;
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
@@ -862,18 +898,27 @@ mod tests {
             own_puuid: "me".into(),
             queue: Some("competitive".into()),
             phase: GamePhase::InMatch,
-            party_ids: HashMap::new(),
+            party_ids: HashMap::from([
+                ("me".into(), "party-a".into()),
+                ("hidden-party".into(), "party-a".into()),
+                ("hidden-enemy".into(), "party-b".into()),
+            ]),
         };
         let players = serde_json::json!([
             {"Subject":"visible", "PlayerIdentity":{"Incognito":false}},
-            {"Subject":"hidden", "PlayerIdentity":{"Incognito":true}}
+            {"Subject":"hidden-party", "PlayerIdentity":{"Incognito":true}},
+            {"Subject":"hidden-enemy", "PlayerIdentity":{"Incognito":true}}
         ]);
         let names = source
             .fetch_visible_names(&request, players.as_array().unwrap())
             .unwrap();
 
         assert_eq!(names.get("visible").map(String::as_str), Some("Nombre#LAS"));
-        assert!(!names.contains_key("hidden"));
+        assert_eq!(
+            names.get("hidden-party").map(String::as_str),
+            Some("Amigo#LAS")
+        );
+        assert!(!names.contains_key("hidden-enemy"));
         server.join().unwrap();
     }
 }

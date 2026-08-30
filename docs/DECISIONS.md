@@ -134,3 +134,19 @@
 **Decisión:** Account XP propio es autoritativo sobre el roster y cero nunca es un nivel válido. Para terceros, `players[].accountLevel` de la Ranked más reciente ya consultada sirve como respaldo si Current Game omite el campo; `HideAccountLevel` explícito prevalece y se presenta como `priv.`. No se consulta ni raspa Tracker. Los PartyID efímeros siguen descartándose; la TUI antepone un `•` del mismo color al nombre de cada integrante de una premade y reserva `Grupo A · N jugadores` para el detalle.
 
 **Consecuencias:** la fila propia no vuelve a mostrar nivel cero, aumenta la cobertura de niveles sin solicitudes adicionales y las premades se reconocen sin una columna repetitiva. Los jugadores en solitario no llevan marcador. Un nivel expresamente oculto o nunca observado continúa como privado/no disponible, sin inventarse.
+
+## ADR-020 — Presence actual, privacidad de party y presentación compacta (2026-08-30)
+
+**Contexto:** una Ranked real mostró cuatro fallas relacionadas: Presence solo se interpretaba en su formato plano y perdía premades rivales cuando el cliente enviaba `partyPresenceData`; Party podía dejar de entregar `QueueID` al comenzar la partida y la interfaz degradaba a `Estándar (bomba)`; miembros de la party propia seguían como anónimos aunque el cliente los revela al grupo; y `rundll32` podía aceptar la orden de Tracker.gg sin abrir el navegador. Los nombres completos de rango también consumían demasiado ancho.
+
+**Decisión:** admitir Presence plano y anidado, combinar hasta cinco instantáneas locales breves mientras se completa el roster y usar el `queueId` de la presencia propia como respaldo de Party. La relación de party propia permite resolver únicamente a esos `Incognito` y mostrar su nivel ya visible; ningún rival oculto obtiene esta excepción. PartyID sigue siendo efímero y se descarta antes de la TUI. Abrir Tracker.gg con `ShellExecuteW` y la asociación HTTPS del sistema. En la tabla del roster usar `HIE1`, `BRO1`, `PLA1`, `ORO1`, `PLT1`, `DIA1`, `ASC1`, `INM1` y `RAD`; el detalle conserva el nombre completo.
+
+**Consecuencias:** aliados y rivales pueden compartir indicadores de premade cuando sus presencias estén disponibles, Competitivo deja de depender exclusivamente de Party y la identidad oculta continúa protegida fuera del grupo del usuario. Si ninguna fuente identifica la cola, el fallback visible es `Estándar`, sin exponer el nombre interno `Bomb`.
+
+## ADR-021 — Splash temporizado y progreso observable de partida (2026-08-30)
+
+**Contexto:** el arranque anterior era una portada informativa, pero no tenía identidad visual ni una duración estable. Durante Agent Select, partida y postpartida el mensaje `Cargando datos` tampoco distinguía entre trabajo real y una animación decorativa.
+
+**Decisión:** mostrar durante tres segundos un logotipo ASCII `VTracker` centrado, con variante compacta según el ancho y subtítulo `v0.1 | for fun`, mientras el worker continúa trabajando. Para el contexto de partida, el worker emite progreso asociado a su generación en etapas verificables: lectura de sesión, detección de partida/resultado y preparación del roster o resumen. La TUI representa esos eventos con `Gauge`; descarta avances de generaciones antiguas y reemplaza `PgUp/PgDn` por `▲/▼` en los textos visibles.
+
+**Consecuencias:** el splash no retrasa las consultas y desaparece al cumplir tres segundos incluso si los datos ya llegaron. El porcentaje no pretende medir bytes transferidos: representa hitos completados del flujo real. Un resultado final o un error cierra el gauge y mantiene la política de último dato válido.

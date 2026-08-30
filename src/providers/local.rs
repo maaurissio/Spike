@@ -531,12 +531,26 @@ impl LocalClientSource {
             &sessions,
             puuid_from_access_token(&tokens.access_token).as_deref(),
         )?;
-        let queue = self.current_queue(&session, &tokens).ok().flatten();
-        let party_ids = self
-            .json_from(&lockfile, PRESENCES_ENDPOINT)
-            .ok()
-            .map(|payload| presence_party_ids(&payload))
-            .unwrap_or_default();
+        let mut queue = self.current_queue(&session, &tokens).ok().flatten();
+        let mut party_ids = HashMap::new();
+        // Presence puede tardar unos instantes en incorporar a todos los
+        // participantes después de entrar a Agent Select/Current Game. Las
+        // consultas son locales, acotadas y se combinan sin persistir PartyID.
+        let expected_presences = if phase == GamePhase::InMatch { 10 } else { 5 };
+        for attempt in 0..5 {
+            if let Ok(payload) = self.json_from(&lockfile, PRESENCES_ENDPOINT) {
+                party_ids.extend(presence_party_ids(&payload));
+                if queue.is_none() {
+                    queue = presence_queue(&payload, &session.own_puuid);
+                }
+            }
+            if party_ids.len() >= expected_presences && queue.is_some() {
+                break;
+            }
+            if attempt < 4 {
+                thread::sleep(Duration::from_millis(200));
+            }
+        }
         Ok(LiveMatchRequest {
             match_id,
             region: session.region,
@@ -861,6 +875,22 @@ fn puuid_from_access_token(access_token: &str) -> Option<String> {
 /// Extrae únicamente la relación jugador/party de Presence. Los PartyID se
 /// mantienen en la solicitud efímera y se sustituyen por Grupo A/B antes de la
 /// TUI; nunca se registran ni se persisten.
+fn decoded_private_presence(presence: &Value) -> Option<Value> {
+    let private = presence.get("private")?;
+    if private.is_object() {
+        return Some(private.clone());
+    }
+    let private = private.as_str()?;
+    serde_json::from_str::<Value>(private).ok().or_else(|| {
+        STANDARD
+            .decode(private)
+            .or_else(|_| URL_SAFE.decode(private))
+            .or_else(|_| URL_SAFE_NO_PAD.decode(private))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+    })
+}
+
 fn presence_party_ids(payload: &Value) -> HashMap<String, String> {
     payload
         .get("presences")
@@ -873,27 +903,54 @@ fn presence_party_ids(payload: &Value) -> HashMap<String, String> {
                 .or_else(|| presence.get("PUUID"))
                 .and_then(Value::as_str)
                 .filter(|value| !value.is_empty())?;
-            let private = presence.get("private")?.as_str()?;
-            let decoded = serde_json::from_str::<Value>(private).ok().or_else(|| {
-                STANDARD
-                    .decode(private)
-                    .or_else(|_| URL_SAFE.decode(private))
-                    .or_else(|_| URL_SAFE_NO_PAD.decode(private))
-                    .ok()
-                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            let decoded = decoded_private_presence(presence)?;
+            let party = [
+                "/partyId",
+                "/partyID",
+                "/PartyID",
+                "/partyPresenceData/partyId",
+                "/partyPresenceData/partyID",
+                "/partyPresenceData/PartyID",
+            ]
+            .iter()
+            .find_map(|path| decoded.pointer(path).and_then(Value::as_str))
+            .filter(|value| {
+                !value.is_empty()
+                    && value
+                        .chars()
+                        .all(|character| character.is_ascii_alphanumeric() || character == '-')
             })?;
-            let party = ["partyId", "partyID", "PartyID"]
-                .iter()
-                .find_map(|field| decoded.get(*field).and_then(Value::as_str))
-                .filter(|value| {
-                    !value.is_empty()
-                        && value
-                            .chars()
-                            .all(|character| character.is_ascii_alphanumeric() || character == '-')
-                })?;
             Some((subject.to_owned(), party.to_owned()))
         })
         .collect()
+}
+
+fn presence_queue(payload: &Value, own_puuid: &str) -> Option<String> {
+    payload
+        .get("presences")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|presence| {
+            presence
+                .get("puuid")
+                .or_else(|| presence.get("PUUID"))
+                .and_then(Value::as_str)
+                == Some(own_puuid)
+        })
+        .and_then(decoded_private_presence)
+        .and_then(|decoded| {
+            [
+                "/queueId",
+                "/queueID",
+                "/QueueID",
+                "/partyPresenceData/queueId",
+                "/partyPresenceData/queueID",
+            ]
+            .iter()
+            .find_map(|path| decoded.pointer(path).and_then(Value::as_str))
+            .filter(|queue| !queue.is_empty())
+            .map(ToOwned::to_owned)
+        })
 }
 
 /// Acepta `-clave=valor` y el formato equivalente `-clave valor`. El valor
@@ -1431,13 +1488,46 @@ mod tests {
             "presences": [
                 {"puuid":"one", "private": private},
                 {"puuid":"two", "private":"{\"partyId\":\"party-a\"}"},
+                {"puuid":"enemy-one", "private":{"partyPresenceData":{"partyId":"party-b","partySize":2}}},
+                {"puuid":"enemy-two", "private":"{\"partyPresenceData\":{\"partyId\":\"party-b\"}}"},
                 {"puuid":"missing", "private":"not-json"}
             ]
         }));
 
         assert_eq!(parties.get("one").map(String::as_str), Some("party-a"));
         assert_eq!(parties.get("two").map(String::as_str), Some("party-a"));
+        assert_eq!(
+            parties.get("enemy-one").map(String::as_str),
+            Some("party-b")
+        );
+        assert_eq!(
+            parties.get("enemy-two").map(String::as_str),
+            Some("party-b")
+        );
         assert!(!parties.contains_key("missing"));
+    }
+
+    #[test]
+    fn reads_competitive_queue_from_own_flat_or_nested_presence() {
+        let flat = serde_json::json!({
+            "presences": [
+                {"puuid":"other", "private":"{\"queueId\":\"unrated\"}"},
+                {"puuid":"me", "private":"{\"queueId\":\"competitive\"}"}
+            ]
+        });
+        let nested = serde_json::json!({
+            "presences": [{
+                "puuid":"me",
+                "private":{"partyPresenceData":{"queueId":"competitive"}}
+            }]
+        });
+
+        assert_eq!(presence_queue(&flat, "me").as_deref(), Some("competitive"));
+        assert_eq!(
+            presence_queue(&nested, "me").as_deref(),
+            Some("competitive")
+        );
+        assert_eq!(presence_queue(&flat, "missing"), None);
     }
 
     #[test]

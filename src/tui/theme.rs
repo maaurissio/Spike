@@ -113,23 +113,56 @@ impl Palette {
         let family = label.split_whitespace().next().unwrap_or_default();
         let dark = self.theme == Theme::Light;
         let color = match family {
-            "hierro" => Color::Rgb(134, 137, 134),
-            "bronce" if dark => Color::Rgb(124, 85, 34),
-            "bronce" => Color::Rgb(165, 133, 93),
-            "plata" if dark => Color::Rgb(89, 101, 105),
-            "plata" => Color::Rgb(187, 194, 194),
-            "oro" if dark => Color::Rgb(122, 97, 0),
-            "oro" => Color::Rgb(236, 207, 86),
-            "platino" if dark => Color::Rgb(25, 111, 120),
-            "platino" => Color::Rgb(89, 169, 182),
-            "diamante" if dark => Color::Rgb(112, 67, 161),
-            "diamante" => Color::Rgb(180, 137, 196),
-            "ascendente" if dark => Color::Rgb(28, 114, 69),
-            "ascendente" => Color::Rgb(106, 226, 175),
-            "inmortal" if dark => Color::Rgb(148, 40, 72),
-            "inmortal" => Color::Rgb(187, 61, 101),
-            "radiante" if dark => Color::Rgb(138, 106, 0),
-            "radiante" => Color::Rgb(255, 255, 170),
+            value if value.starts_with("hierro") || value.starts_with("hie") => {
+                Color::Rgb(134, 137, 134)
+            }
+            value if (value.starts_with("bronce") || value.starts_with("bro")) && dark => {
+                Color::Rgb(124, 85, 34)
+            }
+            value if value.starts_with("bronce") || value.starts_with("bro") => {
+                Color::Rgb(165, 133, 93)
+            }
+            value
+                if (value == "plata" || (value.starts_with("pla") && value != "platino"))
+                    && dark =>
+            {
+                Color::Rgb(89, 101, 105)
+            }
+            value if value == "plata" || (value.starts_with("pla") && value != "platino") => {
+                Color::Rgb(187, 194, 194)
+            }
+            value if value.starts_with("oro") && dark => Color::Rgb(122, 97, 0),
+            value if value.starts_with("oro") => Color::Rgb(236, 207, 86),
+            value if (value.starts_with("platino") || value.starts_with("plt")) && dark => {
+                Color::Rgb(25, 111, 120)
+            }
+            value if value.starts_with("platino") || value.starts_with("plt") => {
+                Color::Rgb(89, 169, 182)
+            }
+            value if (value.starts_with("diamante") || value.starts_with("dia")) && dark => {
+                Color::Rgb(112, 67, 161)
+            }
+            value if value.starts_with("diamante") || value.starts_with("dia") => {
+                Color::Rgb(180, 137, 196)
+            }
+            value if (value.starts_with("ascendente") || value.starts_with("asc")) && dark => {
+                Color::Rgb(28, 114, 69)
+            }
+            value if value.starts_with("ascendente") || value.starts_with("asc") => {
+                Color::Rgb(106, 226, 175)
+            }
+            value if (value.starts_with("inmortal") || value.starts_with("inm")) && dark => {
+                Color::Rgb(148, 40, 72)
+            }
+            value if value.starts_with("inmortal") || value.starts_with("inm") => {
+                Color::Rgb(187, 61, 101)
+            }
+            value if (value.starts_with("radiante") || value.starts_with("rad")) && dark => {
+                Color::Rgb(138, 106, 0)
+            }
+            value if value.starts_with("radiante") || value.starts_with("rad") => {
+                Color::Rgb(255, 255, 170)
+            }
             _ => return self.rank,
         };
         self.base.fg(color).add_modifier(Modifier::BOLD)
@@ -171,6 +204,10 @@ mod tests {
         assert_ne!(
             palette.rank_style("Ascendente 2").fg,
             palette.rank_style("Diamante 2").fg
+        );
+        assert_eq!(
+            palette.rank_style("ASC2").fg,
+            palette.rank_style("Ascendente 2").fg
         );
     }
 

@@ -23,10 +23,10 @@ como producto aprobado por Riot.
 |---|---|---|
 | Mapa, modo y agente propio | Implementado | Contexto propio efímero; no se expone roster. |
 | Roster ficticio de la demo | Implementado | Prototipo local claramente identificado; no consulta jugadores. |
-| Nombre visible en partida | Implementado | Name Service se consulta una vez; jugadores `Incognito` quedan excluidos. |
+| Nombre visible en partida | Implementado | Name Service excluye `Incognito`, salvo integrantes de la propia party que el cliente ya presenta al usuario local. |
 | Agente y rango del roster | Implementado cuando el campo está presente | Sale de `Current Game Match`; ausencia explícita, sin inventar. |
 | HS, KAST, K/D, WR e historial | Implementado en el prototipo local | Hasta cinco partidas por jugador desde PD; detalles deduplicados, concurrencia máxima seis y degradación por fila. Su distribución requiere la revisión indicada abajo. |
-| Identidad oculta | Implementado | Se muestra `Jugador N` con su agente; el PUUID efímero permite agregar estadísticas Ranked, pero no se consulta ni muestra el Riot ID. |
+| Identidad oculta | Implementado | Se muestra `Jugador N` con su agente y no se resuelve su Riot ID. Solo la propia party constituye una excepción, porque esa relación prueba el contexto y el cliente ya muestra esos nombres al usuario. |
 | Modelo normalizado aliado/enemigo/participante | Implementado con fuente real | Representa campos disponibles u ocultos y no retiene IDs. |
 
 ## Fuentes oficiales

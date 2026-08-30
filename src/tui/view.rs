@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Alignment, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Gauge, Paragraph},
 };
 
 use super::{App, Focus, TABS, relative_time, theme::Palette};
@@ -561,7 +561,7 @@ fn live_roster(s: &mut Screen, app: &App, roster: &RosterSnapshot, side: RosterS
         Span::styled(if wide { "  " } else { " " }, s.palette.dim),
         Span::styled(cell("AGENTE", if wide { 11 } else { 9 }), s.palette.dim),
         Span::styled(" ", s.palette.dim),
-        Span::styled(cell("RANGO", if wide { 11 } else { 8 }), s.palette.dim),
+        Span::styled(cell("RANGO", if wide { 7 } else { 6 }), s.palette.dim),
     ];
     if player_context {
         header.push(Span::styled(cell("NIV.", 6), s.palette.dim));
@@ -586,7 +586,7 @@ fn live_roster(s: &mut Screen, app: &App, roster: &RosterSnapshot, side: RosterS
         let marker = if player.is_self { "▶ " } else { "  " };
         let name = roster_identity(player);
         let agent = available_text(&player.agent, "Agente —");
-        let rank = available_text(&player.rank, "Rango —");
+        let rank = compact_rank_label(&available_text(&player.rank, "—"));
         let level = roster_level(app, player);
         let premade = premade_marker(roster, player);
         let metrics = match &player.stats {
@@ -613,7 +613,7 @@ fn live_roster(s: &mut Screen, app: &App, roster: &RosterSnapshot, side: RosterS
             Span::styled(cell(&agent, if wide { 11 } else { 9 }), s.palette.dim),
             Span::raw(" "),
             Span::styled(
-                cell(&rank, if wide { 11 } else { 8 }),
+                cell(&rank, if wide { 7 } else { 6 }),
                 s.palette.rank_style(&rank),
             ),
         ];
@@ -779,6 +779,30 @@ fn available_text(value: &DataAvailability<String>, fallback: &str) -> String {
         | DataAvailability::NotAvailable
         | DataAvailability::ApprovalRequired => fallback.into(),
     }
+}
+
+fn compact_rank_label(label: &str) -> String {
+    let mut parts = label.split_whitespace();
+    let family = parts.next().unwrap_or_default();
+    let division = parts
+        .next()
+        .filter(|value| matches!(*value, "1" | "2" | "3"));
+    let abbreviation = match family.to_lowercase().as_str() {
+        "hierro" => "HIE",
+        "bronce" => "BRO",
+        "plata" => "PLA",
+        "oro" => "ORO",
+        "platino" => "PLT",
+        "diamante" => "DIA",
+        "ascendente" => "ASC",
+        "inmortal" => "INM",
+        "radiante" => return "RAD".into(),
+        _ => return label.into(),
+    };
+    division.map_or_else(
+        || abbreviation.into(),
+        |division| format!("{abbreviation}{division}"),
+    )
 }
 
 fn available_number(value: &DataAvailability<u32>) -> String {
@@ -1411,7 +1435,11 @@ pub(super) fn render(area: Rect, frame: &mut ratatui::Frame<'_>, app: &mut App) 
         );
         return;
     }
-    if startup_pending(app) {
+    if !app.splash_complete && app.demo.is_none() {
+        render_splash(area, frame, palette, app);
+        return;
+    }
+    if startup_pending(app) && !app.context_pending {
         render_startup(area, frame, palette, app);
         return;
     }
@@ -1455,7 +1483,7 @@ pub(super) fn render(area: Rect, frame: &mut ratatui::Frame<'_>, app: &mut App) 
         "SOLO LECTURA"
     };
     let bottom = if max_scroll > 0 {
-        format!(" PgUp/PgDn · {}/{} ", app.scroll + 1, max_scroll + 1)
+        format!(" ▲/▼ · {}/{} ", app.scroll + 1, max_scroll + 1)
     } else {
         String::new()
     };
@@ -1542,7 +1570,7 @@ pub(super) fn render(area: Rect, frame: &mut ratatui::Frame<'_>, app: &mut App) 
             1 if app.has_selectable_roster() => "↑↓ · Enter detalle · g Tracker",
             3 => "↑↓/clic partida · Enter detalle · r",
             4 => "↑↓/clic · +/- · s guardar · r descartar",
-            _ => "r actualizar · PgUp/PgDn",
+            _ => "r actualizar · ▲/▼ desplazar",
         }
     };
     let controls = if app.demo.is_some() && app.selected_tab == 1 {
@@ -1563,6 +1591,9 @@ pub(super) fn render(area: Rect, frame: &mut ratatui::Frame<'_>, app: &mut App) 
         Paragraph::new(footer).style(palette.dim),
         Rect::new(area.x + 1, body.bottom() + 1, area.width - 2, footer_rows),
     );
+    if app.context_pending {
+        render_context_progress(area, frame, palette, app);
+    }
 }
 
 fn startup_pending(app: &App) -> bool {
@@ -1582,7 +1613,7 @@ fn render_startup(area: Rect, frame: &mut ratatui::Frame<'_>, palette: Palette, 
         .border_style(palette.border)
         .title(Line::styled(" VTRACKER ", palette.focus));
     frame.render_widget(block, area);
-    let height = 7_u16.min(area.height.saturating_sub(2));
+    let height = 9_u16.min(area.height.saturating_sub(2));
     let top = area.y + area.height.saturating_sub(height) / 2;
     let inner = Rect::new(area.x + 2, top, area.width.saturating_sub(4), height);
     let (status, detail) = if app.state.is_none() {
@@ -1605,12 +1636,112 @@ fn render_startup(area: Rect, frame: &mut ratatui::Frame<'_>, palette: Palette, 
             Line::raw(""),
             Line::styled(status, palette.pending),
             Line::styled(detail, palette.dim),
-            Line::raw(""),
-            Line::styled("Solo lectura · no controla VALORANT", palette.dim),
-            Line::styled("q para salir", palette.dim),
         ])
         .alignment(Alignment::Center),
-        inner,
+        Rect::new(inner.x, inner.y, inner.width, 4),
+    );
+    let progress = if app.state.is_none() { 25 } else { 70 };
+    frame.render_widget(
+        Gauge::default()
+            .gauge_style(palette.focus)
+            .percent(progress)
+            .label(format!("{progress}%"))
+            .use_unicode(true),
+        Rect::new(inner.x + 2, inner.y + 5, inner.width.saturating_sub(4), 1),
+    );
+    frame.render_widget(
+        Paragraph::new("Solo lectura · no controla VALORANT · q para salir")
+            .alignment(Alignment::Center)
+            .style(palette.dim),
+        Rect::new(inner.x, inner.y + 7, inner.width, 1),
+    );
+}
+
+fn render_splash(area: Rect, frame: &mut ratatui::Frame<'_>, palette: Palette, app: &App) {
+    let wide_logo = [
+        " ██▒   █▓▄▄▄█████▓ ██▀███   ▄▄▄       ▄████▄   ██ ▄█▀▓█████  ██▀███",
+        "▓██░   █▒▓  ██▒ ▓▒▓██ ▒ ██▒▒████▄    ▒██▀ ▀█   ██▄█▒ ▓█   ▀ ▓██ ▒ ██▒",
+        " ▓██  █▒░▒ ▓██░ ▒░▓██ ░▄█ ▒▒██  ▀█▄  ▒▓█    ▄ ▓███▄░ ▒███   ▓██ ░▄█ ▒",
+        "  ▒██ █░░░ ▓██▓ ░ ▒██▀▀█▄  ░██▄▄▄▄██ ▒▓▓▄ ▄██▒▓██ █▄ ▒▓█  ▄ ▒██▀▀█▄",
+        "   ▒▀█░    ▒██▒ ░ ░██▓ ▒██▒ ▓█   ▓██▒▒ ▓███▀ ░▒██▒ █▄░▒████▒░██▓ ▒██▒",
+        "   ░ ▐░    ▒ ░░   ░ ▒▓ ░▒▓░ ▒▒   ▓▒█░░ ░▒ ▒  ░▒ ▒▒ ▓▒░░ ▒░ ░░ ▒▓ ░▒▓░",
+        "   ░ ░░      ░      ░▒ ░ ▒░  ▒   ▒▒ ░  ░  ▒   ░ ░▒ ▒░ ░ ░  ░  ░▒ ░ ▒░",
+        "     ░░    ░        ░░   ░   ░   ▒   ░        ░ ░░ ░    ░     ░░   ░",
+        "      ░              ░           ░  ░░ ░      ░  ░      ░  ░   ░",
+        "     ░                               ░",
+    ];
+    let compact_logo = [
+        "╦  ╦╔╦╗╦═╗╔═╗╔═╗╦╔═╔═╗╦═╗",
+        "╚╗╔╝ ║ ╠╦╝╠═╣║  ╠╩╗║╣ ╠╦╝",
+        " ╚╝  ╩ ╩╚═╩ ╩╚═╝╩ ╩╚═╝╩╚═",
+    ];
+    let wide = area.width >= 78 && area.height >= 13;
+    let logo = if wide {
+        wide_logo.as_slice()
+    } else {
+        compact_logo.as_slice()
+    };
+    let elapsed = app.splash_started.elapsed().as_millis() / 250;
+    let lines = logo
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let style = if (index as u128 + elapsed).is_multiple_of(4) {
+                palette.focus.add_modifier(Modifier::BOLD)
+            } else if index + 2 >= logo.len() {
+                palette.dim
+            } else {
+                palette.base.add_modifier(Modifier::BOLD)
+            };
+            Line::styled(*line, style)
+        })
+        .chain([Line::raw(""), Line::styled("v0.1 | for fun", palette.dim)])
+        .collect::<Vec<_>>();
+    let height = (logo.len() + 2) as u16;
+    let top = area.y + area.height.saturating_sub(height) / 2;
+    frame.render_widget(
+        Paragraph::new(lines).alignment(Alignment::Center),
+        Rect::new(area.x, top, area.width, height),
+    );
+}
+
+fn render_context_progress(
+    area: Rect,
+    frame: &mut ratatui::Frame<'_>,
+    palette: Palette,
+    app: &App,
+) {
+    let width = area.width.saturating_sub(6).clamp(32, 58);
+    let height = 7_u16.min(area.height.saturating_sub(2));
+    let popup = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(palette.border)
+            .title(Line::styled(" CARGANDO PARTIDA ", palette.focus))
+            .style(palette.base),
+        popup,
+    );
+    frame.render_widget(
+        Paragraph::new(app.context_progress_label)
+            .alignment(Alignment::Center)
+            .style(palette.base),
+        Rect::new(popup.x + 2, popup.y + 2, popup.width.saturating_sub(4), 1),
+    );
+    frame.render_widget(
+        Gauge::default()
+            .gauge_style(palette.focus)
+            .percent(app.context_progress.min(100))
+            .label(format!("{}%", app.context_progress.min(100)))
+            .use_unicode(true),
+        Rect::new(popup.x + 3, popup.y + 4, popup.width.saturating_sub(6), 1),
     );
 }
 
@@ -1626,6 +1757,34 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::{Terminal, backend::TestBackend};
 
+    #[test]
+    fn roster_ranks_use_unambiguous_compact_labels() {
+        assert_eq!(compact_rank_label("Hierro 1"), "HIE1");
+        assert_eq!(compact_rank_label("Plata 2"), "PLA2");
+        assert_eq!(compact_rank_label("Platino 3"), "PLT3");
+        assert_eq!(compact_rank_label("Diamante 1"), "DIA1");
+        assert_eq!(compact_rank_label("Ascendente 2"), "ASC2");
+        assert_eq!(compact_rank_label("Inmortal 3"), "INM3");
+        assert_eq!(compact_rank_label("Radiante"), "RAD");
+        assert_eq!(compact_rank_label("—"), "—");
+    }
+
+    #[test]
+    fn context_loading_uses_a_real_progress_gauge() {
+        let mut app = App::new(&Config::default());
+        app.splash_complete = true;
+        app.context_pending = true;
+        app.context_progress = 45;
+        app.context_progress_label = "Partida detectada";
+        app.selected_tab = 2;
+
+        let text = snapshot_raw(&mut app, 72, 24);
+        assert!(text.contains("CARGANDO PARTIDA"));
+        assert!(text.contains("Partida detectada"));
+        assert!(text.contains("45%"));
+        assert!(text.contains("▲/▼ desplazar"));
+    }
+
     fn demo_app() -> App {
         let mut app = App::new(&Config::default());
         app.demo = Some(Demo::default());
@@ -1633,7 +1792,7 @@ mod tests {
         app
     }
 
-    fn snapshot(app: &mut App, width: u16, height: u16) -> String {
+    fn snapshot_raw(app: &mut App, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| render(frame.area(), frame, app))
@@ -1646,6 +1805,11 @@ mod tests {
             .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn snapshot(app: &mut App, width: u16, height: u16) -> String {
+        app.splash_complete = true;
+        snapshot_raw(app, width, height)
     }
 
     fn key(app: &mut App, worker: &Worker, code: KeyCode) {
@@ -1865,8 +2029,8 @@ mod tests {
         });
 
         let text = snapshot(&mut app, 100, 30);
-        assert!(text.contains("Norte#LAS") && text.contains("Omen") && text.contains("Diamante 1"));
-        assert!(text.contains("Jugador 1") && text.contains("Jett") && text.contains("Radiante"));
+        assert!(text.contains("Norte#LAS") && text.contains("Omen") && text.contains("DIA1"));
+        assert!(text.contains("Jugador 1") && text.contains("Jett") && text.contains("RAD"));
         assert!(!text.contains("Jugador oculto"));
         assert!(text.contains("K/D") && text.contains("HS%") && text.contains("KAST%"));
         assert!(text.contains("1.50") && text.contains("50.0%") && text.contains("VD"));
@@ -1883,6 +2047,7 @@ mod tests {
         assert!(detail.contains("[g] Abrir perfil en Tracker.gg"));
         assert!(detail.contains("Nivel 356"));
         assert!(detail.contains("Premade Grupo A · 2 jugadores"));
+        assert!(detail.contains("Diamante 1"));
 
         let context = app.live_match.clone().unwrap();
         app.update_state(StateInfo::new(
@@ -2020,6 +2185,12 @@ mod tests {
     #[test]
     fn pristine_app_renders_startup_screen_before_the_first_observation() {
         let mut app = App::new(&Config::default());
+        let splash = snapshot_raw(&mut app, 80, 24);
+
+        assert!(splash.contains("██▒") && splash.contains("▄▄▄█████▓"));
+        assert!(splash.contains("v0.1 | for fun"));
+        assert!(!splash.contains("1 Resumen") && !splash.contains("INICIANDO VTRACKER"));
+
         let startup = snapshot(&mut app, 72, 24);
 
         assert!(startup.contains("INICIANDO VTRACKER"));

@@ -8,10 +8,12 @@ mod worker;
 
 use std::{
     io,
-    process::Command as ProcessCommand,
     sync::mpsc::TryRecvError,
     time::{Duration, Instant},
 };
+
+#[cfg(not(target_os = "windows"))]
+use std::process::Command as ProcessCommand;
 
 use crossterm::{
     event::{
@@ -44,6 +46,7 @@ use worker::{Context, Reply, Request, Worker};
 
 const TABS: [&str; 5] = ["Resumen", "Partida", "Mi perfil", "Historial", "Ajustes"];
 const INPUT_TIMEOUT: Duration = Duration::from_millis(100);
+const SPLASH_DURATION: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct HistoryDetails {
@@ -129,6 +132,8 @@ enum Focus {
 }
 
 struct App {
+    splash_started: Instant,
+    splash_complete: bool,
     demo: Option<demo::Demo>,
     focus: Focus,
     player_index: usize,
@@ -155,6 +160,8 @@ struct App {
     context_pending: bool,
     context_requested: bool,
     context_failed: bool,
+    context_progress: u16,
+    context_progress_label: &'static str,
     history_pending: bool,
     generation: u64,
     epoch: u64,
@@ -168,6 +175,8 @@ struct App {
 impl App {
     fn new(config: &Config) -> Self {
         Self {
+            splash_started: Instant::now(),
+            splash_complete: false,
             demo: None,
             focus: Focus::Content,
             player_index: 0,
@@ -194,6 +203,8 @@ impl App {
             context_pending: false,
             context_requested: false,
             context_failed: false,
+            context_progress: 0,
+            context_progress_label: "Esperando contexto de partida",
             history_pending: false,
             generation: 0,
             epoch: 0,
@@ -207,6 +218,17 @@ impl App {
 
     fn select_next(&mut self) {
         self.select_tab((self.selected_tab + 1) % TABS.len());
+    }
+
+    fn tick(&mut self) {
+        if !self.splash_complete {
+            if self.splash_started.elapsed() >= SPLASH_DURATION {
+                self.splash_complete = true;
+            }
+            // El logo tiene un degradado animado discreto y debe redibujarse;
+            // al cumplir tres segundos este mismo tick presenta la vista real.
+            self.dirty = true;
+        }
     }
 
     fn select_previous(&mut self) {
@@ -320,6 +342,7 @@ impl App {
                     return;
                 }
                 self.context_failed = data.is_err();
+                self.context_progress = if data.is_ok() { 100 } else { 0 };
                 match data {
                     Ok(Context::Live(context)) => {
                         self.player_index = context
@@ -334,6 +357,18 @@ impl App {
                     Ok(Context::Completed(summary)) => self.completed_match = Some(summary),
                     Err(()) => {} // Conservar el último dato de esta sesión al fallar un refresh.
                 }
+            }
+            Reply::ContextProgress {
+                generation,
+                percent,
+                label,
+            } => {
+                if generation == self.generation && self.context_pending {
+                    self.context_progress = percent.min(100);
+                    self.context_progress_label = label;
+                    self.dirty = true;
+                }
+                return;
             }
             Reply::Profile { epoch, data } => {
                 self.profile_pending = false;
@@ -410,6 +445,8 @@ impl App {
         {
             self.context_pending = true;
             self.context_requested = true;
+            self.context_progress = 5;
+            self.context_progress_label = "Preparando la consulta";
             self.dirty = true;
         }
         if connected && self.history.is_none() && !self.history_failed {
@@ -703,11 +740,30 @@ fn encode_path_segment(value: &str) -> String {
 fn open_tracker(url: &str) -> io::Result<()> {
     #[cfg(target_os = "windows")]
     {
-        ProcessCommand::new("rundll32.exe")
-            .arg("url.dll,FileProtocolHandler")
-            .arg(url)
-            .spawn()?;
-        Ok(())
+        use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+
+        let operation = "open\0".encode_utf16().collect::<Vec<_>>();
+        let target = url
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        // ShellExecuteW usa directamente la asociación HTTPS de Windows y no
+        // interpreta los `%` de la URL como variables de CMD.
+        let result = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                operation.as_ptr(),
+                target.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        if result as isize > 32 {
+            Ok(())
+        } else {
+            Err(io::Error::other("Windows no pudo abrir el navegador"))
+        }
     }
     #[cfg(target_os = "macos")]
     {
@@ -770,6 +826,7 @@ fn run_loop(
     let mut last_refresh: Option<Instant> = None;
 
     while !app.should_quit {
+        app.tick();
         loop {
             match worker.receive() {
                 Ok(reply) => app.apply(reply),
@@ -858,6 +915,38 @@ mod tests {
         assert_eq!(app.selected_tab, TABS.len() - 1);
         app.select_next();
         assert_eq!(app.selected_tab, 0);
+    }
+
+    #[test]
+    fn splash_finishes_only_after_three_seconds() {
+        let mut app = App::new(&Config::default());
+        app.tick();
+        assert!(!app.splash_complete);
+
+        app.splash_started = Instant::now() - SPLASH_DURATION;
+        app.tick();
+        assert!(app.splash_complete);
+    }
+
+    #[test]
+    fn context_progress_tracks_only_the_current_match_generation() {
+        let mut app = App::new(&Config::default());
+        app.context_pending = true;
+        app.generation = 7;
+        app.apply(Reply::ContextProgress {
+            generation: 7,
+            percent: 45,
+            label: "Partida detectada",
+        });
+        assert_eq!(app.context_progress, 45);
+        assert_eq!(app.context_progress_label, "Partida detectada");
+
+        app.apply(Reply::ContextProgress {
+            generation: 6,
+            percent: 90,
+            label: "Respuesta antigua",
+        });
+        assert_eq!(app.context_progress, 45);
     }
 
     #[test]
@@ -1147,6 +1236,7 @@ mod tests {
     fn renders_tabs_at_small_sizes_and_scrolls_long_postmatch_tables() {
         use ratatui::backend::TestBackend;
         let mut app = App::new(&Config::default());
+        app.splash_complete = true;
         for (width, height) in [(1, 1), (32, 10), (80, 24)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             for tab in 0..TABS.len() {
