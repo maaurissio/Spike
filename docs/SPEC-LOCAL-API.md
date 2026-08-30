@@ -67,10 +67,11 @@ Región/shard se derivan del log (`https://glz-(.+?)-1.(.+?).a.pvp.net`) o de la
 | Endpoint GLZ | Qué da | Cuándo |
 |---|---|---|
 | `GET /pre-game/v1/players/{puuid}` | Estado del jugador en Pre-Game | Solo en `PreGame`/`AgentSelect` |
-| `GET /pre-game/v1/matches/{preGameMatchId}` | **Roster completo en Agent Select**: 10 jugadores con `Subject(puuid)`, `CharacterID` (agente), `PlayerIdentity` (card/title), `SeasonalBadgeInfo` (rank) | Solo en `AgentSelect` |
+| `GET /pregame/v1/matches/{preGameMatchId}` | **Equipo aliado en Agent Select**: `Subject`, `CharacterID`, `CompetitiveTier`, `PlayerIdentity.AccountLevel/HideAccountLevel`; el cliente no expone aquí a los rivales | Solo en `AgentSelect` |
 | `GET /core-game/v1/players/{puuid}` | Estado del jugador en partida | Solo en `InMatch` |
 | `GET /core-game/v1/matches/{matchId}` | **Roster en partida** + `MapID`, `ModeID`, `ProvisioningFlow`, `Players[]` con `TeamID`, `CharacterID` | Solo en `InMatch` (`PostGameDetails: null` en vivo) |
 | `GET /parties/v1/players/{puuid}` + `/parties/v1/parties/{partyId}` | `MatchmakingData.QueueID` para distinguir Competitivo/Normal | Con sesión y party activas |
+| `GET /chat/v4/presences` | Party efímera de los jugadores presentes; se normaliza a Grupo/Solo sin enviar PartyID a la TUI y cada miembro de una premade recibe un `•` de color compartido | Agent Select/InMatch |
 
 **Uso en VTracker:**
 * Detectar fase: `PreGame → AgentSelect → InMatch` vía WebSocket o polling de `Pre-Game`/`Current Game`.
@@ -88,7 +89,7 @@ Todos requieren los 4 headers de §3. `shard` = `na`/`eu`/`ap`/`kr`/`pbe`.
 | `GET /mmr/v1/players/{puuid}` | MMR/rank, historial, peak | Siempre |
 | `GET /match-history/v1/history/{puuid}?start=0&end=20` | **Historial**: `History[]` con `MatchID`, `GameStartTime`, `QueueID` | Siempre |
 | `GET /competitiveupdates/v1/competitiveupdates/{puuid}?start=0&end=20` | **Progreso competitivo** con cambio de RR | Siempre |
-| `GET /match-details/v1/matches/{matchId}` | **Desglose por ronda** `roundResults[]` | **Post-partida (garantizado)** |
+| `GET /match-details/v1/matches/{matchId}` | **Desglose por ronda** `roundResults[]`; `players[].accountLevel` puede respaldar un nivel live ausente | **Post-partida (garantizado)** |
 | `PUT /name-service/v2/players` | Resolución puuid → `gameName#tagLine` | Siempre |
 
 **Desglose por ronda — modelo `roundResults[]`:**
@@ -165,7 +166,7 @@ El password del lockfile y los tokens **solo en memoria**; `doctor` los comprueb
 
 Todo GLZ/PD se normaliza a modelos propios, versionados y con caché L1/L2 (`Arquitectura:9`):
 
-* `RosterPlayer { side, slot, is_self, identity, agent, rank, stats }`, sin PUUID ni match ID en la UI; cada campo indica `Available`, `Hidden`, `NotAvailable` o `ApprovalRequired`. La fuente base está conectada; `stats` espera enriquecimiento.
+* `RosterPlayer { side, slot, is_self, identity, agent, rank, level, premade, stats }`, sin PUUID, PartyID ni match ID en la UI; cada campo indica `Available`, `Hidden`, `NotAvailable` o `ApprovalRequired`.
 * `Round { round_num, winning_team, round_result, ceremony, players: Vec<PlayerRoundStat { puuid, kills, deaths, score, damage }> }`
 * `MatchRounds { match_id, mode, rounds: Vec<Round> }` — solo para modos con ronda (ADR-004).
 

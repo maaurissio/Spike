@@ -26,6 +26,8 @@ pub(crate) enum RosterSide {
 pub(crate) struct HistoricalStats {
     pub matches: u32,
     pub competitive_tier: Option<u64>,
+    /// Último nivel positivo observado en el historial Ranked enriquecido.
+    pub account_level: Option<u32>,
     pub decided_matches: u32,
     pub wins: u32,
     pub kills: u32,
@@ -102,6 +104,9 @@ pub(crate) struct RosterPlayer {
     pub identity: DataAvailability<String>,
     pub agent: DataAvailability<String>,
     pub rank: DataAvailability<String>,
+    pub level: DataAvailability<u32>,
+    /// Etiqueta normalizada (`Grupo A`, `Grupo B`, `Solo`), nunca PartyID.
+    pub premade: DataAvailability<String>,
     pub stats: DataAvailability<HistoricalStats>,
 }
 
@@ -244,6 +249,8 @@ mod tests {
             },
             agent: DataAvailability::NotAvailable,
             rank: DataAvailability::ApprovalRequired,
+            level: DataAvailability::NotAvailable,
+            premade: DataAvailability::NotAvailable,
             stats: DataAvailability::ApprovalRequired,
         }
     }
@@ -320,6 +327,7 @@ mod tests {
         let stats = HistoricalStats {
             matches: 5,
             competitive_tier: Some(18),
+            account_level: Some(142),
             decided_matches: 5,
             wins: 3,
             kills: 47,

@@ -104,7 +104,11 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 - [x] Temas Sistema/Noche/Claro/Sin color, previsualización con `t` y persistencia explícita con `s`; compatibilidad con archivos de configuración anteriores.
 - [x] Crear Dashboard base con estado, perfil propio y resumen de las cinco Ranked recientes; el diagnóstico detallado de salud de fuentes permanece en `doctor`.
 - [x] Abrir la TUI por defecto al ejecutar el binario sin argumentos, conservar `watch` como comando explícito y mostrar una portada breve durante la primera conexión.
-- [x] Priorizar el perfil propio en el Panel fuera de partida y representar el progreso competitivo como rango + barra de RR sobre 100.
+- [x] Priorizar Mi perfil en Resumen fuera de partida y representar el progreso competitivo como rango + barra de RR sobre 100.
+- [x] Renombrar las vistas principales a Resumen y Mi perfil, y retirar el diagnóstico de fuentes de la interfaz final.
+- [x] Mostrar HS% agregado en las cinco Ranked y ampliar cada detalle con marcador, K/D/A, K/D, KDA, HS%, ACS, ADR, rondas y totales disponibles.
+- [x] Aplicar una paleta por familia competitiva: Hierro, Bronce, Plata, Oro, Platino, Diamante, Ascendente, Inmortal y Radiante; Ascendente usa verde y no el violeta de Diamante.
+- [x] Reorganizar Ajustes por Apariencia, Actualización, Cambios y Privacidad, con valores explícitos y ayuda contextual.
 - [x] Crear y conectar vistas Match, Player, History y **Settings (Configuración)** con datos reales disponibles y estados de carga/falla comprensibles.
 - [ ] Conectar datos reales confirmados al timeline compacto entre aliados y enemigos; su presentación de tres filas (`1K/4K`, `R1/R2`, `0D/2D`), ronda pendiente y paginación ya existe en la demo Rust.
 - [x] Acceso externo a Tracker.gg del jugador visible seleccionado: construir URL HTTPS sobre dominio fijo solo desde un Riot ID resuelto, codificar el segmento y mantenerlo deshabilitado para `Jugador N`/identidad ausente. `[↗]` indica disponibilidad y `g` abre por acción explícita.
@@ -117,9 +121,14 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 - [x] Corregir retroceso de temas con `-` y conservar la partida seleccionada al actualizar el historial; cerrar el detalle si deja de estar disponible. Cubierto con regresiones.
 - [x] Adaptar layouts a terminales pequeñas y grandes (mínimo 38×10; demo completa 72×24/38×26, selección visible, scroll y paginación del timeline).
 - [x] Conectar el roster real enriquecido a la TUI (ADR-014): equipos/participantes, nombre visible, agente, rango disponible, K/D, HS%, KAST, WR y forma históricos. Kills, marcador y rondas de la partida actual siguen pendientes por falta de una fuente live verificada.
+- [x] Conectar Agent Select: consultar `pregame/v1/matches/{id}`, mostrar el equipo aliado con stats Ranked y conservar agentes aún no elegidos como `—`; los rivales solo aparecen al entrar a Current Game.
+- [x] Añadir nivel visible y premades al roster. `HideAccountLevel` se respeta; Presence se reduce a `Grupo A/B` o `Solo` y PartyID se descarta antes de la TUI.
+- [x] Corregir niveles `0` y ausentes: Account XP propio gana sobre Current Game; `accountLevel` de la Ranked más reciente sirve de respaldo para terceros cuando no existe `HideAccountLevel`. Premades se presentan como `A×3`/`B×2`, con color compartido y detalle completo.
+- [x] Corregir Tracker.gg en Ranked prefiriendo el Riot ID canónico `GameName#TagLine` sobre `DisplayName`, que puede carecer de tag según la fase.
+- [ ] Integrar kills/muertes propias por ronda mediante un proveedor de eventos aprobado. Tracker usa Overwolf GEP, que expone `round_number`, `round_phase`, `kill`, `death`, scoreboard y reporte de ronda; una app Rust independiente necesita un bridge/paquete Overwolf y registro, no una consulta adicional a Local Client.
 - [x] Mantener las consultas y escrituras fuera del hilo de interfaz: trabajador con colas acotadas, solicitudes duplicadas suprimidas y descarte de respuestas de fases anteriores. El estado de pantalla no retiene el roster postpartida.
 
-> Verificación TUI/modelos: 187 pruebas globales, incluyendo arranque por defecto y portada, perfil con progreso de RR y fallback competitivo, historial exclusivamente Ranked, roster real normalizado, Name Service por `PUT`, identidad visible/oculta, enlaces Tracker codificados, rango con respaldo histórico, postpartida estructurada, mouse, Deathmatch sin equipos ficticios, ausencia de IDs, aislamiento de demo, privacidad, celdas Unicode, tamaños objetivo, temas y navegación. Las pruebas usan fixtures y no consultan VALORANT. El roster y sus métricas ya se observaron en una Ranked real; falta revalidar nombres/rangos/HS tras estas correcciones y cubrir más modos/transiciones.
+> Verificación TUI/modelos: 194 pruebas globales, incluyendo arranque por defecto, perfil con progreso de RR, historial exclusivamente Ranked, Agent Select, roster real normalizado, nivel propio autoritativo y respaldo histórico, premades compactos, Name Service por `PUT`, identidad visible/oculta, enlaces Tracker codificados, rango con respaldo histórico, postpartida estructurada, mouse, Deathmatch sin equipos ficticios, ausencia de IDs, aislamiento de demo, privacidad, celdas Unicode, tamaños objetivo, temas y navegación. Las pruebas usan fixtures y no consultan VALORANT. El roster y sus métricas ya se observaron en una Ranked real; falta revalidar la nueva fase prepartida, grupos, nombres/rangos/HS y transiciones en sesiones reales.
 
 ## Prioridad 6 — Robustez, autoinicio y distribución + ISO
 

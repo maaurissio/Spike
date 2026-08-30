@@ -7,6 +7,7 @@ use serde_json::Value;
 
 use super::{
     ProviderError,
+    capabilities::GamePhase,
     roster::{competitive_tier_label, visible_names},
     roster_stats::{RosterStatsRequest, RosterStatsSource},
 };
@@ -25,6 +26,9 @@ pub(crate) struct LiveMatchRequest {
     pub entitlement_token: String,
     pub own_puuid: String,
     pub queue: Option<String>,
+    pub phase: GamePhase,
+    /// PUUID -> PartyID efímero. Solo se usa para producir Grupo A/B o Solo.
+    pub party_ids: HashMap<String, String>,
 }
 
 pub(crate) struct LiveMatchSource {
@@ -49,8 +53,13 @@ impl LiveMatchSource {
         &self,
         request: &LiveMatchRequest,
     ) -> Result<LiveMatchContext, ProviderError> {
+        let endpoint = if matches!(request.phase, GamePhase::PreGame | GamePhase::AgentSelect) {
+            "pregame"
+        } else {
+            "core-game"
+        };
         let url = format!(
-            "https://glz-{}-1.{}.a.pvp.net/core-game/v1/matches/{}",
+            "https://glz-{}-1.{}.a.pvp.net/{endpoint}/v1/matches/{}",
             request.region, request.shard, request.match_id
         );
         let response = self
@@ -67,10 +76,11 @@ impl LiveMatchSource {
                 let payload = response
                     .json::<Value>()
                     .map_err(|_| ProviderError::Parse("JSON inválido en partida actual".into()))?;
+                let players = roster_players(&payload, &request.own_puuid);
                 let names = self
-                    .fetch_visible_names(request, &payload)
+                    .fetch_visible_names(request, &players)
                     .unwrap_or_default();
-                let subjects = roster_subjects(&payload);
+                let subjects = roster_subjects(&players);
                 let stats_request = RosterStatsRequest {
                     shard: request.shard.clone(),
                     client_version: request.client_version.clone(),
@@ -85,6 +95,8 @@ impl LiveMatchSource {
                     &names,
                     &stats,
                     queue.as_deref(),
+                    request.phase,
+                    &request.party_ids,
                 )
             }
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
@@ -101,13 +113,10 @@ impl LiveMatchSource {
     fn fetch_visible_names(
         &self,
         request: &LiveMatchRequest,
-        match_payload: &Value,
+        players: &[Value],
     ) -> Result<HashMap<String, String>, ProviderError> {
-        let subjects = match_payload
-            .get("Players")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
+        let subjects = players
+            .iter()
             .filter(|player| {
                 !player
                     .pointer("/PlayerIdentity/Incognito")
@@ -170,6 +179,8 @@ pub(crate) fn parse_live_match(
         &HashMap::new(),
         &HashMap::new(),
         None,
+        GamePhase::InMatch,
+        &HashMap::new(),
     )
 }
 
@@ -179,26 +190,37 @@ fn parse_live_match_with_names_and_stats(
     names: &HashMap<String, String>,
     stats: &HashMap<String, HistoricalStats>,
     queue: Option<&str>,
+    phase: GamePhase,
+    party_ids: &HashMap<String, String>,
 ) -> Result<LiveMatchContext, ProviderError> {
     let object = payload
         .as_object()
         .ok_or_else(|| ProviderError::Parse("partida actual inválida".into()))?;
-    let mode = display_mode(&required_asset(object, "ModeID")?, queue);
+    let mode = display_mode(
+        &required_asset_any(object, &["ModeID", "Mode", "QueueID"])?,
+        queue,
+    );
     let map = required_asset(object, "MapID")?;
-    let players = object.get("Players").and_then(Value::as_array);
+    let players = roster_players(payload, own_puuid);
     let agent = players
-        .and_then(|players| {
-            players
-                .iter()
-                .find(|player| player.get("Subject").and_then(Value::as_str) == Some(own_puuid))
-        })
+        .iter()
+        .find(|player| player.get("Subject").and_then(Value::as_str) == Some(own_puuid))
         .and_then(|player| player.get("CharacterID"))
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .map(agent_label);
-    let roster = players
-        .filter(|players| !players.is_empty())
-        .and_then(|players| normalize_roster(players, own_puuid, names, stats).ok());
+    let roster = if players.is_empty() {
+        None
+    } else {
+        Some(normalize_roster(
+            &players,
+            own_puuid,
+            names,
+            stats,
+            matches!(phase, GamePhase::PreGame | GamePhase::AgentSelect),
+            party_ids,
+        )?)
+    };
     Ok(LiveMatchContext {
         mode,
         map,
@@ -212,6 +234,8 @@ fn normalize_roster(
     own_puuid: &str,
     names: &HashMap<String, String>,
     stats: &HashMap<String, HistoricalStats>,
+    force_allies: bool,
+    party_ids: &HashMap<String, String>,
 ) -> Result<RosterSnapshot, ProviderError> {
     let own_team = players
         .iter()
@@ -224,7 +248,8 @@ fn normalize_roster(
         .filter_map(|player| player.get("TeamID").and_then(Value::as_str))
         .filter(|team| !team.is_empty())
         .collect::<std::collections::HashSet<_>>();
-    let free_for_all = own_team.is_empty() || distinct_teams.len() < 2;
+    let free_for_all = !force_allies && (own_team.is_empty() || distinct_teams.len() < 2);
+    let premades = normalized_premades(players, party_ids);
     let mut ally_slot = 0_u8;
     let mut enemy_slot = 0_u8;
     let mut participant_slot = 0_u8;
@@ -241,7 +266,10 @@ fn normalize_roster(
                 .get("TeamID")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            let (side, slot) = if free_for_all {
+            let (side, slot) = if force_allies {
+                ally_slot = ally_slot.saturating_add(1);
+                (RosterSide::Ally, ally_slot)
+            } else if free_for_all {
                 participant_slot = participant_slot.saturating_add(1);
                 (RosterSide::Participant, participant_slot)
             } else if team == own_team {
@@ -289,6 +317,22 @@ fn normalize_roster(
                 .and_then(competitive_tier_label)
                 .map(DataAvailability::Available)
                 .unwrap_or(DataAvailability::NotAvailable);
+            let hide_level = player
+                .pointer("/PlayerIdentity/HideAccountLevel")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let level = if hide_level && !is_self {
+                DataAvailability::Hidden
+            } else {
+                player
+                    .pointer("/PlayerIdentity/AccountLevel")
+                    .and_then(Value::as_u64)
+                    .and_then(|level| u32::try_from(level).ok())
+                    .filter(|level| *level > 0)
+                    .or_else(|| stats.get(subject).and_then(|stats| stats.account_level))
+                    .map(DataAvailability::Available)
+                    .unwrap_or(DataAvailability::NotAvailable)
+            };
             RosterPlayer {
                 side,
                 slot,
@@ -296,6 +340,12 @@ fn normalize_roster(
                 identity,
                 agent,
                 rank,
+                level,
+                premade: premades
+                    .get(subject)
+                    .cloned()
+                    .map(DataAvailability::Available)
+                    .unwrap_or(DataAvailability::NotAvailable),
                 stats: stats
                     .get(subject)
                     .cloned()
@@ -306,6 +356,75 @@ fn normalize_roster(
         .collect();
     RosterSnapshot::new(normalized)
         .map_err(|error| ProviderError::Parse(format!("roster inválido: {error}")))
+}
+
+/// Current Game usa `Players`; Agent Select expone únicamente el equipo aliado
+/// en `AllyTeam` (o dentro de `Teams`, según la versión del cliente).
+fn roster_players(payload: &Value, own_puuid: &str) -> Vec<Value> {
+    if let Some(players) = payload.get("Players").and_then(Value::as_array) {
+        return players.clone();
+    }
+    if let Some(players) = payload
+        .pointer("/AllyTeam/Players")
+        .and_then(Value::as_array)
+    {
+        return players.clone();
+    }
+    payload
+        .get("Teams")
+        .and_then(Value::as_array)
+        .and_then(|teams| {
+            teams.iter().find_map(|team| {
+                let players = team.get("Players").and_then(Value::as_array)?;
+                players
+                    .iter()
+                    .any(|player| player.get("Subject").and_then(Value::as_str) == Some(own_puuid))
+                    .then_some(players)
+            })
+        })
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn normalized_premades(
+    players: &[Value],
+    party_ids: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut counts = HashMap::<String, usize>::new();
+    for player in players {
+        let Some(subject) = player.get("Subject").and_then(Value::as_str) else {
+            continue;
+        };
+        if let Some(party) = party_ids.get(subject) {
+            *counts.entry(party.clone()).or_default() += 1;
+        }
+    }
+
+    let mut labels = HashMap::<String, String>::new();
+    let mut next = b'A';
+    let mut result = HashMap::new();
+    for player in players {
+        let Some(subject) = player.get("Subject").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(party) = party_ids.get(subject) else {
+            continue;
+        };
+        let label = if counts.get(party).copied().unwrap_or(0) > 1 {
+            labels
+                .entry(party.clone())
+                .or_insert_with(|| {
+                    let label = format!("Grupo {}", char::from(next));
+                    next = next.saturating_add(1);
+                    label
+                })
+                .clone()
+        } else {
+            "Solo".into()
+        };
+        result.insert(subject.to_owned(), label);
+    }
+    result
 }
 
 fn display_mode(mode: &str, queue: Option<&str>) -> String {
@@ -322,12 +441,9 @@ fn display_mode(mode: &str, queue: Option<&str>) -> String {
     }
 }
 
-fn roster_subjects(payload: &Value) -> Vec<String> {
-    payload
-        .get("Players")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
+fn roster_subjects(players: &[Value]) -> Vec<String> {
+    players
+        .iter()
         .filter(|player| {
             !player
                 .get("IsCoach")
@@ -350,6 +466,22 @@ fn required_asset(
         .filter(|value| !value.is_empty())
         .map(asset_label)
         .ok_or_else(|| ProviderError::Parse(format!("{field} ausente en partida actual")))
+}
+
+fn required_asset_any(
+    object: &serde_json::Map<String, Value>,
+    fields: &[&str],
+) -> Result<String, ProviderError> {
+    fields
+        .iter()
+        .find_map(|field| {
+            object
+                .get(*field)
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+        })
+        .map(asset_label)
+        .ok_or_else(|| ProviderError::Parse(format!("{} ausente en partida actual", fields[0])))
 }
 
 /// Las rutas internas de Riot suelen terminar en un nombre legible. Los UUIDs
@@ -513,6 +645,7 @@ mod tests {
             HistoricalStats {
                 matches: 2,
                 competitive_tier: Some(18),
+                account_level: Some(77),
                 decided_matches: 2,
                 wins: 1,
                 kills: 30,
@@ -525,8 +658,8 @@ mod tests {
                 "ModeID": "/Game/GameModes/Bomb/Bomb",
                 "MapID": "/Game/Maps/Triad/Triad",
                 "Players": [
-                    {"Subject":"me", "TeamID":"Blue", "CharacterID":"8e253930-4c05-31dd-1b6c-968525494517", "CompetitiveTier":18},
-                    {"Subject":"ally", "TeamID":"Blue", "CharacterID":"320b2a48-4d9b-a075-30f1-1f93a9b638fa", "CompetitiveTier":12},
+                    {"Subject":"me", "TeamID":"Blue", "CharacterID":"8e253930-4c05-31dd-1b6c-968525494517", "CompetitiveTier":18, "PlayerIdentity":{"AccountLevel":142}},
+                    {"Subject":"ally", "TeamID":"Blue", "CharacterID":"320b2a48-4d9b-a075-30f1-1f93a9b638fa", "CompetitiveTier":12, "PlayerIdentity":{"AccountLevel":90}},
                     {"Subject":"enemy", "TeamID":"Red", "CharacterID":"add6443a-41bd-e414-f6ad-e58d267f4e95", "CompetitiveTier":27},
                     {"Subject":"hidden-secret", "TeamID":"Red", "CharacterID":"569fdd95-4d10-43ab-ca70-79becc718b46", "PlayerIdentity":{"Incognito":true}}
                 ]
@@ -535,6 +668,13 @@ mod tests {
             &names,
             &stats,
             Some("competitive"),
+            GamePhase::InMatch,
+            &HashMap::from([
+                ("me".into(), "party-a".into()),
+                ("ally".into(), "party-a".into()),
+                ("enemy".into(), "party-b".into()),
+                ("hidden-secret".into(), "party-c".into()),
+            ]),
         )
         .unwrap();
         let roster = context.roster.unwrap();
@@ -550,6 +690,16 @@ mod tests {
             DataAvailability::Available("Radiante".into())
         );
         assert_eq!(roster.players[3].identity, DataAvailability::Hidden);
+        assert_eq!(roster.players[0].level, DataAvailability::Available(142));
+        assert_eq!(roster.players[3].level, DataAvailability::Available(77));
+        assert_eq!(
+            roster.players[1].premade,
+            DataAvailability::Available("Grupo A".into())
+        );
+        assert_eq!(
+            roster.players[2].premade,
+            DataAvailability::Available("Solo".into())
+        );
         assert_eq!(
             roster.players[3].rank,
             DataAvailability::Available("Diamante 1".into())
@@ -581,6 +731,47 @@ mod tests {
         assert_eq!(roster.participants().count(), 2);
         assert_eq!(roster.allies().count(), 0);
         assert_eq!(roster.enemies().count(), 0);
+    }
+
+    #[test]
+    fn normalizes_agent_select_teammates_levels_and_premades() {
+        let names = HashMap::from([
+            ("me".to_owned(), "Norte#LAS".to_owned()),
+            ("ally".to_owned(), "Aliado#LAN".to_owned()),
+        ]);
+        let context = parse_live_match_with_names_and_stats(
+            &serde_json::json!({
+                "Mode":"/Game/GameModes/Bomb/BombGameMode.BombGameMode_C",
+                "MapID":"/Game/Maps/Ascent/Ascent",
+                "AllyTeam":{"Players":[
+                    {"Subject":"me", "CharacterID":"8e253930-4c05-31dd-1b6c-968525494517", "CompetitiveTier":21, "PlayerIdentity":{"AccountLevel":142}},
+                    {"Subject":"ally", "CharacterID":"", "CompetitiveTier":18, "PlayerIdentity":{"AccountLevel":90,"HideAccountLevel":true}}
+                ]}
+            }),
+            "me",
+            &names,
+            &HashMap::new(),
+            Some("competitive"),
+            GamePhase::AgentSelect,
+            &HashMap::from([
+                ("me".into(), "party-a".into()),
+                ("ally".into(), "party-a".into()),
+            ]),
+        )
+        .unwrap();
+        let roster = context.roster.unwrap();
+
+        assert_eq!(context.mode, "Competitivo");
+        assert_eq!(context.agent.as_deref(), Some("Omen"));
+        assert_eq!(roster.allies().count(), 2);
+        assert_eq!(roster.participants().count(), 0);
+        assert_eq!(roster.players[0].level, DataAvailability::Available(142));
+        assert_eq!(roster.players[1].level, DataAvailability::Hidden);
+        assert_eq!(
+            roster.players[0].premade,
+            DataAvailability::Available("Grupo A".into())
+        );
+        assert_eq!(roster.players[1].agent, DataAvailability::NotAvailable);
     }
 
     #[test]
@@ -670,17 +861,15 @@ mod tests {
             entitlement_token: "entitlement".into(),
             own_puuid: "me".into(),
             queue: Some("competitive".into()),
+            phase: GamePhase::InMatch,
+            party_ids: HashMap::new(),
         };
+        let players = serde_json::json!([
+            {"Subject":"visible", "PlayerIdentity":{"Incognito":false}},
+            {"Subject":"hidden", "PlayerIdentity":{"Incognito":true}}
+        ]);
         let names = source
-            .fetch_visible_names(
-                &request,
-                &serde_json::json!({
-                    "Players":[
-                        {"Subject":"visible", "PlayerIdentity":{"Incognito":false}},
-                        {"Subject":"hidden", "PlayerIdentity":{"Incognito":true}}
-                    ]
-                }),
-            )
+            .fetch_visible_names(&request, players.as_array().unwrap())
             .unwrap();
 
         assert_eq!(names.get("visible").map(String::as_str), Some("Nombre#LAS"));

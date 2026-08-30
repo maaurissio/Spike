@@ -18,17 +18,21 @@ pub(crate) fn visible_names(payload: &Value) -> HashMap<String, String> {
             if subject.is_empty() {
                 return None;
             }
-            let display = entry
-                .get("DisplayName")
-                .and_then(Value::as_str)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned)
-                .or_else(|| {
-                    let game_name = entry.get("GameName").and_then(Value::as_str)?;
-                    let tag_line = entry.get("TagLine").and_then(Value::as_str)?;
-                    (!game_name.is_empty() && !tag_line.is_empty())
-                        .then(|| format!("{game_name}#{tag_line}"))
-                })?;
+            // GameName + TagLine es el Riot ID canónico necesario para abrir
+            // Tracker.gg. DisplayName puede llegar sin `#tag` en algunas fases.
+            let display = (|| {
+                let game_name = entry.get("GameName").and_then(Value::as_str)?;
+                let tag_line = entry.get("TagLine").and_then(Value::as_str)?;
+                (!game_name.is_empty() && !tag_line.is_empty())
+                    .then(|| format!("{game_name}#{tag_line}"))
+            })()
+            .or_else(|| {
+                entry
+                    .get("DisplayName")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+            })?;
             Some((subject.to_owned(), display))
         })
         .collect()
@@ -64,6 +68,18 @@ mod tests {
         assert_eq!(names.get("one").map(String::as_str), Some("Visible#LAN"));
         assert_eq!(names.get("two").map(String::as_str), Some("Segundo#LAS"));
         assert_eq!(names.len(), 2);
+    }
+
+    #[test]
+    fn prefers_canonical_riot_id_when_display_name_has_no_tag() {
+        let names = visible_names(&serde_json::json!([{
+            "Subject":"one",
+            "DisplayName":"Visible",
+            "GameName":"Visible",
+            "TagLine":"LAS"
+        }]));
+
+        assert_eq!(names.get("one").map(String::as_str), Some("Visible#LAS"));
     }
 
     #[test]

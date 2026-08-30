@@ -48,7 +48,7 @@
 lockfile → Basic riot:{password} (self-signed) → /entitlements/v1/token → GLZ/PD
 ```
 
-Val-local-api (`ccjakje/val-local-api`, MIT, final commit 2026-02-27) es un wrapper Rust ya listo: auto-lockfile, SSL bypass, `ValorantClient::connect()`, `pregame_player/match`, `coregame_player/match`, `match_history/details/mmr/names`, y **LogWatcher SSE** (`round_ended`, `bomb_interaction`, `player_died`). VTracker puede reusar su patrón o su código como librería (dual: Rust lib + server `127.0.0.1:9922`).
+Val-local-api (`ccjakje/val-local-api`) sirve como referencia comunitaria para lockfile, Pre-Game, Current Game, historial y detalles. Sus eventos derivados de logs no se consideran una garantía oficial para el producto ni sustituyen una fuente live aprobada.
 
 **Roadmap Vantage validado:** CLI → Tauri GUI → Agent Select overlay (auto) → In-game overlay (keybind) → Tab overlay per-round (solo al mantener TAB) → Post-game summary (ACS, KAST, KDA, HS%, MVP). El **Tab overlay per-round** confirma el requisito del usuario: K kills / HS% / Damage por ronda, configurable en `config.toml` (`tab_overlay.show = ["kills","hs_percent","damage"]`).
 
@@ -60,7 +60,7 @@ Val-local-api (`ccjakje/val-local-api`, MIT, final commit 2026-02-27) es un wrap
 | Rosters + premade | GLZ Pre-Game/Current Game (Tracker/Blitz) / Instalock QR | **GLZ directo** con tokens locales (ver `SPEC-LOCAL-API.md`) |
 | Ranks privados | Tracker.gg no los ve web; Instalock sí vía cliente | **Sí, vía cliente** |
 | Historial/post-partida | PD match-history/details (todos) | **PD** con caché corta en RAM (moka/cache-rs) |
-| Rondas por ronda | Vantage Tab overlay (SSE `round_ended`) | **LogWatcher SSE** + `match-details` (ver `SPEC-ROUNDS.md`) |
+| Rondas por ronda | Tracker/Overwolf GEP (`round_number`, `kill`, `death`) | **Proveedor live pendiente** + `match-details` postpartida (ver `SPEC-ROUNDS.md`) |
 
 **Resultado:** VTracker replica la funcionalidad **core** de los 240M-usuarios sin su peso: <10 MB RAM, <1% CPU idle (objetivos en `docs/PERFORMANCE.md`), binario <5 MB, sin Overwolf, sin key.
 

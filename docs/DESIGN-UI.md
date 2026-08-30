@@ -24,13 +24,14 @@
 |---|---|---|
 | **LIVE MATCH** | Partida en curso: rosters + timeline de rondas + sesión | Este spec |
 | **PostMatch** | Resumen completo al terminar: timeline íntegro + stats finales | Este spec |
-| **Dashboard** | Perfil propio + estado del cliente + rendimiento reciente | Implementado; salud detallada sigue en `doctor` |
+| **Resumen** | Mi perfil + estado de partida + rendimiento reciente | Implementado; salud detallada permanece exclusivamente en `doctor` |
+| **Agent Select** | Compañeros disponibles + rango, nivel, premade y cinco Ranked | Implementado; rivales aparecen al terminar la selección |
 | **History** | Resultado, score, mapa, agente, K/D/A, modo y antigüedad | Implementado; filtros pendientes |
 | **Settings** | Intervalo, registro y tema con lenguaje de usuario | Base implementada; autostart/perfil/TTL pendientes |
 
 La TUI Rust acepta mouse opcional para pestañas, selección de historial/ajustes y rueda. No depende de él: todos los flujos conservan atajos de teclado y la captura se deshabilita al salir.
 
-El binario sin argumentos abre la TUI. Durante el arranque se muestra una portada sin pestañas: primero comunica la búsqueda de Riot Client y luego la carga del perfil/rango. En cuanto el perfil queda disponible —o falla de forma recuperable— aparece el Panel; el historial continúa cargando en segundo plano. Fuera de partida, el Panel prioriza rango, nivel, barra de RR y rendimiento reciente antes del estado de partida. `watch` queda como monitor textual explícito.
+El binario sin argumentos abre la TUI. Durante el arranque se muestra una portada sin pestañas: primero comunica la búsqueda de Riot Client y luego la carga del perfil/rango. En cuanto el perfil queda disponible —o falla de forma recuperable— aparece Resumen; el historial continúa cargando en segundo plano. Fuera de partida, Resumen prioriza rango, nivel, barra de RR y rendimiento reciente antes del estado de partida. Las fuentes y el diagnóstico interno no aparecen en estas vistas; `doctor` y `watch` conservan esa información técnica.
 
 ## 2. Vista LIVE MATCH — composición
 
@@ -85,7 +86,7 @@ Reglas:
 Al terminar la partida (detectado por WebSocket local / fin de core-game):
 1. Polling de `match-details` → datos completos garantizados.
 2. Timeline a espacio completo (todos los bloques navegables), seleccionable por jugador.
-3. Stats finales: scoreboard oficial (ADR-007) — K/D/A, ACS si la fuente lo entrega, HS% si hay campos.
+3. Stats finales: scoreboard oficial (ADR-007) — K/D/A, ACS, ADR y HS% cuando la fuente entrega rondas, daño e impactos.
 4. Resultado de partida + score de rondas.
 
 ## 5. Navegación (borrador)
@@ -106,7 +107,7 @@ Los atajos finales se confirman al implementar P5; configurables después del MV
 | Estado | Muestra |
 |---|---|
 | Inicio sin observación | Portada centrada: búsqueda de Riot Client; todavía no muestra pestañas ni datos vacíos |
-| Perfil inicial | La misma portada informa que carga perfil/rango; el historial no bloquea la entrada al Panel |
+| Perfil inicial | La misma portada informa que carga perfil/rango; el historial no bloquea la entrada a Resumen |
 | Carga posterior | Mensaje por sección independiente; roster e historial cargan por separado |
 | Sin datos de ronda aún | Timeline vacío con `R1 R2…` atenuadas |
 | Provider falló | Último dato conocido + aviso recuperable en la barra inferior (nunca pantalla vacía) |

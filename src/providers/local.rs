@@ -5,6 +5,7 @@
 //! observar metadatos de eventos; sus payloads se descartan.
 
 use std::{
+    collections::HashMap,
     net::TcpStream,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -41,6 +42,7 @@ const HELP_ENDPOINT: &str = "/help";
 const ENTITLEMENTS_ENDPOINT: &str = "/entitlements/v1/token";
 const EXTERNAL_SESSIONS_ENDPOINT: &str = "/product-session/v1/external-sessions";
 const REGION_LOCALE_ENDPOINT: &str = "/riotclient/region-locale";
+const PRESENCES_ENDPOINT: &str = "/chat/v4/presences";
 const CLIENT_PLATFORM: &str = "ew0KCSJwbGF0Zm9ybVR5cGUiOiAiUEMiLA0KCSJwbGF0Zm9ybU9TIjogIldpbmRvd3MiLA0KCSJwbGF0Zm9ybU9TVmVyc2lvbiI6ICIxMC4wLjE5MDQyLjEuMjU2LjY0Yml0IiwNCgkicGxhdGZvcm1DaGlwc2V0IjogIlVua25vd24iDQp9";
 const WAMP_SUBSCRIBE: u8 = 5;
 const WAMP_EVENT: u8 = 8;
@@ -504,7 +506,18 @@ impl LocalClientSource {
         })
     }
 
-    pub(crate) fn live_match_request(&self) -> Result<LiveMatchRequest, ProviderError> {
+    pub(crate) fn live_match_request(
+        &self,
+        phase: GamePhase,
+    ) -> Result<LiveMatchRequest, ProviderError> {
+        if !matches!(
+            phase,
+            GamePhase::PreGame | GamePhase::AgentSelect | GamePhase::InMatch
+        ) {
+            return Err(ProviderError::Parse(
+                "la fase no tiene un roster consultable".into(),
+            ));
+        }
         let match_id = self
             .event_match_id()
             .ok_or_else(|| ProviderError::NotConfigured("no hay partida reciente".into()))?;
@@ -519,6 +532,11 @@ impl LocalClientSource {
             puuid_from_access_token(&tokens.access_token).as_deref(),
         )?;
         let queue = self.current_queue(&session, &tokens).ok().flatten();
+        let party_ids = self
+            .json_from(&lockfile, PRESENCES_ENDPOINT)
+            .ok()
+            .map(|payload| presence_party_ids(&payload))
+            .unwrap_or_default();
         Ok(LiveMatchRequest {
             match_id,
             region: session.region,
@@ -528,6 +546,8 @@ impl LocalClientSource {
             entitlement_token: tokens.entitlement_token,
             own_puuid: session.own_puuid,
             queue,
+            phase,
+            party_ids,
         })
     }
 
@@ -836,6 +856,44 @@ fn puuid_from_access_token(access_token: &str) -> Option<String> {
         .ok()?;
     let claims: Value = serde_json::from_slice(&bytes).ok()?;
     claims.get("sub")?.as_str().map(ToOwned::to_owned)
+}
+
+/// Extrae únicamente la relación jugador/party de Presence. Los PartyID se
+/// mantienen en la solicitud efímera y se sustituyen por Grupo A/B antes de la
+/// TUI; nunca se registran ni se persisten.
+fn presence_party_ids(payload: &Value) -> HashMap<String, String> {
+    payload
+        .get("presences")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|presence| {
+            let subject = presence
+                .get("puuid")
+                .or_else(|| presence.get("PUUID"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())?;
+            let private = presence.get("private")?.as_str()?;
+            let decoded = serde_json::from_str::<Value>(private).ok().or_else(|| {
+                STANDARD
+                    .decode(private)
+                    .or_else(|_| URL_SAFE.decode(private))
+                    .or_else(|_| URL_SAFE_NO_PAD.decode(private))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            })?;
+            let party = ["partyId", "partyID", "PartyID"]
+                .iter()
+                .find_map(|field| decoded.get(*field).and_then(Value::as_str))
+                .filter(|value| {
+                    !value.is_empty()
+                        && value
+                            .chars()
+                            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+                })?;
+            Some((subject.to_owned(), party.to_owned()))
+        })
+        .collect()
 }
 
 /// Acepta `-clave=valor` y el formato equivalente `-clave valor`. El valor
@@ -1364,6 +1422,22 @@ mod tests {
     #[test]
     fn rejects_malformed_access_token_without_exposing_it() {
         assert_eq!(puuid_from_access_token("not-a-jwt"), None);
+    }
+
+    #[test]
+    fn extracts_ephemeral_party_relations_from_presence_private_data() {
+        let private = STANDARD.encode(r#"{"partyId":"party-a","partySize":2}"#);
+        let parties = presence_party_ids(&serde_json::json!({
+            "presences": [
+                {"puuid":"one", "private": private},
+                {"puuid":"two", "private":"{\"partyId\":\"party-a\"}"},
+                {"puuid":"missing", "private":"not-json"}
+            ]
+        }));
+
+        assert_eq!(parties.get("one").map(String::as_str), Some("party-a"));
+        assert_eq!(parties.get("two").map(String::as_str), Some("party-a"));
+        assert!(!parties.contains_key("missing"));
     }
 
     #[test]

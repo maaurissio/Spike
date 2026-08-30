@@ -104,3 +104,33 @@
 **Decisión:** usar Noche como tema inicial, colorear rango/forma/métricas, separar columnas, mostrar identidades `Incognito` como `Jugador N` y habilitar `[↗]`/`g` únicamente para Riot IDs públicos resueltos. La URL usa dominio Tracker.gg fijo y un segmento codificado; nunca se construye para identidades ocultas o ausentes. La portada ASCII con nombre y versión queda aplazada por petición del usuario.
 
 **Consecuencias:** el roster real admite selección y detalle como la demo sin desanonimizar jugadores. Abrir un navegador siempre requiere la acción explícita del usuario y no modifica ni automatiza VALORANT.
+
+## ADR-017 — Resumen, métricas Ranked y color competitivo (2026-08-29)
+
+**Contexto:** las etiquetas Panel/Perfil propio y el bloque Fuentes aún parecían una pantalla técnica. El historial no mostraba HS% ni un detalle suficiente, Ajustes era difícil de interpretar y todos los rangos heredaban el violeta de Diamante. La tabla de tiers actual distingue nueve familias y Ascendente es verde.
+
+**Decisión:** renombrar las vistas a Resumen y Mi perfil, retirar Fuentes de las vistas principales y mantener el diagnóstico en `doctor`/`watch`. Las cinco Ranked agregan HS% por impactos confirmados. El detalle seleccionado muestra marcador, mapa, agente, antigüedad, K/D/A, K/D, KDA, HS%, ACS, ADR, rondas y totales cuando la respuesta final contiene los campos necesarios; los ausentes permanecen `—`. Aplicar color por nombre de familia competitiva y conservar siempre la etiqueta textual.
+
+**Paleta:** Hierro `#868986`, Bronce `#A5855D`, Plata `#BBC2C2`, Oro `#ECCF56`, Platino `#59A9B6`, Diamante `#B489C4`, Ascendente `#6AE2AF`, Inmortal `#BB3D65` y Radiante `#FFFFAA`. El tema Claro usa variantes más oscuras de la misma familia para mantener contraste. Riot confirma que los colores distinguen los rangos y que Ascendente se sitúa entre Diamante e Inmortal; los valores se contrastaron con el catálogo comunitario de assets enlazado en `docs/mockups/REFERENCES.md`.
+
+**Tipografía:** Ratatui controla celdas, color y atributos, no la fuente del emulador. VTracker no modifica perfiles externos del terminal. Ajustes informa que la tipografía se configura en Windows Terminal y recomienda Cascadia Mono, conservando compatibilidad con cualquier fuente monoespaciada capaz de representar los glifos usados.
+
+**Consecuencias:** Resumen queda orientado al jugador, el color de Ascendente deja de confundirse con Diamante y el historial diferencia promedios por ronda de puntos/daño totales. Ajustes se agrupa en Apariencia, Actualización, Cambios y Privacidad; mouse y teclado siguen siendo equivalentes.
+
+## ADR-018 — Agent Select, premades y eventos propios por ronda (2026-08-29)
+
+**Contexto:** Current Game comienza después de la selección, por lo que el proveedor anterior no cargaba ningún roster en Agent Select. El usuario también requiere nivel, grupos premade y kills/muertes propias por ronda como Tracker.gg. La página de Tracker confirma que su app está construida sobre Overwolf; la documentación de Overwolf para VALORANT ofrece `round_number`, `round_phase`, `round_report`, scoreboard, `kill` y `death` en tiempo real. Esos eventos pertenecen a GEP y no a la Local Client API usada por el binario Rust.
+
+**Decisión:** durante `PreGame/AgentSelect`, consultar de solo lectura `pregame/v1/matches/{id}`, enriquecer únicamente los compañeros expuestos por el cliente y aclarar que los rivales aparecen al entrar a Current Game. Mostrar `PlayerIdentity.AccountLevel` salvo `HideAccountLevel`. Obtener relaciones de party desde Presence, convertirlas en `Grupo A/B` o `Solo` y descartar PartyID antes del modelo de pantalla. Name Service prefiere `GameName#TagLine` para que Tracker.gg funcione igual en Ranked y Deathmatch.
+
+**Rondas live:** no atribuir a Local Client datos que no entrega. La vía investigada es una capability futura `LiveRoundEventSource` respaldada por un bridge o paquete Overwolf registrado. Debe acumular solo los eventos propios, tomar snapshots en la frontera de ronda y degradar a `—` si GEP no está disponible. Continúan prohibidas lectura de memoria, inyección, simulación de input y OCR por defecto.
+
+**Consecuencias:** Agent Select ya puede mostrar hasta cinco compañeros, agentes elegidos, rangos, nivel visible, premades y cinco Ranked. No se inventan rivales durante la selección. El timeline live permanece pendiente hasta resolver la integración y distribución Overwolf; el resumen postpartida oficial sigue disponible mientras tanto.
+
+## ADR-019 — Prioridad de nivel y presentación de premades (2026-08-29)
+
+**Contexto:** Current Game llegó a entregar `AccountLevel: 0` para el jugador autenticado y omitió el nivel de varias filas. Repetir `Grupo A` en cada jugador tampoco comunicaba visualmente si era dúo, trío o stack. Tracker Network explica que puede mostrar un nivel oculto en el juego cuando el perfil de Tracker sigue público, porque dispone de una fuente externa persistente que VTracker no tiene.
+
+**Decisión:** Account XP propio es autoritativo sobre el roster y cero nunca es un nivel válido. Para terceros, `players[].accountLevel` de la Ranked más reciente ya consultada sirve como respaldo si Current Game omite el campo; `HideAccountLevel` explícito prevalece y se presenta como `priv.`. No se consulta ni raspa Tracker. Los PartyID efímeros siguen descartándose; la TUI antepone un `•` del mismo color al nombre de cada integrante de una premade y reserva `Grupo A · N jugadores` para el detalle.
+
+**Consecuencias:** la fila propia no vuelve a mostrar nivel cero, aumenta la cobertura de niveles sin solicitudes adicionales y las premades se reconocen sin una columna repetitiva. Los jugadores en solitario no llevan marcador. Un nivel expresamente oculto o nunca observado continúa como privado/no disponible, sin inventarse.

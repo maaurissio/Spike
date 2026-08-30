@@ -225,9 +225,9 @@ impl Sources {
             return Err(());
         }
         match phase {
-            GamePhase::InMatch => self
+            GamePhase::PreGame | GamePhase::AgentSelect | GamePhase::InMatch => self
                 .local
-                .live_match_request()
+                .live_match_request(phase)
                 .and_then(|request| self.live.fetch(&request))
                 .map(Context::Live)
                 .map_err(|_| ()),
@@ -301,6 +301,7 @@ impl Sources {
                                         map: totals.map,
                                         agent: totals.agent,
                                         outcome: totals.stats.outcome,
+                                        rounds_played: totals.stats.rounds_played,
                                         stats: totals.stats.stats,
                                         own_score: totals.own_score,
                                         opponent_score: totals.opponent_score,

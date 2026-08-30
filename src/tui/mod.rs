@@ -42,7 +42,7 @@ use settings::Settings;
 use view::render;
 use worker::{Context, Reply, Request, Worker};
 
-const TABS: [&str; 5] = ["Panel", "Partida", "Perfil", "Historial", "Ajustes"];
+const TABS: [&str; 5] = ["Resumen", "Partida", "Mi perfil", "Historial", "Ajustes"];
 const INPUT_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -50,6 +50,7 @@ struct HistoryDetails {
     map: String,
     agent: String,
     outcome: MatchOutcome,
+    rounds_played: u32,
     stats: PlayerMatchStats,
     own_score: Option<u32>,
     opponent_score: Option<u32>,
@@ -382,7 +383,7 @@ impl App {
             return;
         }
         let connected = self.state.as_ref().is_some_and(|state| state.client_found);
-        // El perfil es barato y alimenta Panel/Perfil en cualquier fase; no
+        // El perfil es barato y alimenta Resumen/Mi perfil en cualquier fase; no
         // debe quedar esperando detrás del enriquecimiento completo del roster.
         if connected
             && !self.profile_pending
@@ -396,8 +397,12 @@ impl App {
         }
         if !self.context_pending
             && !self.context_requested
-            && let Some(phase @ (GamePhase::InMatch | GamePhase::PostMatch)) =
-                self.state.as_ref().map(|info| info.phase)
+            && let Some(
+                phase @ (GamePhase::PreGame
+                | GamePhase::AgentSelect
+                | GamePhase::InMatch
+                | GamePhase::PostMatch),
+            ) = self.state.as_ref().map(|info| info.phase)
             && worker.submit(Request::Context {
                 phase,
                 generation: self.generation,
@@ -652,12 +657,11 @@ impl App {
                 self.dirty = true;
             }
         } else if self.selected_tab == 4 {
-            let selected = match line {
-                1 => Some(0),
-                3 => Some(1),
-                5 => Some(2),
-                _ => None,
-            };
+            let screen = view::content(self, width.saturating_sub(2));
+            let selected = screen
+                .setting_rows
+                .iter()
+                .position(|row| *row == Some(line));
             if let Some(selected) = selected {
                 self.settings.selected = selected;
                 self.follow_selection = true;
@@ -865,6 +869,8 @@ mod tests {
             identity,
             agent: DataAvailability::NotAvailable,
             rank: DataAvailability::NotAvailable,
+            level: DataAvailability::NotAvailable,
+            premade: DataAvailability::NotAvailable,
             stats: DataAvailability::NotAvailable,
         };
 
@@ -899,7 +905,7 @@ mod tests {
         assert_eq!(app.history_index, 1);
 
         app.select_tab(4);
-        app.mouse(click(5, 8), 80);
+        app.mouse(click(5, 11), 80);
         assert_eq!(app.settings.selected, 2);
 
         app.mouse(
@@ -937,7 +943,7 @@ mod tests {
         app.history = Some(vec![history_item(0)]);
 
         let text = history_content(&app);
-        assert!(text.contains("Competitivo"));
+        assert!(text.contains("HISTORIAL RANKED"));
         assert!(!text.contains("match"));
     }
 
@@ -1025,7 +1031,7 @@ mod tests {
             epoch: app.epoch,
             data: Err(()),
         });
-        assert!(history_content(&app).contains("Competitivo"));
+        assert!(history_content(&app).contains("HISTORIAL RANKED"));
         assert!(history_content(&app).contains("Última consulta"));
         app.update_state(phase_info(GamePhase::ClientClosed));
         assert!(app.completed_match.is_none());

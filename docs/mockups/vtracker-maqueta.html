@@ -1036,7 +1036,7 @@ html&gt;body{padding:0}&lt;/style&gt;
     {map:&#x27;Haven&#x27;,agent:&#x27;Omen&#x27;,score:&#x27;8:13&#x27;,win:false,k:14,d:18,a:6,rr:-16,acs:186},
     {map:&#x27;Bind&#x27;,agent:&#x27;Sova&#x27;,score:&#x27;13:11&#x27;,win:true,k:18,d:19,a:10,rr:17,acs:209}
   ];
-  const tabs=[&#x27;Panel&#x27;,&#x27;Partida&#x27;,&#x27;Perfil&#x27;,&#x27;Historial&#x27;,&#x27;Ajustes&#x27;];
+  const tabs=[&#x27;Resumen&#x27;,&#x27;Partida&#x27;,&#x27;Mi perfil&#x27;,&#x27;Historial&#x27;,&#x27;Ajustes&#x27;];
   const themes=[[&#x27;system&#x27;,&#x27;Sistema&#x27;],[&#x27;dark&#x27;,&#x27;Noche&#x27;],[&#x27;light&#x27;,&#x27;Claro&#x27;],[&#x27;mono&#x27;,&#x27;Sin color&#x27;]];
   let view=1,selected=0,historyIndex=0,detail=false,trackerPreview=false,post=false,interval=3,logs=false,theme=0;
   const plain=markup=&gt;markup.replace(/&lt;[^&gt;]*&gt;/g,&#x27;&#x27;);
@@ -1103,7 +1103,7 @@ html&gt;body{padding:0}&lt;/style&gt;
       row(&#x27; ACS         &#x27;+match.acs);row(&#x27; Cambio RR   &#x27;+rr(match.rr));row();
       row(button(&#x27; &#x27;+key(&#x27;[p]&#x27;)+&#x27; Volver a la partida en curso&#x27;,&#x27;post&#x27;));
     }else if(view===0){
-      section(&#x27;NORTE&#x27;,&#x27;cyan&#x27;,&#x27;PERFIL PROPIO&#x27;);
+      section(&#x27;NORTE&#x27;,&#x27;cyan&#x27;,&#x27;MI PERFIL&#x27;);
       row(&#x27; &#x27;+rank(&#x27;DIAMANTE 2&#x27;)+&#x27; / Nivel 142&#x27;);
       row(&#x27; RR &#x27;+paint(&#x27;██████&#x27;,&#x27;purple&#x27;)+paint(&#x27;░░░░&#x27;,&#x27;border&#x27;)+&#x27; 64 / 100&#x27;);row();
       section(&#x27;SESIÓN DE HOY&#x27;);
@@ -1111,13 +1111,9 @@ html&gt;body{padding:0}&lt;/style&gt;
       row(&#x27; 59 kills / 52 muertes / 24 asist.&#x27;);row();
       section(&#x27;PARTIDA EN CURSO&#x27;,&#x27;green&#x27;);
       row(&#x27; Ascent / Competitivo / Sova&#x27;);row(&#x27; 10 jugadores · &#x27;+paint(&#x27;1 perfil oculto&#x27;,&#x27;amber&#x27;));
-      row(button(&#x27; &#x27;+key(&#x27;[Enter]&#x27;)+&#x27; Abrir partida&#x27;,&#x27;match&#x27;));row();
-      section(&#x27;FUENTES · SIMULACIÓN&#x27;);
-      row(&#x27; Cliente local      &#x27;+paint(&#x27;● conectado&#x27;,&#x27;green&#x27;));
-      row(&#x27; Contexto de partida  &#x27;+paint(&#x27;disponible&#x27;,&#x27;green&#x27;));
-      row(&#x27; Datos de jugadores   &#x27;+paint(&#x27;9/10&#x27;,&#x27;amber&#x27;));
+      row(button(&#x27; &#x27;+key(&#x27;[Enter]&#x27;)+&#x27; Abrir partida&#x27;,&#x27;match&#x27;));
     }else if(view===2){
-      section(&#x27;NORTE / PERFIL PROPIO&#x27;);row(&#x27; &#x27;+rank(&#x27;DIAMANTE 2&#x27;)+&#x27; · 64 RR · Nivel 142&#x27;);
+      section(&#x27;NORTE / MI PERFIL&#x27;);row(&#x27; &#x27;+rank(&#x27;DIAMANTE 2&#x27;)+&#x27; · 64 RR · Nivel 142&#x27;);
       row(paint(&#x27; Competitivo / últimas 20 partidas&#x27;,&#x27;dim&#x27;));row();
       row(&#x27; K/D &#x27;+key(&#x27;1.18&#x27;)+&#x27;   WR &#x27;+paint(&#x27;55%&#x27;,&#x27;green&#x27;)+&#x27;   HS &#x27;+key(&#x27;26%&#x27;));
       row(&#x27; Victorias &#x27;+paint(&#x27;███████████&#x27;,&#x27;green&#x27;)+paint(&#x27;░░░░░░░░░&#x27;,&#x27;border&#x27;));

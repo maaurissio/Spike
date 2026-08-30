@@ -46,7 +46,7 @@
     {map:'Haven',agent:'Omen',score:'8:13',win:false,k:14,d:18,a:6,rr:-16,acs:186},
     {map:'Bind',agent:'Sova',score:'13:11',win:true,k:18,d:19,a:10,rr:17,acs:209}
   ];
-  const tabs=['Panel','Partida','Perfil','Historial','Ajustes'];
+  const tabs=['Resumen','Partida','Mi perfil','Historial','Ajustes'];
   const themes=[['system','Sistema'],['dark','Noche'],['light','Claro'],['mono','Sin color']];
   let view=1,selected=0,historyIndex=0,detail=false,trackerPreview=false,post=false,interval=3,logs=false,theme=0;
   const plain=markup=>markup.replace(/<[^>]*>/g,'');
@@ -113,7 +113,7 @@
       row(' ACS         '+match.acs);row(' Cambio RR   '+rr(match.rr));row();
       row(button(' '+key('[p]')+' Volver a la partida en curso','post'));
     }else if(view===0){
-      section('NORTE','cyan','PERFIL PROPIO');
+      section('NORTE','cyan','MI PERFIL');
       row(' '+rank('DIAMANTE 2')+' / Nivel 142');
       row(' RR '+paint('██████','purple')+paint('░░░░','border')+' 64 / 100');row();
       section('SESIÓN DE HOY');
@@ -121,13 +121,9 @@
       row(' 59 kills / 52 muertes / 24 asist.');row();
       section('PARTIDA EN CURSO','green');
       row(' Ascent / Competitivo / Sova');row(' 10 jugadores · '+paint('1 perfil oculto','amber'));
-      row(button(' '+key('[Enter]')+' Abrir partida','match'));row();
-      section('FUENTES · SIMULACIÓN');
-      row(' Cliente local      '+paint('● conectado','green'));
-      row(' Contexto de partida  '+paint('disponible','green'));
-      row(' Datos de jugadores   '+paint('9/10','amber'));
+      row(button(' '+key('[Enter]')+' Abrir partida','match'));
     }else if(view===2){
-      section('NORTE / PERFIL PROPIO');row(' '+rank('DIAMANTE 2')+' · 64 RR · Nivel 142');
+      section('NORTE / MI PERFIL');row(' '+rank('DIAMANTE 2')+' · 64 RR · Nivel 142');
       row(paint(' Competitivo / últimas 20 partidas','dim'));row();
       row(' K/D '+key('1.18')+'   WR '+paint('55%','green')+'   HS '+key('26%'));
       row(' Victorias '+paint('███████████','green')+paint('░░░░░░░░░','border'));

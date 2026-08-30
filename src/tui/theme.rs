@@ -2,6 +2,7 @@ use crate::config::Theme;
 use ratatui::style::{Color, Modifier, Style};
 
 pub(super) struct Palette {
+    theme: Theme,
     pub base: Style,
     pub dim: Style,
     pub border: Style,
@@ -70,6 +71,7 @@ impl Palette {
         let base = Style::default().fg(fg).bg(bg);
         if theme == Theme::Mono {
             return Self {
+                theme,
                 base,
                 dim: base,
                 border: base,
@@ -82,6 +84,7 @@ impl Palette {
             };
         }
         Self {
+            theme,
             base,
             dim: base.fg(dim),
             border: base.fg(border),
@@ -96,5 +99,89 @@ impl Palette {
             rank: base.fg(purple),
             pending: base.fg(amber),
         }
+    }
+
+    /// Color por familia competitiva. Los tonos del tema oscuro corresponden
+    /// al catálogo visual vigente; Claro usa variantes más oscuras para
+    /// conservar contraste sobre fondo blanco. El rango nunca depende solo del
+    /// color: su nombre permanece visible.
+    pub fn rank_style(&self, label: &str) -> Style {
+        if self.theme == Theme::Mono {
+            return self.base;
+        }
+        let label = label.to_lowercase();
+        let family = label.split_whitespace().next().unwrap_or_default();
+        let dark = self.theme == Theme::Light;
+        let color = match family {
+            "hierro" => Color::Rgb(134, 137, 134),
+            "bronce" if dark => Color::Rgb(124, 85, 34),
+            "bronce" => Color::Rgb(165, 133, 93),
+            "plata" if dark => Color::Rgb(89, 101, 105),
+            "plata" => Color::Rgb(187, 194, 194),
+            "oro" if dark => Color::Rgb(122, 97, 0),
+            "oro" => Color::Rgb(236, 207, 86),
+            "platino" if dark => Color::Rgb(25, 111, 120),
+            "platino" => Color::Rgb(89, 169, 182),
+            "diamante" if dark => Color::Rgb(112, 67, 161),
+            "diamante" => Color::Rgb(180, 137, 196),
+            "ascendente" if dark => Color::Rgb(28, 114, 69),
+            "ascendente" => Color::Rgb(106, 226, 175),
+            "inmortal" if dark => Color::Rgb(148, 40, 72),
+            "inmortal" => Color::Rgb(187, 61, 101),
+            "radiante" if dark => Color::Rgb(138, 106, 0),
+            "radiante" => Color::Rgb(255, 255, 170),
+            _ => return self.rank,
+        };
+        self.base.fg(color).add_modifier(Modifier::BOLD)
+    }
+
+    /// Cada premade conserva un color estable. La tabla usa este color en el
+    /// punto previo al nombre y el detalle mantiene la etiqueta textual.
+    pub fn premade_style(&self, label: &str) -> Style {
+        if self.theme == Theme::Mono {
+            return self.base;
+        }
+        match label.strip_prefix("Grupo ").unwrap_or(label) {
+            "A" => self.focus,
+            "B" => self.pending,
+            "C" => self.rank,
+            "D" => self.good,
+            _ => self.dim,
+        }
+        .add_modifier(Modifier::BOLD)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rank_families_use_distinct_catalog_colors() {
+        let palette = Palette::new(Theme::Dark);
+
+        assert_eq!(
+            palette.rank_style("Ascendente 2").fg,
+            Some(Color::Rgb(106, 226, 175))
+        );
+        assert_eq!(
+            palette.rank_style("Diamante 2").fg,
+            Some(Color::Rgb(180, 137, 196))
+        );
+        assert_ne!(
+            palette.rank_style("Ascendente 2").fg,
+            palette.rank_style("Diamante 2").fg
+        );
+    }
+
+    #[test]
+    fn premade_groups_keep_distinct_semantic_colors() {
+        let palette = Palette::new(Theme::Dark);
+
+        assert_ne!(
+            palette.premade_style("Grupo A").fg,
+            palette.premade_style("Grupo B").fg
+        );
+        assert_eq!(palette.premade_style("Solo").fg, palette.dim.fg);
     }
 }

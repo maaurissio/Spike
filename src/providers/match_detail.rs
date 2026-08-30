@@ -256,6 +256,7 @@ fn parse_match_summary(
         .get("stats")
         .and_then(Value::as_object)
         .ok_or_else(|| parse_error("stats propias ausentes en match-details"))?;
+    let combat = own_combat_totals(payload, own_puuid);
     Ok(MatchSummary {
         mode,
         stats: PlayerMatchStats {
@@ -263,10 +264,10 @@ fn parse_match_summary(
             deaths: required_u32(stats, "deaths")?,
             assists: required_u32(stats, "assists")?,
             combat_score: optional_u32(stats, "score")?,
-            damage: None,
-            headshots: None,
-            bodyshots: None,
-            legshots: None,
+            damage: combat.damage,
+            headshots: combat.headshots,
+            bodyshots: combat.bodyshots,
+            legshots: combat.legshots,
         },
     })
 }
@@ -324,6 +325,7 @@ fn parse_own_match_totals(
             }
         })
         .unwrap_or(crate::models::MatchOutcome::Unknown);
+    let combat = own_combat_totals(payload, own_puuid);
     Ok(OwnMatchTotals {
         stats: crate::models::PlayerMatch {
             outcome,
@@ -333,10 +335,10 @@ fn parse_own_match_totals(
                 deaths: required_u32(stats, "deaths")?,
                 assists: required_u32(stats, "assists")?,
                 combat_score: optional_u32(stats, "score")?,
-                damage: None,
-                headshots: None,
-                bodyshots: None,
-                legshots: None,
+                damage: combat.damage,
+                headshots: combat.headshots,
+                bodyshots: combat.bodyshots,
+                legshots: combat.legshots,
             },
         },
         map,
@@ -350,6 +352,80 @@ fn parse_own_match_totals(
             .and_then(Value::as_u64)
             .and_then(|value| u32::try_from(value).ok()),
     })
+}
+
+#[derive(Default)]
+struct OwnCombatTotals {
+    damage: Option<u32>,
+    headshots: Option<u32>,
+    bodyshots: Option<u32>,
+    legshots: Option<u32>,
+}
+
+/// Suma únicamente el daño saliente del jugador autenticado. Las respuestas
+/// Ranked incluyen estos impactos por ronda; si el proveedor omite los campos,
+/// se conserva `None` para no mostrar un HS% parcial o inventado.
+fn own_combat_totals(payload: &Value, own_puuid: &str) -> OwnCombatTotals {
+    let mut damage = 0_u32;
+    let mut headshots = 0_u32;
+    let mut bodyshots = 0_u32;
+    let mut legshots = 0_u32;
+    let mut saw_damage = false;
+    let mut saw_shots = false;
+    let mut shots_complete = true;
+
+    let Some(rounds) = payload.get("roundResults").and_then(Value::as_array) else {
+        return OwnCombatTotals::default();
+    };
+    for round in rounds {
+        let own = round
+            .get("playerStats")
+            .and_then(Value::as_array)
+            .and_then(|players| {
+                players
+                    .iter()
+                    .find(|player| player.get("subject").and_then(Value::as_str) == Some(own_puuid))
+            });
+        let Some(events) = own
+            .and_then(|player| player.get("damage"))
+            .and_then(Value::as_array)
+        else {
+            continue;
+        };
+        for event in events {
+            if let Some(value) = event
+                .get("damage")
+                .and_then(Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+            {
+                damage = damage.saturating_add(value);
+                saw_damage = true;
+            }
+            let shots = ["headshots", "bodyshots", "legshots"].map(|field| {
+                event
+                    .get(field)
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok())
+            });
+            if shots.iter().any(Option::is_some) {
+                if let [Some(head), Some(body), Some(leg)] = shots {
+                    headshots = headshots.saturating_add(head);
+                    bodyshots = bodyshots.saturating_add(body);
+                    legshots = legshots.saturating_add(leg);
+                    saw_shots = true;
+                } else {
+                    shots_complete = false;
+                }
+            }
+        }
+    }
+
+    OwnCombatTotals {
+        damage: saw_damage.then_some(damage),
+        headshots: (saw_shots && shots_complete).then_some(headshots),
+        bodyshots: (saw_shots && shots_complete).then_some(bodyshots),
+        legshots: (saw_shots && shots_complete).then_some(legshots),
+    }
 }
 
 fn parse_round(raw: &Value, index: usize, expected: u32) -> Result<Round, ProviderError> {
@@ -564,7 +640,7 @@ mod tests {
                     "roundCeremony": "CeremonyAce",
                     "winningTeam": "Blue",
                     "playerStats": [
-                        {"subject": "me", "kills": [{"killer": "me", "victim": "them"}], "damage": [{"receiver": "them", "damage": 150}], "score": 300},
+                        {"subject": "me", "kills": [{"killer": "me", "victim": "them"}], "damage": [{"receiver": "them", "damage": 150, "headshots": 1, "bodyshots": 1, "legshots": 0}], "score": 300},
                         {"subject": "them", "kills": [], "damage": [], "score": 0}
                     ]
                 },
@@ -596,6 +672,16 @@ mod tests {
         assert_eq!(result.rounds[0].players[0].damage, Some(150));
         assert_eq!(result.rounds[1].round_num, 2);
         assert_eq!(result.rounds[1].players[0].deaths, 1);
+    }
+
+    #[test]
+    fn derives_own_damage_and_headshot_fields_from_ranked_rounds() {
+        let totals = parse_own_match_totals(&fixture(), "me").unwrap();
+
+        assert_eq!(totals.stats.stats.damage, Some(150));
+        assert_eq!(totals.stats.stats.headshots, Some(1));
+        assert_eq!(totals.stats.stats.bodyshots, Some(1));
+        assert_eq!(totals.stats.stats.legshots, Some(0));
     }
 
     #[test]

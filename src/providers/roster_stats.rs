@@ -307,6 +307,9 @@ fn aggregate_match(payload: &Value, subject: &str, total: &mut HistoricalStats) 
             .and_then(Value::as_u64)
             .filter(|tier| *tier > 0);
     }
+    if total.account_level.is_none() {
+        total.account_level = value_u32(player.get("accountLevel")).filter(|level| *level > 0);
+    }
     total.kills = total.kills.saturating_add(kills);
     total.deaths = total.deaths.saturating_add(deaths);
     total.assists = total.assists.saturating_add(assists);
@@ -530,11 +533,13 @@ mod tests {
         let mut stats = HistoricalStats::default();
         let mut payload = fixture(4_000);
         payload["players"][0]["competitiveTier"] = serde_json::json!(18);
+        payload["players"][0]["accountLevel"] = serde_json::json!(321);
 
         assert!(aggregate_match(&payload, "hidden", &mut stats));
 
         assert_eq!(stats.matches, 1);
         assert_eq!(stats.competitive_tier, Some(18));
+        assert_eq!(stats.account_level, Some(321));
         assert_eq!(stats.decided_matches, 1);
         assert_eq!(stats.wins, 1);
         assert_eq!((stats.kills, stats.deaths, stats.assists), (1, 1, 0));

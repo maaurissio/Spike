@@ -41,26 +41,26 @@ impl Settings {
             return;
         }
         if self.selected == 0 {
+            self.draft.theme = if increase {
+                self.draft.theme.next()
+            } else {
+                self.draft.theme.previous()
+            };
+        } else if self.selected == 1 {
             let seconds = self.draft.interval.as_secs();
             self.draft.interval = Duration::from_secs(if increase {
                 seconds.saturating_add(1).min(60)
             } else {
                 seconds.saturating_sub(1).max(1)
             });
-        } else if self.selected == 1 {
-            self.draft.log_transitions = !self.draft.log_transitions;
         } else {
-            self.draft.theme = if increase {
-                self.draft.theme.next()
-            } else {
-                self.draft.theme.previous()
-            };
+            self.draft.log_transitions = !self.draft.log_transitions;
         }
         self.message = "";
     }
 
     pub fn toggle(&mut self) {
-        if self.selected != 0 {
+        if self.selected != 1 {
             self.adjust(true);
         }
     }
@@ -109,6 +109,7 @@ mod tests {
     fn draft_is_bounded_and_only_successful_save_applies_changes() {
         let config = Config::default();
         let mut settings = Settings::new(&config);
+        settings.selected = 1;
         for _ in 0..100 {
             settings.adjust(false);
         }
@@ -135,6 +136,7 @@ mod tests {
     fn discard_does_not_enable_logging_or_change_active_interval() {
         let config = Config::default();
         let mut settings = Settings::new(&config);
+        settings.selected = 1;
         settings.adjust(true);
         settings.select();
         settings.toggle();
@@ -162,7 +164,6 @@ mod tests {
     #[test]
     fn minus_reverses_theme_selection_and_wraps_backwards() {
         let mut settings = Settings::new(&Config::default());
-        settings.selected = 2;
         settings.adjust(true);
         settings.adjust(false);
         assert_eq!(settings.draft.theme, crate::config::Theme::Dark);

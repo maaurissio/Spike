@@ -15,12 +15,20 @@ Estas aplicaciones son referencias de composición, no plantillas vinculantes. E
 
 ## Color y tamaño
 
-- Cian: navegación y foco. Verde: aliados, victorias y kills. Coral: enemigos, derrotas y muertes. Violeta/cian/verde: rango, siempre acompañado de su abreviatura. Ámbar: dato oculto o pendiente.
+- Cian: navegación y foco. Verde: aliados, victorias y kills. Coral: enemigos, derrotas y muertes. El rango usa su familia competitiva, siempre acompañada por el nombre. Ámbar: dato oculto o pendiente.
+- Riot explica que revisó la iconografía para distinguir mejor los colores de cada rango: [Rangos y modo competitivo](https://playvalorant.com/es-es/news/dev/los-rangos-y-el-modo-competitivo-de-valorant/). La [versión 5.0](https://playvalorant.com/es-es/news/game-updates/notas-de-la-version-5-0-de-valorant/) introdujo Ascendente entre Diamante e Inmortal. El catálogo comunitario de assets consultado el 2026-08-29 expone los tonos actuales por tier: [Competitive tiers](https://valorant-api.com/v1/competitivetiers). Se contrastó la familia y su iconografía, sin tratar ese espejo como documentación oficial de Riot.
+- Paleta oscura: Hierro `#868986`, Bronce `#A5855D`, Plata `#BBC2C2`, Oro `#ECCF56`, Platino `#59A9B6`, Diamante `#B489C4`, Ascendente `#6AE2AF`, Inmortal `#BB3D65` y Radiante `#FFFFAA`. En Claro se usan equivalentes más oscuros cuando el tono original no alcanza contraste suficiente.
 - Fondos, bordes y texto secundarios discretos; un único renglón resaltado indica la selección. Sin degradados, sombras, tarjetas ni retratos que eleven todas las filas.
 - Sistema, Noche, Claro y Sin color. El teclado y los marcadores `›`, `V`, `D`, `K` y `—` no dependen de reconocer colores.
 - 72 columnas: roster con rango, K/D, WR y últimas cinco. 38 columnas: conservar jugador, agente, rango y K/D; WR queda en el detalle.
 - 24/26 líneas en partida, sin detalle abierto, gracias a las cantidades K/D en tres filas. Para una terminal con menos filas, la implementación real necesitará desplazamiento o vistas compactas; no debe recortar información silenciosamente. Para muchas rondas, paginar el timeline por ancho. Estas dos adaptaciones aún no están implementadas en Rust ni simuladas en esta muestra de siete rondas.
 - No exigir Nerd Fonts ni emojis para información esencial. El ancho real de Unicode debe comprobarse en los terminales objetivo.
+
+## Tipografía
+
+Una TUI no elige de forma portable la fuente: Ratatui escribe caracteres y estilos, mientras el emulador decide cómo dibujarlos. Las [secuencias de terminal virtual de Windows](https://learn.microsoft.com/es-es/windows/console/console-virtual-terminal-sequences) cubren cursor, color y atributos, pero no una selección de familia tipográfica. Windows Terminal configura `font.face`, tamaño y peso en el perfil, según su [documentación oficial de apariencia](https://learn.microsoft.com/en-us/windows/terminal/customize-settings/profile-appearance).
+
+VTracker recomienda **Cascadia Mono** en Windows Terminal porque es monoespaciada y viene como fuente predeterminada, pero no modifica `settings.json`: hacerlo afectaría otras consolas y dependería de qué host lanzó la app. Consolas, Cascadia Code u otra fuente monoespaciada compatible siguen funcionando. Los glifos esenciales mantienen alternativa textual y no requieren Nerd Fonts.
 
 ## ¿Se pueden poner imágenes?
 

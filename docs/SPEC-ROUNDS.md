@@ -2,7 +2,7 @@
 
 > **Presentación vigente (2026-08-28):** el usuario reemplazó las K/D apiladas por cantidades por ronda: fila `1K 0K 4K …`, fila `R1 R2 R3 …` y fila `1D 0D 2D …`. Tres líneas entre aliados y enemigos; ronda en curso `—K / —D`, no ceros inventados. Esta revisión prevalece sobre los diagramas históricos de §5. No cambia las condiciones de disponibilidad de datos ni las fuentes autorizadas.
 
-> Estado: especificación en refinamiento (pre-código). Decisiones estructurales en `docs/DECISIONS.md`. Este documento define el modelo de datos, reglas de negocio, rutas de datos y casos borde del feature de rondas.
+> Estado: render y normalización postpartida implementados; proveedor de eventos en vivo pendiente. Decisiones estructurales en `docs/DECISIONS.md`, especialmente ADR-018.
 
 ## 1. Alcance por modo (ADR-004)
 
@@ -49,19 +49,18 @@ Reglas:
 * El K/D de partida sale de `players[].stats` del scoreboard oficial (ADR-007); puede dar muertes > rondas jugadas por revives.
 * Campos `Option<>` = la fuente puede no entregarlos; nunca se inventan (principio de honestidad de datos).
 
-## 3. Rutas de datos (orden de preferencia — ADR-005)
+## 3. Rutas de datos (ADR-005/018)
 
-1. **`match-details` en frontera de ronda** — al detectar fin de ronda, snapshot de `pd.{shard}.a.pvp.net/match-details/v1/matches/{id}`. Si responde a mitad de partida: timeline se llena columna por columna en vivo (comportamiento ideal).
-2. **OCR opt-in (futuro, desactivado por defecto)** — top HUD del juego (número de ronda siempre visible, franja fija) para detectar la frontera R6→R7 exacta; scoreboard solo cuando el usuario abre TAB. Nunca se simula input (ADR-006).
-3. **Post-partida (garantizado)** — `match-details` completo al terminar; la vista PostMatch siempre tiene el desglose íntegro.
+1. **Eventos live aprobados (pendiente)** — Tracker Network documenta que Valorant Tracker funciona sobre Overwolf. El GEP oficial de Overwolf para VALORANT expone `round_number`, `round_phase`, `round_report`, scoreboard y eventos `kill`/`death`. Una integración futura debe ser un `LiveRoundEventSource` registrado y aislado del modelo de pantalla.
+2. **Post-partida (implementado)** — `pd.{shard}.a.pvp.net/match-details/v1/matches/{id}` entrega `roundResults[]` después de terminar. VTracker calcula únicamente las rondas propias y muestra `—` si faltan campos.
 
-Degradación: si (1) responde 404 a mitad de partida → silenciosamente se espera a (3). Si OCR está desactivado o falla → no afecta (2)/(3).
+`match-details` no se considera una fuente live hasta que exista una garantía documentada del proveedor. OCR, lectura de memoria, inyección y simulación de entrada no forman parte de la ruta predeterminada. Sin el proveedor de eventos, la TUI dice que las rondas live no están integradas y espera el resumen oficial postpartida.
 
 ## 4. Detección de la frontera de ronda
 
-* **Vía datos:** comparación de `roundResults.len()` entre snapshots sucesivos (si (1) funciona, la frontera es gratis).
-* **Vía OCR opt-in:** cambio del número de ronda en el top HUD.
-* **Vía WebSocket local:** si existen eventos de transición de estado del juego (a verificar empíricamente en 2C; si solo marca inicio/fin de partida, sirve para (3)).
+* **Vía GEP futura:** `round_phase`/`round_number` delimitan la ronda y los eventos propios `kill`/`death` actualizan el acumulador. En cada frontera se publica un snapshot inmutable a la TUI.
+* **Vía cliente local actual:** el WebSocket mantiene la fase general `AgentSelect/InMatch/PostMatch`; no se le atribuyen eventos de combate que no documenta.
+* **Postpartida:** `roundResults[]` ya viene dividido por ronda y reemplaza cualquier acumulado provisional con el resultado oficial.
 
 ## 5. Visualización — RoundTimeline
 
@@ -117,4 +116,4 @@ Reglas de render:
 1. ¿El timeline muestra también a otros jugadores seleccionables desde el roster (aliados/enemigos) o solo al usuario?
 2. ¿Fila opcional de daño por ronda (configurable en Settings)?
 3. ¿Auto-scroll al bloque actual durante partida en vivo o manual?
-4. Confirmar empíricamente si `match-details` responde a mitad de partida (paso 2C) — define si la ruta (1) existe o todo va a (3).
+4. Definir si una distribución con bridge/paquete Overwolf es aceptable para el producto final; hasta entonces el timeline live permanece como no disponible.

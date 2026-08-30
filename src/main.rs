@@ -238,8 +238,8 @@ fn run_watch(config: Config, once: bool) {
             {
                 eprintln!("Advertencia: no se pudo guardar el log: {error}");
             }
-            if transition.to == GamePhase::InMatch {
-                live_match = fetch_live_match_once(&local, &live_match_source);
+            if matches!(transition.to, GamePhase::AgentSelect | GamePhase::InMatch) {
+                live_match = fetch_live_match_once(&local, &live_match_source, transition.to);
                 completed_match = None;
                 own_profile = None;
             } else if transition.to == GamePhase::PostMatch {
@@ -286,9 +286,10 @@ fn fetch_profile_once(
 fn fetch_live_match_once(
     local: &LocalClientSource,
     source: &LiveMatchSource,
+    phase: GamePhase,
 ) -> Option<LiveMatchContext> {
     local
-        .live_match_request()
+        .live_match_request(phase)
         .and_then(|request| source.fetch(&request))
         .ok()
 }

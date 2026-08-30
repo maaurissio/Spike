@@ -173,7 +173,7 @@ pub fn player_view_profile(
     updates: &[crate::providers::profile::CompetitiveUpdate],
 ) -> String {
     let mut view = format!(
-        "VTRACKER · Perfil propio\n────────────────────────────────────────\nNivel de cuenta {}\nExperiencia      {} XP\n",
+        "VTRACKER · Mi perfil\n────────────────────────────────────────\nNivel de cuenta {}\nExperiencia      {} XP\n",
         profile.level, profile.xp
     );
     if let Some(competitive) = competitive {
@@ -207,43 +207,19 @@ pub fn player_view_profile(
 }
 
 pub(crate) fn competitive_tier_label(tier: u32) -> String {
-    const NAMES: [&str; 23] = [
-        "hierro 1",
-        "hierro 2",
-        "hierro 3",
-        "bronce 1",
-        "bronce 2",
-        "bronce 3",
-        "plata 1",
-        "plata 2",
-        "plata 3",
-        "oro 1",
-        "oro 2",
-        "oro 3",
-        "platino 1",
-        "platino 2",
-        "platino 3",
-        "diamante 1",
-        "diamante 2",
-        "diamante 3",
-        "ascendente 1",
-        "ascendente 2",
-        "ascendente 3",
-        "inmortal 1",
-        "inmortal 2",
-    ];
-    if tier == 25 {
-        "radiante".into()
-    } else if tier == 24 {
-        "inmortal 3".into()
-    } else if let Some(name) = tier
-        .checked_sub(3)
-        .and_then(|index| NAMES.get(index as usize))
-    {
-        (*name).into()
-    } else {
-        format!("tier {tier}")
-    }
+    let (rank, division) = match tier {
+        3..=5 => ("hierro", tier - 2),
+        6..=8 => ("bronce", tier - 5),
+        9..=11 => ("plata", tier - 8),
+        12..=14 => ("oro", tier - 11),
+        15..=17 => ("platino", tier - 14),
+        18..=20 => ("diamante", tier - 17),
+        21..=23 => ("ascendente", tier - 20),
+        24..=26 => ("inmortal", tier - 23),
+        27 => return "radiante".into(),
+        _ => return format!("tier {tier}"),
+    };
+    format!("{rank} {division}")
 }
 
 fn relative_time(started_at_ms: u64) -> String {
@@ -263,6 +239,14 @@ fn relative_time(started_at_ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn competitive_tiers_include_all_current_high_ranks() {
+        assert_eq!(competitive_tier_label(21), "ascendente 1");
+        assert_eq!(competitive_tier_label(24), "inmortal 1");
+        assert_eq!(competitive_tier_label(26), "inmortal 3");
+        assert_eq!(competitive_tier_label(27), "radiante");
+    }
     use crate::{
         game::GameState,
         models::{
