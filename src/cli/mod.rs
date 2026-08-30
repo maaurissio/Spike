@@ -1,8 +1,26 @@
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
+    Dashboard { demo: bool },
     Help,
     Doctor,
+    Config(ConfigCommand),
+    History(HistoryArgs),
+    Player,
+    Stats(StatsArgs),
     Watch(WatchArgs),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ConfigCommand {
+    Show,
+    Validate,
+    Edit(ConfigEditArgs),
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ConfigEditArgs {
+    pub interval_secs: Option<u64>,
+    pub log_transitions: Option<bool>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -11,12 +29,34 @@ pub struct WatchArgs {
     pub interval_secs: Option<u64>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct HistoryArgs {
+    pub limit: u8,
+}
+
+impl Default for HistoryArgs {
+    fn default() -> Self {
+        Self { limit: 5 }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct StatsArgs {
+    pub limit: u8,
+}
+
+impl Default for StatsArgs {
+    fn default() -> Self {
+        Self { limit: 5 }
+    }
+}
+
 /// Parsea los argumentos de CLI sin efectos secundarios (sin `process::exit`).
 /// `args` corresponde a `env::args().skip(1)` ya colectado.
 pub fn parse(args: &[String]) -> Result<Command, String> {
     let mut iter = args.iter().map(|s| s.as_str());
     let Some(command) = iter.next() else {
-        return Ok(Command::Watch(WatchArgs::default()));
+        return Ok(Command::Dashboard { demo: false });
     };
 
     if matches!(command, "-h" | "--help" | "help") {
@@ -28,9 +68,43 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
         }
         return Ok(Command::Doctor);
     }
+    if matches!(command, "dashboard" | "tui") {
+        let mut demo = false;
+        for option in iter {
+            match option {
+                "--demo" if !demo => demo = true,
+                "--help" | "-h" => return Ok(Command::Help),
+                _ => return Err(format!("Opción desconocida: {option}")),
+            }
+        }
+        return Ok(Command::Dashboard { demo });
+    }
+    if command == "config" {
+        let Some(subcommand) = iter.next() else {
+            return Err("Uso: vtracker config show|validate".into());
+        };
+        return match subcommand {
+            "show" => parse_config_readonly(&mut iter, ConfigCommand::Show),
+            "validate" => parse_config_readonly(&mut iter, ConfigCommand::Validate),
+            "edit" => parse_config_edit(&mut iter),
+            _ => Err("Uso: vtracker config show|validate".into()),
+        };
+    }
+    if command == "history" {
+        return parse_history(&mut iter);
+    }
+    if command == "player" {
+        if let Some(option) = iter.next() {
+            return Err(format!("Opción desconocida: {option}"));
+        }
+        return Ok(Command::Player);
+    }
+    if command == "stats" {
+        return parse_stats(&mut iter);
+    }
     if command != "watch" {
         return Err(format!(
-            "Comando no disponible en el MVP: {command}\nUsa `vtracker watch`."
+            "Comando no disponible: {command}\nUsa `vtracker` o `vtracker --help`."
         ));
     }
 
@@ -61,6 +135,99 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     }))
 }
 
+fn parse_stats<'a>(iter: &mut impl Iterator<Item = &'a str>) -> Result<Command, String> {
+    let mut args = StatsArgs::default();
+    while let Some(arg) = iter.next() {
+        match arg {
+            "--limit" => {
+                let Some(value) = iter.next() else {
+                    return Err("--limit debe estar entre 1 y 5.".into());
+                };
+                let Ok(limit) = value.parse::<u8>() else {
+                    return Err("--limit debe estar entre 1 y 5.".into());
+                };
+                if !(1..=5).contains(&limit) {
+                    return Err("--limit debe estar entre 1 y 5.".into());
+                }
+                args.limit = limit;
+            }
+            "-h" | "--help" => return Ok(Command::Help),
+            _ => return Err(format!("Opción desconocida: {arg}")),
+        }
+    }
+    Ok(Command::Stats(args))
+}
+
+fn parse_history<'a>(iter: &mut impl Iterator<Item = &'a str>) -> Result<Command, String> {
+    let mut args = HistoryArgs::default();
+    while let Some(arg) = iter.next() {
+        match arg {
+            "--limit" => {
+                let Some(value) = iter.next() else {
+                    return Err("--limit debe estar entre 1 y 20.".into());
+                };
+                let Ok(limit) = value.parse::<u8>() else {
+                    return Err("--limit debe estar entre 1 y 20.".into());
+                };
+                if !(1..=20).contains(&limit) {
+                    return Err("--limit debe estar entre 1 y 20.".into());
+                }
+                args.limit = limit;
+            }
+            "-h" | "--help" => return Ok(Command::Help),
+            _ => return Err(format!("Opción desconocida: {arg}")),
+        }
+    }
+    Ok(Command::History(args))
+}
+
+fn parse_config_readonly<'a>(
+    iter: &mut impl Iterator<Item = &'a str>,
+    command: ConfigCommand,
+) -> Result<Command, String> {
+    if let Some(option) = iter.next() {
+        return Err(format!("Opción desconocida: {option}"));
+    }
+    Ok(Command::Config(command))
+}
+
+fn parse_config_edit<'a>(iter: &mut impl Iterator<Item = &'a str>) -> Result<Command, String> {
+    let mut edit = ConfigEditArgs::default();
+    while let Some(arg) = iter.next() {
+        match arg {
+            "--interval" => {
+                let Some(value) = iter.next() else {
+                    return Err("--interval debe estar entre 1 y 60 segundos.".into());
+                };
+                let Ok(seconds) = value.parse::<u64>() else {
+                    return Err("--interval debe estar entre 1 y 60 segundos.".into());
+                };
+                if !(1..=60).contains(&seconds) {
+                    return Err("--interval debe estar entre 1 y 60 segundos.".into());
+                }
+                edit.interval_secs = Some(seconds);
+            }
+            "--log-transitions" => {
+                let Some(value) = iter.next() else {
+                    return Err("--log-transitions debe ser true o false.".into());
+                };
+                edit.log_transitions = Some(
+                    value
+                        .parse::<bool>()
+                        .map_err(|_| "--log-transitions debe ser true o false.")?,
+                );
+            }
+            _ => return Err(format!("Opción desconocida: {arg}")),
+        }
+    }
+    if edit.interval_secs.is_none() && edit.log_transitions.is_none() {
+        return Err(
+            "Uso: vtracker config edit --interval SEGUNDOS|--log-transitions true|false".into(),
+        );
+    }
+    Ok(Command::Config(ConfigCommand::Edit(edit)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,8 +237,8 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_watch_when_no_args() {
-        assert_eq!(parse(&s(&[])), Ok(Command::Watch(WatchArgs::default())));
+    fn defaults_to_dashboard_when_no_args() {
+        assert_eq!(parse(&s(&[])), Ok(Command::Dashboard { demo: false }));
     }
 
     #[test]
@@ -87,6 +254,24 @@ mod tests {
     }
 
     #[test]
+    fn parses_dashboard_aliases() {
+        assert_eq!(
+            parse(&["dashboard".into()]),
+            Ok(Command::Dashboard { demo: false })
+        );
+        assert_eq!(
+            parse(&["tui".into()]),
+            Ok(Command::Dashboard { demo: false })
+        );
+        assert_eq!(
+            parse(&s(&["dashboard", "--demo"])),
+            Ok(Command::Dashboard { demo: true })
+        );
+        assert!(parse(&s(&["dashboard", "--demo", "--demo"])).is_err());
+        assert!(parse(&s(&["dashboard", "--once"])).is_err());
+    }
+
+    #[test]
     fn rejects_doctor_with_extra_args() {
         assert_eq!(
             parse(&s(&["doctor", "--once"])),
@@ -95,8 +280,97 @@ mod tests {
     }
 
     #[test]
+    fn parses_config_subcommands() {
+        assert_eq!(
+            parse(&s(&["config", "show"])),
+            Ok(Command::Config(ConfigCommand::Show))
+        );
+        assert_eq!(
+            parse(&s(&["config", "validate"])),
+            Ok(Command::Config(ConfigCommand::Validate))
+        );
+    }
+
+    #[test]
+    fn parses_history_with_safe_limit() {
+        assert_eq!(
+            parse(&s(&["history"])),
+            Ok(Command::History(HistoryArgs { limit: 5 }))
+        );
+        assert_eq!(
+            parse(&s(&["history", "--limit", "10"])),
+            Ok(Command::History(HistoryArgs { limit: 10 }))
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_history_limit() {
+        assert_eq!(
+            parse(&s(&["history", "--limit", "0"])),
+            Err("--limit debe estar entre 1 y 20.".into())
+        );
+        assert_eq!(
+            parse(&s(&["history", "--limit", "21"])),
+            Err("--limit debe estar entre 1 y 20.".into())
+        );
+    }
+
+    #[test]
+    fn parses_player_without_options() {
+        assert_eq!(parse(&s(&["player"])), Ok(Command::Player));
+        assert_eq!(
+            parse(&s(&["player", "--all"])),
+            Err("Opción desconocida: --all".into())
+        );
+    }
+
+    #[test]
+    fn parses_stats_with_bounded_limit() {
+        assert_eq!(
+            parse(&s(&["stats", "--limit", "3"])),
+            Ok(Command::Stats(StatsArgs { limit: 3 }))
+        );
+        assert_eq!(
+            parse(&s(&["stats", "--limit", "6"])),
+            Err("--limit debe estar entre 1 y 5.".into())
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_config_subcommands() {
+        assert_eq!(
+            parse(&s(&["config"])),
+            Err("Uso: vtracker config show|validate".into())
+        );
+        assert_eq!(
+            parse(&s(&["config", "edit"])),
+            Err(
+                "Uso: vtracker config edit --interval SEGUNDOS|--log-transitions true|false".into()
+            )
+        );
+    }
+
+    #[test]
+    fn parses_config_edit_values() {
+        assert_eq!(
+            parse(&s(&[
+                "config",
+                "edit",
+                "--interval",
+                "5",
+                "--log-transitions",
+                "true"
+            ])),
+            Ok(Command::Config(ConfigCommand::Edit(ConfigEditArgs {
+                interval_secs: Some(5),
+                log_transitions: Some(true),
+            })))
+        );
+    }
+
+    #[test]
     fn rejects_unknown_command() {
-        let err = parse(&s(&["player"])).unwrap_err();
+        let err = parse(&s(&["rank"])).unwrap_err();
         assert!(err.contains("Comando no disponible"));
     }
 

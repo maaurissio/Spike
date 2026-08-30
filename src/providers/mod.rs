@@ -3,21 +3,31 @@
 //! Fase 2B: interfaces + adaptadores local/mock sin red. Fase 2C: adaptador Riot autorizado.
 
 pub mod capabilities;
+pub mod history;
+pub mod live_match;
+pub mod local;
 pub mod lockfile;
+pub mod match_detail;
 #[cfg(test)]
 pub mod mock;
 pub mod process;
+pub mod profile;
+pub(crate) mod roster;
+pub(crate) mod roster_stats;
 
-#[cfg(test)]
 pub use capabilities::ProviderError;
 pub use capabilities::{GameStateSource, StateInfo};
+pub(crate) use history::HistorySource;
+pub(crate) use live_match::LiveMatchSource;
+pub use local::LocalClientSource;
+pub(crate) use match_detail::MatchDetailSource;
 #[cfg(test)]
 pub use mock::MockGameStateSource;
 pub use process::ProcessGameStateSource;
+pub(crate) use profile::PlayerProfileSource;
 
 /// Resuelve el estado intentando el proveedor primario y usando fallback si es recuperable.
 /// Mantiene último estado conocido en caso de fallo — útil para mostrar en TUI sin pantalla vacía.
-#[cfg(test)]
 pub fn resolve_with_fallback(
     primary: &dyn GameStateSource,
     fallback: &dyn GameStateSource,

@@ -72,6 +72,10 @@ impl Lockfile {
     pub fn has_password(&self) -> bool {
         !self.password.is_empty()
     }
+
+    pub(crate) fn password(&self) -> &str {
+        &self.password
+    }
 }
 
 impl fmt::Debug for Lockfile {
