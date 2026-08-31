@@ -9,13 +9,11 @@ mod worker;
 
 use std::{
     collections::VecDeque,
-    io,
+    env, io,
+    process::Command as ProcessCommand,
     sync::mpsc::TryRecvError,
     time::{Duration, Instant},
 };
-
-#[cfg(not(target_os = "windows"))]
-use std::process::Command as ProcessCommand;
 
 use crossterm::{
     cursor::MoveTo,
@@ -316,6 +314,7 @@ struct App {
     refresh_failed: bool,
     dirty: bool,
     should_quit: bool,
+    restart_requested: bool,
     metrics: metrics::ProcessMetrics,
     network: NetworkUsage,
     logs: VecDeque<LogEntry>,
@@ -365,6 +364,7 @@ impl App {
             refresh_failed: false,
             dirty: true,
             should_quit: false,
+            restart_requested: false,
             metrics: metrics::ProcessMetrics::new(),
             network: NetworkUsage::default(),
             logs: VecDeque::new(),
@@ -419,6 +419,16 @@ impl App {
             }
         }
         self.dirty = true;
+    }
+
+    fn open_palette_editor(&mut self) {
+        match open_palette_folder() {
+            Ok(()) => self.push_log(LogLevel::Success, "Carpeta de palette.toml abierta"),
+            Err(error) => self.push_log(
+                LogLevel::Warning,
+                format!("No se pudo abrir la carpeta de la paleta: {error}"),
+            ),
+        }
     }
 
     fn record_riot_sync(&mut self, label: &'static str, succeeded: bool) {
@@ -768,7 +778,10 @@ impl App {
             return;
         }
         match key.code {
-            KeyCode::F(5) => self.reload_palette(),
+            KeyCode::F(5) => {
+                self.restart_requested = true;
+                self.should_quit = true;
+            }
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Esc => {
                 if self.detail {
@@ -814,6 +827,11 @@ impl App {
                 self.settings.adjust(true)
             }
             KeyCode::Char('-') if self.selected_tab == 4 => self.settings.adjust(false),
+            KeyCode::Char(' ') | KeyCode::Enter
+                if self.selected_tab == 4 && self.settings.selected == 3 =>
+            {
+                self.open_palette_editor()
+            }
             KeyCode::Char(' ') | KeyCode::Enter if self.selected_tab == 4 => self.settings.toggle(),
             KeyCode::Char('s') if self.selected_tab == 4 => {
                 if let Some(config) = self.settings.to_save()
@@ -1002,6 +1020,9 @@ impl App {
                 .position(|row| *row == Some(line));
             if let Some(selected) = selected {
                 self.settings.selected = selected;
+                if selected == 3 {
+                    self.open_palette_editor();
+                }
                 self.follow_selection = true;
                 self.dirty = true;
             }
@@ -1036,6 +1057,51 @@ fn encode_path_segment(value: &str) -> String {
         }
     }
     encoded
+}
+
+fn open_palette_folder() -> io::Result<()> {
+    let palette = theme::palette_path()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "APPDATA no está disponible"))?;
+    let directory = palette
+        .parent()
+        .ok_or_else(|| io::Error::other("ruta de paleta inválida"))?;
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+
+        let operation = "open\0".encode_utf16().collect::<Vec<_>>();
+        let target = directory
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        use std::os::windows::ffi::OsStrExt;
+        let result = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                operation.as_ptr(),
+                target.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        if result as isize > 32 {
+            Ok(())
+        } else {
+            Err(io::Error::other("Windows no pudo abrir la carpeta"))
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        ProcessCommand::new("open").arg(directory).spawn()?;
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        ProcessCommand::new("xdg-open").arg(directory).spawn()?;
+        Ok(())
+    }
 }
 
 fn open_tracker(url: &str) -> io::Result<()> {
@@ -1196,7 +1262,7 @@ pub(crate) fn run(config: Config, demo: bool) -> io::Result<()> {
         ));
     }
     enable_raw_mode()?;
-    let _guard = TerminalGuard;
+    let terminal_guard = TerminalGuard;
     let mut stdout = io::stdout();
     execute!(
         stdout,
@@ -1207,16 +1273,31 @@ pub(crate) fn run(config: Config, demo: bool) -> io::Result<()> {
         MoveTo(0, 0)
     )?;
     #[cfg(target_os = "windows")]
-    let _buffer_guard = ConsoleBufferGuard::new();
+    let buffer_guard = ConsoleBufferGuard::new();
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
-    run_loop(&mut terminal, config, demo)
+    let restart = run_loop(&mut terminal, config, demo)?;
+    drop(terminal);
+    #[cfg(target_os = "windows")]
+    drop(buffer_guard);
+    drop(terminal_guard);
+    if restart {
+        relaunch_current()?;
+    }
+    Ok(())
+}
+
+fn relaunch_current() -> io::Result<()> {
+    ProcessCommand::new(env::current_exe()?)
+        .args(env::args_os().skip(1))
+        .spawn()?;
+    Ok(())
 }
 
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     config: Config,
     demo: bool,
-) -> io::Result<()> {
+) -> io::Result<bool> {
     let worker = if demo {
         Worker::demo()?
     } else {
@@ -1292,7 +1373,7 @@ fn run_loop(
             }
         }
     }
-    Ok(())
+    Ok(app.restart_requested)
 }
 
 #[cfg(test)]
@@ -1383,6 +1464,15 @@ mod tests {
         app.splash_started = Instant::now() - SPLASH_DURATION;
         app.tick();
         assert!(app.splash_complete);
+    }
+
+    #[test]
+    fn f5_requests_a_clean_restart() {
+        let worker = Worker::demo().unwrap();
+        let mut app = App::new(&Config::default());
+        app.key(KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE), &worker);
+        assert!(app.should_quit);
+        assert!(app.restart_requested);
     }
 
     #[test]

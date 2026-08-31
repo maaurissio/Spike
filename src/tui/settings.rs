@@ -11,6 +11,8 @@ pub(super) struct Settings {
 }
 
 impl Settings {
+    const OPTION_COUNT: usize = 4;
+
     pub fn new(config: &Config) -> Self {
         Self {
             active: config.clone(),
@@ -22,11 +24,11 @@ impl Settings {
     }
 
     pub fn select(&mut self) {
-        self.selected = (self.selected + 1) % 3;
+        self.selected = (self.selected + 1) % Self::OPTION_COUNT;
     }
 
     pub fn previous(&mut self) {
-        self.selected = (self.selected + 2) % 3;
+        self.selected = (self.selected + Self::OPTION_COUNT - 1) % Self::OPTION_COUNT;
     }
 
     pub fn cycle_theme(&mut self) {
@@ -53,14 +55,14 @@ impl Settings {
             } else {
                 seconds.saturating_sub(1).max(1)
             });
-        } else {
+        } else if self.selected == 2 {
             self.draft.log_transitions = !self.draft.log_transitions;
         }
         self.message = "";
     }
 
     pub fn toggle(&mut self) {
-        if self.selected != 1 {
+        if matches!(self.selected, 0 | 2) {
             self.adjust(true);
         }
     }
@@ -170,5 +172,18 @@ mod tests {
         settings.adjust(false);
         assert_eq!(settings.draft.theme, crate::config::Theme::System);
         assert_eq!(settings.active.theme, crate::config::Theme::Dark);
+    }
+
+    #[test]
+    fn palette_button_is_a_fourth_non_mutating_option() {
+        let config = Config::default();
+        let mut settings = Settings::new(&config);
+        settings.previous();
+        assert_eq!(settings.selected, 3);
+        settings.toggle();
+        settings.adjust(true);
+        assert_eq!(settings.draft, config);
+        settings.select();
+        assert_eq!(settings.selected, 0);
     }
 }

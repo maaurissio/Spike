@@ -3,9 +3,7 @@ use std::{env, fs, path::PathBuf};
 use crate::config::Theme;
 use ratatui::style::{Color, Modifier, Style};
 
-const PALETTE_TEMPLATE: &str = r##"# Paleta editable de Spike. Guarda el archivo y pulsa F5 en la app.
-# Formato: #RRGGBB. `title` controla encabezados; `body`, el contenido normal.
-[dark]
+const PALETTE_TEMPLATE: &str = r##"[dark]
 background = "#282828"
 body = "#ebdbb2"
 title = "#8ec07c"
@@ -17,6 +15,16 @@ loss = "#fb4934"
 rank = "#d3869b"
 warning = "#fabd2f"
 selection = "#504945"
+logo_primary = "#fabd2f"
+logo_secondary = "#ebdbb2"
+logo_fade = "#928374"
+cpu = "#b8bb26"
+ram = "#d3869b"
+chart_win = "#8ec07c"
+chart_loss = "#fb4934"
+log_info = "#83a598"
+log_success = "#b8bb26"
+log_warning = "#fe8019"
 
 [light]
 background = "#fbf1c7"
@@ -30,6 +38,16 @@ loss = "#9d0006"
 rank = "#8f3f71"
 warning = "#b57614"
 selection = "#d5c4a1"
+logo_primary = "#b57614"
+logo_secondary = "#3c3836"
+logo_fade = "#7c6f64"
+cpu = "#79740e"
+ram = "#8f3f71"
+chart_win = "#427b58"
+chart_loss = "#9d0006"
+log_info = "#076678"
+log_success = "#79740e"
+log_warning = "#af3a03"
 "##;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,6 +63,16 @@ pub(super) struct PaletteColors {
     rank: Color,
     warning: Color,
     selection: Color,
+    logo_primary: Color,
+    logo_secondary: Color,
+    logo_fade: Color,
+    cpu: Color,
+    ram: Color,
+    chart_win: Color,
+    chart_loss: Color,
+    log_info: Color,
+    log_success: Color,
+    log_warning: Color,
 }
 
 impl PaletteColors {
@@ -61,6 +89,16 @@ impl PaletteColors {
             rank: Color::Rgb(211, 134, 155),
             warning: Color::Rgb(250, 189, 47),
             selection: Color::Rgb(80, 73, 69),
+            logo_primary: Color::Rgb(250, 189, 47),
+            logo_secondary: Color::Rgb(235, 219, 178),
+            logo_fade: Color::Rgb(146, 131, 116),
+            cpu: Color::Rgb(184, 187, 38),
+            ram: Color::Rgb(211, 134, 155),
+            chart_win: Color::Rgb(142, 192, 124),
+            chart_loss: Color::Rgb(251, 73, 52),
+            log_info: Color::Rgb(131, 165, 152),
+            log_success: Color::Rgb(184, 187, 38),
+            log_warning: Color::Rgb(254, 128, 25),
         }
     }
 
@@ -77,6 +115,16 @@ impl PaletteColors {
             rank: Color::Rgb(143, 63, 113),
             warning: Color::Rgb(181, 118, 20),
             selection: Color::Rgb(213, 196, 161),
+            logo_primary: Color::Rgb(181, 118, 20),
+            logo_secondary: Color::Rgb(60, 56, 54),
+            logo_fade: Color::Rgb(124, 111, 100),
+            cpu: Color::Rgb(121, 116, 14),
+            ram: Color::Rgb(143, 63, 113),
+            chart_win: Color::Rgb(66, 123, 88),
+            chart_loss: Color::Rgb(157, 0, 6),
+            log_info: Color::Rgb(7, 102, 120),
+            log_success: Color::Rgb(121, 116, 14),
+            log_warning: Color::Rgb(175, 58, 3),
         }
     }
 }
@@ -111,45 +159,58 @@ pub(super) fn load_or_create_palette() -> Result<EditablePalette, String> {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         fs::write(&path, PALETTE_TEMPLATE).map_err(|error| error.to_string())?;
     }
-    let mut contents = fs::read_to_string(&path)
+    let contents = fs::read_to_string(&path)
         .map_err(|error| format!("no se pudo leer {}: {error}", path.display()))?;
-    // Las primeras versiones solo incluían una paleta plana para Noche.
-    // Hacer explícita su sección conserva los colores y evita confundirlos
-    // con las claves equivalentes del tema Claro.
-    let mut migrated = false;
-    if !contents.lines().any(|line| line.trim() == "[dark]") {
-        contents = format!("[dark]\n{contents}");
-        migrated = true;
-    }
-    // Añadir las claves nuevas conserva cualquier color oscuro ya editado.
-    if !contents.lines().any(|line| line.trim() == "[light]") {
-        contents.push_str(
-            r##"
-
-# Añadido automáticamente: títulos separados y tema Claro editable.
-title = "#8ec07c"
-
-[light]
-background = "#fbf1c7"
-body = "#3c3836"
-title = "#427b58"
-muted = "#7c6f64"
-border = "#a89984"
-primary = "#427b58"
-win = "#79740e"
-loss = "#9d0006"
-rank = "#8f3f71"
-warning = "#b57614"
-selection = "#d5c4a1"
-"##,
-        );
-        migrated = true;
-    }
-    if migrated {
-        fs::write(&path, &contents)
+    let palette =
+        parse_palette(&contents).map_err(|error| format!("{}: {error}", path.display()))?;
+    let normalized = encode_palette(&palette);
+    if contents != normalized {
+        fs::write(&path, &normalized)
             .map_err(|error| format!("no se pudo actualizar {}: {error}", path.display()))?;
     }
-    parse_palette(&contents).map_err(|error| format!("{}: {error}", path.display()))
+    Ok(palette)
+}
+
+fn encode_palette(palette: &EditablePalette) -> String {
+    format!(
+        "[dark]\n{}\n[light]\n{}",
+        encode_colors(&palette.dark),
+        encode_colors(&palette.light)
+    )
+}
+
+fn encode_colors(colors: &PaletteColors) -> String {
+    format!(
+        "background = \"{}\"\nbody = \"{}\"\ntitle = \"{}\"\nmuted = \"{}\"\nborder = \"{}\"\nprimary = \"{}\"\nwin = \"{}\"\nloss = \"{}\"\nrank = \"{}\"\nwarning = \"{}\"\nselection = \"{}\"\nlogo_primary = \"{}\"\nlogo_secondary = \"{}\"\nlogo_fade = \"{}\"\ncpu = \"{}\"\nram = \"{}\"\nchart_win = \"{}\"\nchart_loss = \"{}\"\nlog_info = \"{}\"\nlog_success = \"{}\"\nlog_warning = \"{}\"\n",
+        color_hex(colors.background),
+        color_hex(colors.body),
+        color_hex(colors.title),
+        color_hex(colors.muted),
+        color_hex(colors.border),
+        color_hex(colors.primary),
+        color_hex(colors.win),
+        color_hex(colors.loss),
+        color_hex(colors.rank),
+        color_hex(colors.warning),
+        color_hex(colors.selection),
+        color_hex(colors.logo_primary),
+        color_hex(colors.logo_secondary),
+        color_hex(colors.logo_fade),
+        color_hex(colors.cpu),
+        color_hex(colors.ram),
+        color_hex(colors.chart_win),
+        color_hex(colors.chart_loss),
+        color_hex(colors.log_info),
+        color_hex(colors.log_success),
+        color_hex(colors.log_warning),
+    )
+}
+
+fn color_hex(color: Color) -> String {
+    let Color::Rgb(red, green, blue) = color else {
+        unreachable!("las paletas editables solo almacenan RGB")
+    };
+    format!("#{red:02x}{green:02x}{blue:02x}")
 }
 
 fn parse_palette(contents: &str) -> Result<EditablePalette, String> {
@@ -190,6 +251,16 @@ fn parse_palette(contents: &str) -> Result<EditablePalette, String> {
             "rank" => colors.rank = color,
             "warning" => colors.warning = color,
             "selection" => colors.selection = color,
+            "logo_primary" => colors.logo_primary = color,
+            "logo_secondary" => colors.logo_secondary = color,
+            "logo_fade" => colors.logo_fade = color,
+            "cpu" => colors.cpu = color,
+            "ram" => colors.ram = color,
+            "chart_win" => colors.chart_win = color,
+            "chart_loss" => colors.chart_loss = color,
+            "log_info" => colors.log_info = color,
+            "log_success" => colors.log_success = color,
+            "log_warning" => colors.log_warning = color,
             unknown => {
                 return Err(format!(
                     "línea {}: color desconocido `{unknown}`",
@@ -228,6 +299,16 @@ pub(super) struct Palette {
     pub bad: Style,
     pub rank: Style,
     pub pending: Style,
+    pub logo_primary: Style,
+    pub logo_secondary: Style,
+    pub logo_fade: Style,
+    pub cpu: Style,
+    pub ram: Style,
+    pub chart_win: Style,
+    pub chart_loss: Style,
+    pub log_info: Style,
+    pub log_success: Style,
+    pub log_warning: Style,
 }
 
 impl Palette {
@@ -302,6 +383,16 @@ impl Palette {
                 bad: base,
                 rank: base,
                 pending: base,
+                logo_primary: base.add_modifier(Modifier::BOLD),
+                logo_secondary: base.add_modifier(Modifier::BOLD),
+                logo_fade: base,
+                cpu: base,
+                ram: base,
+                chart_win: base,
+                chart_loss: base,
+                log_info: base,
+                log_success: base,
+                log_warning: base,
             };
         }
         Self {
@@ -320,6 +411,16 @@ impl Palette {
             bad: base.fg(red),
             rank: base.fg(purple),
             pending: base.fg(amber),
+            logo_primary: base.fg(amber).add_modifier(Modifier::BOLD),
+            logo_secondary: base.add_modifier(Modifier::BOLD),
+            logo_fade: base.fg(dim),
+            cpu: base.fg(green),
+            ram: base.fg(purple),
+            chart_win: base.fg(cyan),
+            chart_loss: base.fg(red),
+            log_info: base.fg(cyan),
+            log_success: base.fg(green),
+            log_warning: base.fg(amber),
         }
     }
 
@@ -345,6 +446,16 @@ impl Palette {
             bad: base.fg(colors.loss),
             rank: base.fg(colors.rank),
             pending: base.fg(colors.warning),
+            logo_primary: base.fg(colors.logo_primary).add_modifier(Modifier::BOLD),
+            logo_secondary: base.fg(colors.logo_secondary).add_modifier(Modifier::BOLD),
+            logo_fade: base.fg(colors.logo_fade),
+            cpu: base.fg(colors.cpu),
+            ram: base.fg(colors.ram),
+            chart_win: base.fg(colors.chart_win),
+            chart_loss: base.fg(colors.chart_loss),
+            log_info: base.fg(colors.log_info),
+            log_success: base.fg(colors.log_success),
+            log_warning: base.fg(colors.log_warning),
         }
     }
 
@@ -497,6 +608,12 @@ mod tests {
         assert_eq!(palette.good.fg, Some(Color::Rgb(16, 32, 48)));
         let light = Palette::with_custom(Theme::Light, Some(&colors));
         assert_eq!(light.base.fg, Some(Color::Rgb(17, 34, 51)));
+        let normalized = encode_palette(&colors);
+        assert!(normalized.starts_with("[dark]\nbackground"));
+        assert!(normalized.contains("\nbody = \"#ebdbb2\"\ntitle = \"#445566\""));
+        assert!(normalized.contains("\n[light]\nbackground"));
+        assert!(!normalized.contains("text ="));
+        assert!(!normalized.lines().any(|line| line.starts_with('#')));
         assert!(parse_palette("unknown = \"#000000\"").is_err());
         assert!(parse_palette("text = \"#xyzxyz\"").is_err());
     }

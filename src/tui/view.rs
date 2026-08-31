@@ -29,7 +29,7 @@ type MetricPoints = Vec<(f64, f64)>;
 pub(super) struct Screen {
     pub lines: Vec<Line<'static>>,
     pub anchor: Option<usize>,
-    pub setting_rows: [Option<usize>; 3],
+    pub setting_rows: [Option<usize>; 4],
     sections: Vec<usize>,
     width: usize,
     palette: Palette,
@@ -40,7 +40,7 @@ impl Screen {
         Self {
             lines: vec![],
             anchor: None,
-            setting_rows: [None; 3],
+            setting_rows: [None; 4],
             sections: vec![],
             width: usize::from(width.max(1)),
             palette,
@@ -1323,10 +1323,18 @@ fn settings(s: &mut Screen, app: &App) {
         Span::raw("  Tipografía                 "),
         Span::styled("Fira Mono obligatoria", s.palette.base),
     ]));
-    s.row(Line::styled(
-        "  Paleta: %APPDATA%\\spike\\palette.toml · F5 recarga.",
-        s.palette.dim,
-    ));
+    s.setting(
+        3,
+        Line::from(vec![
+            Span::styled(
+                if settings.selected == 3 { "› " } else { "  " },
+                s.palette.focus,
+            ),
+            Span::raw("Paleta editable            "),
+            Span::styled("[ Abrir carpeta ]", s.palette.focus),
+        ]),
+        app,
+    );
 
     s.section("ACTUALIZACIÓN", s.palette.focus);
     s.setting(
@@ -1606,7 +1614,7 @@ fn footer_line(app: &App, palette: Palette, width: u16) -> Line<'static> {
             4 => &[
                 ("+/-", "cambiar"),
                 ("s", "guardar"),
-                ("F5", "paleta"),
+                ("F5", "reiniciar"),
                 ("q", "salir"),
             ],
             5 if compact => &[("↑/↓", "mover"), ("q", "salir")],
@@ -1671,17 +1679,17 @@ fn metric_chart(
     frame: &mut ratatui::Frame<'_>,
     area: Rect,
     palette: Palette,
+    series: (Style, &'static str),
     title: String,
     points: &[(f64, f64)],
     bounds: [f64; 2],
-    suffix: &'static str,
 ) {
     let last_x = points.last().map_or(1.0, |point| point.0.max(1.0));
     let age = last_x.round() as u64;
     let dataset = Dataset::default()
         .marker(Marker::Braille)
         .graph_type(GraphType::Line)
-        .style(palette.focus)
+        .style(series.0)
         .data(points);
     // Chart usa `Style::default()` para su lienzo interno. Sin un fondo
     // explícito, ese lienzo restaura el fondo del emulador (negro en algunos
@@ -1705,8 +1713,8 @@ fn metric_chart(
             Axis::default()
                 .bounds(bounds)
                 .labels([
-                    format!("{:.0}{suffix}", bounds[0]),
-                    format!("{:.0}{suffix}", bounds[1]),
+                    format!("{:.0}{}", bounds[0], series.1),
+                    format!("{:.0}{}", bounds[1], series.1),
                 ])
                 .style(palette.dim),
         );
@@ -1727,6 +1735,7 @@ fn render_cpu_panel(
         frame,
         area,
         palette,
+        (palette.cpu, "%"),
         format!(
             "CPU · ACTUAL {} · PROM. {}",
             current.map_or_else(|| "—".into(), |value| format!("{value:.1}%")),
@@ -1734,7 +1743,6 @@ fn render_cpu_panel(
         ),
         points,
         [0.0, ceiling.clamp(5.0, 100.0)],
-        "%",
     );
 }
 
@@ -1755,6 +1763,7 @@ fn render_memory_panel(
         frame,
         area,
         palette,
+        (palette.ram, "M"),
         format!(
             "RAM · ACTUAL {} · PROM. {}",
             current.map_or_else(|| "—".into(), |value| format!("{value:.1} MiB")),
@@ -1762,7 +1771,6 @@ fn render_memory_panel(
         ),
         points,
         [(minimum - padding).max(0.0), (maximum + padding).max(2.0)],
-        "M",
     );
 }
 
@@ -1807,7 +1815,7 @@ fn render_current_stats(frame: &mut ratatui::Frame<'_>, area: Rect, palette: Pal
                 current
                     .cpu_percent
                     .map_or_else(|| "—".into(), |value| format!("{value:.1}%")),
-                palette.good,
+                palette.cpu,
             ),
         ]),
         Line::from(vec![
@@ -1817,7 +1825,7 @@ fn render_current_stats(frame: &mut ratatui::Frame<'_>, area: Rect, palette: Pal
                     || "—".into(),
                     |value| format!("{:.1} MiB", value as f64 / 1_048_576.0),
                 ),
-                palette.rank,
+                palette.ram,
             ),
         ]),
         Line::from(vec![
@@ -1859,11 +1867,11 @@ fn render_peaks(frame: &mut ratatui::Frame<'_>, area: Rect, palette: Palette, ap
         Paragraph::new(vec![
             Line::from(vec![
                 Span::styled("CPU MÁX  ", palette.dim),
-                Span::styled(cpu, palette.good),
+                Span::styled(cpu, palette.cpu),
             ]),
             Line::from(vec![
                 Span::styled("RAM MÁX  ", palette.dim),
-                Span::styled(memory, palette.rank),
+                Span::styled(memory, palette.ram),
             ]),
             Line::styled("Máximos desde que abriste SPIKE", palette.dim),
         ])
@@ -1887,9 +1895,9 @@ fn render_activity(frame: &mut ratatui::Frame<'_>, area: Rect, palette: Palette,
             .skip(usize::from(app.scroll))
             .map(|entry| {
                 let (level, style) = match entry.level {
-                    LogLevel::Info => ("INFO ", palette.dim),
-                    LogLevel::Success => ("OK   ", palette.good),
-                    LogLevel::Warning => ("AVISO", palette.bad),
+                    LogLevel::Info => ("INFO ", palette.log_info),
+                    LogLevel::Success => ("OK   ", palette.log_success),
+                    LogLevel::Warning => ("AVISO", palette.log_warning),
                 };
                 Line::from(vec![
                     Span::styled(format!("[{}] ", duration_clock(entry.at)), palette.dim),
@@ -2188,7 +2196,11 @@ fn render_rr_chart(frame: &mut ratatui::Frame<'_>, area: Rect, palette: Palette,
         .iter()
         .enumerate()
         .map(|(index, rr)| {
-            let style = if *rr >= 0 { palette.good } else { palette.bad };
+            let style = if *rr >= 0 {
+                palette.chart_win
+            } else {
+                palette.chart_loss
+            };
             let bar = Bar::with_label((index + 1).to_string(), u64::from(rr.unsigned_abs()))
                 .style(style)
                 .value_style(style.add_modifier(Modifier::BOLD));
@@ -2291,11 +2303,11 @@ fn render_brand_home(
         .enumerate()
         .map(|(index, line)| {
             let style = if (index as u128 + elapsed).is_multiple_of(4) {
-                palette.focus.add_modifier(Modifier::BOLD)
+                palette.logo_primary
             } else if index + 2 >= logo.len() {
-                palette.dim
+                palette.logo_fade
             } else {
-                palette.base.add_modifier(Modifier::BOLD)
+                palette.logo_secondary
             };
             Line::styled(*line, style)
         })
@@ -2885,7 +2897,7 @@ mod tests {
         assert!(settings.contains("Frecuencia"));
         assert!(settings.contains("Registro de diagnóstico"));
         assert!(settings.contains("Fira Mono obligatoria"));
-        assert!(settings.contains("palette.toml"));
+        assert!(settings.contains("Paleta editable"));
         assert!(settings.contains("Solo lectura"));
         assert!(!settings.contains("Log cambios") && !settings.contains("Retratos opcionales"));
     }
