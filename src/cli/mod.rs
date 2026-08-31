@@ -7,7 +7,16 @@ pub enum Command {
     History(HistoryArgs),
     Player,
     Stats(StatsArgs),
+    Terminal(TerminalCommand),
     Watch(WatchArgs),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminalCommand {
+    Install,
+    Status,
+    Launch,
+    Uninstall,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -101,6 +110,22 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     }
     if command == "stats" {
         return parse_stats(&mut iter);
+    }
+    if command == "terminal" {
+        let Some(subcommand) = iter.next() else {
+            return Err("Uso: vtracker terminal install|status|launch|uninstall".into());
+        };
+        let terminal_command = match subcommand {
+            "install" => TerminalCommand::Install,
+            "status" => TerminalCommand::Status,
+            "launch" => TerminalCommand::Launch,
+            "uninstall" => TerminalCommand::Uninstall,
+            _ => return Err("Uso: vtracker terminal install|status|launch|uninstall".into()),
+        };
+        if let Some(option) = iter.next() {
+            return Err(format!("Opción desconocida: {option}"));
+        }
+        return Ok(Command::Terminal(terminal_command));
     }
     if command != "watch" {
         return Err(format!(
@@ -334,6 +359,28 @@ mod tests {
             parse(&s(&["stats", "--limit", "6"])),
             Err("--limit debe estar entre 1 y 5.".into())
         );
+    }
+
+    #[test]
+    fn parses_terminal_profile_commands() {
+        assert_eq!(
+            parse(&s(&["terminal", "install"])),
+            Ok(Command::Terminal(TerminalCommand::Install))
+        );
+        assert_eq!(
+            parse(&s(&["terminal", "status"])),
+            Ok(Command::Terminal(TerminalCommand::Status))
+        );
+        assert_eq!(
+            parse(&s(&["terminal", "launch"])),
+            Ok(Command::Terminal(TerminalCommand::Launch))
+        );
+        assert_eq!(
+            parse(&s(&["terminal", "uninstall"])),
+            Ok(Command::Terminal(TerminalCommand::Uninstall))
+        );
+        assert!(parse(&s(&["terminal"])).is_err());
+        assert!(parse(&s(&["terminal", "install", "--force"])).is_err());
     }
 
     #[test]

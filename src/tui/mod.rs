@@ -1,12 +1,14 @@
 //! Interfaz terminal interactiva, sin I/O remoto durante el renderizado.
 
 mod demo;
+mod metrics;
 mod settings;
 mod theme;
 mod view;
 mod worker;
 
 use std::{
+    collections::VecDeque,
     io,
     sync::mpsc::TryRecvError,
     time::{Duration, Instant},
@@ -16,14 +18,19 @@ use std::{
 use std::process::Command as ProcessCommand;
 
 use crossterm::{
+    cursor::MoveTo,
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
         KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     },
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{
+        Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+        enable_raw_mode,
+    },
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     config::Config,
@@ -44,11 +51,71 @@ use settings::Settings;
 use view::render;
 use worker::{Context, Reply, Request, Worker};
 
-const TABS: [&str; 5] = ["Resumen", "Partida", "Mi perfil", "Historial", "Ajustes"];
+const TABS: [&str; 6] = [
+    "Resumen",
+    "Partida",
+    "Mi perfil",
+    "Historial",
+    "Ajustes",
+    "Logs",
+];
 const INPUT_TIMEOUT: Duration = Duration::from_millis(100);
 const SPLASH_DURATION: Duration = Duration::from_secs(3);
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+fn tab_indices(width: u16, row: usize) -> &'static [usize] {
+    const WIDE: [usize; 6] = [0, 1, 2, 3, 4, 5];
+    const COMPACT_TOP: [usize; 2] = [0, 1];
+    const COMPACT_MIDDLE: [usize; 2] = [2, 3];
+    const COMPACT_BOTTOM: [usize; 2] = [4, 5];
+    const MEDIUM_TOP: [usize; 3] = [0, 1, 2];
+    const MEDIUM_BOTTOM: [usize; 3] = [3, 4, 5];
+    if width >= 90 {
+        &WIDE
+    } else if width >= 58 {
+        if row == 0 {
+            &MEDIUM_TOP
+        } else {
+            &MEDIUM_BOTTOM
+        }
+    } else if row == 0 {
+        &COMPACT_TOP
+    } else if row == 1 {
+        &COMPACT_MIDDLE
+    } else {
+        &COMPACT_BOTTOM
+    }
+}
+
+fn tab_rows(width: u16) -> u16 {
+    if width >= 90 {
+        1
+    } else if width >= 58 {
+        2
+    } else {
+        3
+    }
+}
+
+fn tab_text(index: usize, compact: bool) -> String {
+    let label = if compact {
+        match index {
+            2 => "Perfil",
+            3 => "Hist.",
+            4 => "Ajust.",
+            5 => "Logs",
+            _ => TABS[index],
+        }
+    } else {
+        TABS[index]
+    };
+    if compact {
+        format!(" {}: {} ", index + 1, label)
+    } else {
+        format!("  {}: {}  ", index + 1, label)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct HistoryDetails {
     map: String,
     agent: String,
@@ -59,10 +126,19 @@ struct HistoryDetails {
     opponent_score: Option<u32>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct HistoryItem {
     entry: HistoryEntry,
     details: Option<HistoryDetails>,
+    rr_change: Option<i32>,
+    rr_after: Option<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct CachedHistory {
+    schema: u8,
+    saved_at_ms: u64,
+    items: Vec<HistoryItem>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -131,6 +207,19 @@ enum Focus {
     Content,
 }
 
+#[derive(Clone, Copy)]
+enum LogLevel {
+    Info,
+    Success,
+    Warning,
+}
+
+struct LogEntry {
+    at: Duration,
+    level: LogLevel,
+    message: String,
+}
+
 struct App {
     splash_started: Instant,
     splash_complete: bool,
@@ -151,7 +240,9 @@ struct App {
     competitive: Option<CompetitiveProfile>,
     competitive_updates: Vec<CompetitiveUpdate>,
     history: Option<Vec<HistoryItem>>,
+    history_cached_at_ms: Option<u64>,
     history_failed: bool,
+    history_requested: bool,
     profile_pending: bool,
     profile_requested: bool,
     profile_failed: bool,
@@ -170,11 +261,13 @@ struct App {
     refresh_failed: bool,
     dirty: bool,
     should_quit: bool,
+    metrics: metrics::ProcessMetrics,
+    logs: VecDeque<LogEntry>,
 }
 
 impl App {
     fn new(config: &Config) -> Self {
-        Self {
+        let mut app = Self {
             splash_started: Instant::now(),
             splash_complete: false,
             demo: None,
@@ -194,7 +287,9 @@ impl App {
             competitive: None,
             competitive_updates: Vec::new(),
             history: None,
+            history_cached_at_ms: None,
             history_failed: false,
+            history_requested: false,
             profile_pending: false,
             profile_requested: false,
             profile_failed: false,
@@ -213,7 +308,11 @@ impl App {
             refresh_failed: false,
             dirty: true,
             should_quit: false,
-        }
+            metrics: metrics::ProcessMetrics::new(),
+            logs: VecDeque::new(),
+        };
+        app.push_log(LogLevel::Info, "Interfaz iniciada");
+        app
     }
 
     fn select_next(&mut self) {
@@ -229,6 +328,20 @@ impl App {
             // al cumplir tres segundos este mismo tick presenta la vista real.
             self.dirty = true;
         }
+        self.dirty |= self.metrics.tick();
+    }
+
+    fn push_log(&mut self, level: LogLevel, message: impl Into<String>) {
+        const LOG_LIMIT: usize = 100;
+        self.logs.push_back(LogEntry {
+            at: self.metrics.uptime(),
+            level,
+            message: message.into(),
+        });
+        while self.logs.len() > LOG_LIMIT {
+            self.logs.pop_front();
+        }
+        self.dirty = true;
     }
 
     fn select_previous(&mut self) {
@@ -274,6 +387,10 @@ impl App {
     }
 
     fn update_state(&mut self, state: StateInfo) -> bool {
+        let reconnected = self
+            .state
+            .as_ref()
+            .is_some_and(|previous| !previous.client_found && state.client_found);
         let phase_changed = self
             .state
             .as_ref()
@@ -284,6 +401,7 @@ impl App {
                 || previous.game_found != state.game_found
         });
         if phase_changed {
+            self.push_log(LogLevel::Info, format!("Estado: {}", state.phase.label()));
             self.scroll = 0;
             self.detail = false;
             self.follow_selection = true;
@@ -303,10 +421,14 @@ impl App {
                 self.profile_pending = false;
                 self.profile_requested = false;
                 self.profile_failed = false;
-                self.history = None;
-                self.history_index = 0;
+                // El historial seguro persiste para seguir disponible sin VALORANT.
                 self.history_failed = false;
+                self.history_requested = false;
             }
+        }
+        if reconnected {
+            self.history_failed = false;
+            self.history_requested = false;
         }
         self.dirty |= changed || self.refresh_failed;
         self.state = Some(state);
@@ -317,6 +439,7 @@ impl App {
     fn mark_refresh_failed(&mut self) {
         if !self.refresh_failed {
             self.refresh_failed = true;
+            self.push_log(LogLevel::Warning, "Conexión interrumpida; reintentando");
             self.dirty = true;
         }
     }
@@ -326,6 +449,12 @@ impl App {
             Reply::Observed { state, log_failed } => {
                 self.observation_pending = false;
                 self.dirty |= self.log_failed != log_failed;
+                if log_failed && !self.log_failed {
+                    self.push_log(
+                        LogLevel::Warning,
+                        "No se pudo escribir el registro en disco",
+                    );
+                }
                 self.log_failed = log_failed;
                 match state {
                     Ok(state) => {
@@ -353,9 +482,16 @@ impl App {
                             })
                             .unwrap_or(0);
                         self.live_match = Some(context);
+                        self.push_log(LogLevel::Success, "Contexto de partida actualizado");
                     }
-                    Ok(Context::Completed(summary)) => self.completed_match = Some(summary),
-                    Err(()) => {} // Conservar el último dato de esta sesión al fallar un refresh.
+                    Ok(Context::Completed(summary)) => {
+                        self.completed_match = Some(summary);
+                        self.push_log(LogLevel::Success, "Resumen postpartida actualizado");
+                    }
+                    Err(()) => self.push_log(
+                        LogLevel::Warning,
+                        "No se pudo actualizar el contexto de partida",
+                    ),
                 }
             }
             Reply::ContextProgress {
@@ -381,6 +517,9 @@ impl App {
                     self.own_profile = Some(profile);
                     self.competitive = competitive;
                     self.competitive_updates = updates;
+                    self.push_log(LogLevel::Success, "Perfil y rango actualizados");
+                } else {
+                    self.push_log(LogLevel::Warning, "No se pudo actualizar el perfil");
                 }
             }
             Reply::History { epoch, data } => {
@@ -391,6 +530,7 @@ impl App {
                 }
                 self.history_failed = data.is_err();
                 if let Ok(entries) = data {
+                    let entry_count = entries.len();
                     // La posición cambia al llegar nuevas partidas. Conservar la
                     // selección por los metadatos seguros, sin retener MatchID.
                     let selected = self
@@ -406,9 +546,31 @@ impl App {
                     }
                     self.follow_selection = true;
                     self.history = Some(entries);
+                    self.history_cached_at_ms = Some(now_ms());
+                    self.push_log(
+                        LogLevel::Success,
+                        format!("Historial actualizado: {entry_count} partidas"),
+                    );
+                } else {
+                    self.push_log(LogLevel::Warning, "No se pudo actualizar el historial");
                 }
             }
-            Reply::Saved(result) => self.settings.saved(result),
+            Reply::Saved(result) => {
+                let succeeded = result.is_ok();
+                self.settings.saved(result);
+                self.push_log(
+                    if succeeded {
+                        LogLevel::Success
+                    } else {
+                        LogLevel::Warning
+                    },
+                    if succeeded {
+                        "Configuración guardada"
+                    } else {
+                        "No se pudo guardar la configuración"
+                    },
+                );
+            }
         }
         self.dirty = true;
     }
@@ -449,7 +611,7 @@ impl App {
             self.context_progress_label = "Preparando la consulta";
             self.dirty = true;
         }
-        if connected && self.history.is_none() && !self.history_failed {
+        if connected && !self.history_requested && !self.history_failed {
             self.request_history(worker);
         }
     }
@@ -460,6 +622,7 @@ impl App {
         }
         if !self.history_pending && worker.submit(Request::History { epoch: self.epoch }) {
             self.history_pending = true;
+            self.history_requested = true;
             self.history_failed = false;
             self.dirty = true;
         }
@@ -496,7 +659,7 @@ impl App {
                 self.focus = Focus::Content;
                 self.follow_selection = true;
             }
-            KeyCode::Char(c @ '1'..='5') => {
+            KeyCode::Char(c @ '1'..='6') => {
                 self.select_tab((c as u8 - b'1') as usize);
                 self.focus = Focus::Content;
             }
@@ -534,6 +697,7 @@ impl App {
                 }
             }
             KeyCode::Char('r') if self.selected_tab == 4 => self.settings.discard(),
+            KeyCode::Char('c') if self.selected_tab == 5 => self.logs.clear(),
             KeyCode::Char('r') if self.selected_tab == 3 => self.request_history(worker),
             KeyCode::Char('r') => {
                 if !self.context_pending {
@@ -639,7 +803,7 @@ impl App {
         self.dirty = true;
     }
 
-    fn mouse(&mut self, mouse: MouseEvent, width: u16) {
+    fn mouse(&mut self, mouse: MouseEvent, width: u16, height: u16) {
         match mouse.kind {
             MouseEventKind::ScrollUp => {
                 self.scroll = self.scroll.saturating_sub(3);
@@ -657,19 +821,13 @@ impl App {
             _ => return,
         }
 
-        let tab_rows = if width < 72 { 2 } else { 1 };
-        if mouse.row == 1 || (tab_rows == 2 && mouse.row == 2) {
+        let tab_rows = tab_rows(width);
+        if mouse.row >= 1 && mouse.row <= tab_rows {
             let row = usize::from(mouse.row.saturating_sub(1));
-            let indices: Vec<usize> = if tab_rows == 1 {
-                (0..TABS.len()).collect()
-            } else if row == 0 {
-                (0..3).collect()
-            } else {
-                (3..5).collect()
-            };
+            let indices = tab_indices(width, row);
             let mut x = 1_u16;
-            for index in indices {
-                let label_width = u16::try_from(format!(" {} {} ", index + 1, TABS[index]).len())
+            for &index in indices {
+                let label_width = u16::try_from(tab_text(index, width < 90).chars().count() + 1)
                     .unwrap_or(u16::MAX);
                 if mouse.column >= x && mouse.column < x.saturating_add(label_width) {
                     self.select_tab(index);
@@ -680,7 +838,18 @@ impl App {
             }
         }
 
-        let body_y = 2 + tab_rows;
+        let chart_rows = if self.selected_tab == 3
+            && !self.detail
+            && width >= 70
+            && height >= 22
+            && self.history.as_ref().is_some_and(|items| {
+                items.iter().filter(|item| item.rr_change.is_some()).count() >= 2
+            }) {
+            9
+        } else {
+            0
+        };
+        let body_y = 2 + tab_rows + chart_rows;
         if mouse.row < body_y {
             return;
         }
@@ -792,6 +961,100 @@ impl Drop for TerminalGuard {
     }
 }
 
+#[cfg(target_os = "windows")]
+struct ConsoleBufferGuard {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    original_size: windows_sys::Win32::System::Console::COORD,
+}
+
+#[cfg(target_os = "windows")]
+impl ConsoleBufferGuard {
+    fn new() -> Option<Self> {
+        use windows_sys::Win32::System::Console::{
+            CONSOLE_SCREEN_BUFFER_INFO, GetConsoleScreenBufferInfo, GetStdHandle, STD_OUTPUT_HANDLE,
+        };
+
+        // SAFETY: las funciones reciben un handle de stdout y un puntero válido
+        // durante toda la llamada; si el host no expone una consola Win32 se omite.
+        unsafe {
+            let handle = GetStdHandle(STD_OUTPUT_HANDLE);
+            if handle.is_null() || handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+                return None;
+            }
+            let mut info = CONSOLE_SCREEN_BUFFER_INFO::default();
+            if GetConsoleScreenBufferInfo(handle, &mut info) == 0 {
+                return None;
+            }
+            let guard = Self {
+                handle,
+                original_size: info.dwSize,
+            };
+            guard.fit_visible();
+            Some(guard)
+        }
+    }
+
+    fn fit_visible(&self) {
+        use windows_sys::Win32::System::Console::{
+            CONSOLE_SCREEN_BUFFER_INFO, COORD, GetConsoleScreenBufferInfo,
+            SetConsoleScreenBufferSize,
+        };
+
+        // SAFETY: self.handle permanece válido mientras stdout siga asociado a
+        // esta consola y `info` vive hasta terminar la llamada.
+        unsafe {
+            let mut info = CONSOLE_SCREEN_BUFFER_INFO::default();
+            if GetConsoleScreenBufferInfo(self.handle, &mut info) == 0 {
+                return;
+            }
+            let visible = COORD {
+                X: info.srWindow.Right - info.srWindow.Left + 1,
+                Y: info.srWindow.Bottom - info.srWindow.Top + 1,
+            };
+            let _ = SetConsoleScreenBufferSize(self.handle, visible);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for ConsoleBufferGuard {
+    fn drop(&mut self) {
+        // SAFETY: se restaura el tamaño capturado del mismo handle. Un fallo no
+        // impide que TerminalGuard restaure el modo normal de la terminal.
+        unsafe {
+            let _ = windows_sys::Win32::System::Console::SetConsoleScreenBufferSize(
+                self.handle,
+                self.original_size,
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn fit_console_buffer_to_window() {
+    use windows_sys::Win32::System::Console::{
+        CONSOLE_SCREEN_BUFFER_INFO, COORD, GetConsoleScreenBufferInfo, GetStdHandle,
+        STD_OUTPUT_HANDLE, SetConsoleScreenBufferSize,
+    };
+
+    // SAFETY: solo consulta y ajusta el búfer correspondiente a stdout.
+    unsafe {
+        let handle = GetStdHandle(STD_OUTPUT_HANDLE);
+        if handle.is_null() || handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+            return;
+        }
+        let mut info = CONSOLE_SCREEN_BUFFER_INFO::default();
+        if GetConsoleScreenBufferInfo(handle, &mut info) == 0 {
+            return;
+        }
+        let visible = COORD {
+            X: info.srWindow.Right - info.srWindow.Left + 1,
+            Y: info.srWindow.Bottom - info.srWindow.Top + 1,
+        };
+        let _ = SetConsoleScreenBufferSize(handle, visible);
+    }
+}
+
 pub(crate) fn run(config: Config, demo: bool) -> io::Result<()> {
     use io::IsTerminal;
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
@@ -803,7 +1066,16 @@ pub(crate) fn run(config: Config, demo: bool) -> io::Result<()> {
     enable_raw_mode()?;
     let _guard = TerminalGuard;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(
+        stdout,
+        crossterm::terminal::SetTitle("VTRACKER"),
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        Clear(ClearType::Purge),
+        MoveTo(0, 0)
+    )?;
+    #[cfg(target_os = "windows")]
+    let _buffer_guard = ConsoleBufferGuard::new();
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
     run_loop(&mut terminal, config, demo)
 }
@@ -819,9 +1091,19 @@ fn run_loop(
         Worker::start()?
     };
     let mut app = App::new(&config);
+    if !demo && let Some(cached) = worker::load_cached_history() {
+        let count = cached.items.len();
+        app.history = Some(cached.items);
+        app.history_cached_at_ms = Some(cached.saved_at_ms);
+        app.push_log(
+            LogLevel::Info,
+            format!("Historial recuperado de caché: {count} partidas"),
+        );
+    }
     if demo {
         app.demo = Some(demo::Demo::default());
         app.selected_tab = 1;
+        app.push_log(LogLevel::Info, "Modo demo activado");
     }
     let mut last_refresh: Option<Instant> = None;
 
@@ -856,8 +1138,13 @@ fn run_loop(
         if event::poll(INPUT_TIMEOUT)? {
             match event::read()? {
                 Event::Key(key) => app.key(key, &worker),
-                Event::Mouse(mouse) => app.mouse(mouse, terminal.size()?.width),
+                Event::Mouse(mouse) => {
+                    let size = terminal.size()?;
+                    app.mouse(mouse, size.width, size.height)
+                }
                 Event::Resize(_, _) => {
+                    #[cfg(target_os = "windows")]
+                    fit_console_buffer_to_window();
                     app.dirty = true;
                     app.follow_selection = true;
                 }
@@ -888,16 +1175,20 @@ fn history_content(app: &App) -> String {
 }
 
 fn relative_time(started_at_ms: u64) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0);
+    let now = now_ms();
     match now.saturating_sub(started_at_ms) / 1_000 {
         0..=59 => "ahora".into(),
         60..=3_599 => format!("hace {} min", now.saturating_sub(started_at_ms) / 60_000),
         3_600..=86_399 => format!("hace {} h", now.saturating_sub(started_at_ms) / 3_600_000),
         _ => format!("hace {} d", now.saturating_sub(started_at_ms) / 86_400_000),
     }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -982,19 +1273,19 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         };
 
-        app.mouse(click(12, 1), 80);
+        app.mouse(click(17, 1), 80, 24);
         assert_eq!(app.selected_tab, 1);
 
-        app.mouse(click(5, 2), 60);
+        app.mouse(click(5, 2), 60, 24);
         assert_eq!(app.selected_tab, 3);
 
         app.history = Some(vec![history_item(200), history_item(100)]);
         app.select_tab(3);
-        app.mouse(click(5, 6), 80);
+        app.mouse(click(5, 7), 80, 24);
         assert_eq!(app.history_index, 1);
 
         app.select_tab(4);
-        app.mouse(click(5, 11), 80);
+        app.mouse(click(5, 12), 80, 24);
         assert_eq!(app.settings.selected, 2);
 
         app.mouse(
@@ -1005,6 +1296,7 @@ mod tests {
                 modifiers: KeyModifiers::NONE,
             },
             80,
+            24,
         );
         assert_eq!(app.scroll, 3);
     }
@@ -1054,6 +1346,8 @@ mod tests {
                 started_at_ms,
             },
             details: None,
+            rr_change: None,
+            rr_after: None,
         }
     }
 

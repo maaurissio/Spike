@@ -147,6 +147,34 @@
 
 **Contexto:** el arranque anterior era una portada informativa, pero no tenía identidad visual ni una duración estable. Durante Agent Select, partida y postpartida el mensaje `Cargando datos` tampoco distinguía entre trabajo real y una animación decorativa.
 
-**Decisión:** mostrar durante tres segundos un logotipo ASCII `VTracker` centrado, con variante compacta según el ancho y subtítulo `v0.1 | for fun`, mientras el worker continúa trabajando. Para el contexto de partida, el worker emite progreso asociado a su generación en etapas verificables: lectura de sesión, detección de partida/resultado y preparación del roster o resumen. La TUI representa esos eventos con `Gauge`; descarta avances de generaciones antiguas y reemplaza `PgUp/PgDn` por `▲/▼` en los textos visibles.
+**Decisión:** mostrar durante tres segundos una portada inspirada en la jerarquía de Binsider, pero con identidad propia: marco completo, logotipo ASCII `VTracker`, variante compacta según el ancho, texto provisional `blablabla` y enlace al repositorio oficial. Si la conexión tarda más, la misma portada permanece con el estado real de carga. Para el contexto de partida, el worker emite progreso asociado a su generación en etapas verificables: lectura de sesión, detección de partida/resultado y preparación del roster o resumen. La TUI representa esos eventos con `Gauge` y descarta avances de generaciones antiguas.
 
-**Consecuencias:** el splash no retrasa las consultas y desaparece al cumplir tres segundos incluso si los datos ya llegaron. El porcentaje no pretende medir bytes transferidos: representa hitos completados del flujo real. Un resultado final o un error cierra el gauge y mantiene la política de último dato válido.
+**Consecuencias:** el splash no retrasa las consultas y desaparece al cumplir tres segundos si el contenido ya está listo. `blablabla` es deliberadamente temporal hasta definir la frase del producto. El porcentaje de carga de partida no pretende medir bytes transferidos: representa hitos completados del flujo real. Un resultado final o un error cierra el gauge y mantiene la política de último dato válido.
+
+## ADR-022 — Historial de 20 Ranked, tendencia RR y continuidad sin cliente (2026-08-30)
+
+**Contexto:** cinco partidas no bastan para visualizar una tendencia de RR y, con VALORANT cerrado, las credenciales locales no están disponibles. La caché L1 de 60 segundos tampoco sobrevive al cierre de VTracker.
+
+**Decisión:** Historial consulta hasta veinte partidas `competitive` y sus cambios de RR, presenta la variación por partida y un gráfico Ratatui de barras ordenado de la más antigua a la reciente; ganancias y pérdidas usan estilos semánticos diferentes y el encabezado conserva el neto. Después de una consulta válida persiste en `%APPDATA%/vtracker/history-cache.json` únicamente el modelo normalizado propio: fecha, resultado, mapa, agente, estadísticas y RR. No persiste tokens, PUUID ni MatchID. Si VALORANT está cerrado, la TUI muestra ese último snapshot con su antigüedad; un archivo ausente, corrupto o con esquema desconocido se ignora de forma segura.
+
+**Presentación:** las cinco secciones superiores se muestran como botones separados con fondo, sin contornos laterales. El pie se integra en el borde inferior con el formato uniforme `[tecla→acción]`; toda navegación vertical usa `↑/↓` una sola vez y el contador de desplazamiento queda separado, sin flechas duplicadas. El marco y el título de terminal muestran `VTRACKER`; en Windows la TUI reduce temporalmente el búfer a la ventana visible, y lo resincroniza al cambiar de tamaño, para retirar el scrollbar de la consola clásica. El icono del ejecutable queda pendiente de una imagen elegida explícitamente por el usuario.
+
+**Consecuencias:** las barras comparan la magnitud del cambio de cada partida; el signo y el color distinguen ganancia de pérdida y el título muestra el balance neto. Las estadísticas live del roster conservan su ventana de cinco Ranked; ampliar el historial propio a veinte no cambia esa política ni añade consultas de terceros.
+
+## ADR-023 — Telemetría local y bitácora de sesión (2026-08-30)
+
+**Contexto:** diagnosticar el costo de VTRACKER desde el propio dashboard ayuda a detectar consumo anómalo sin abrir un monitor externo. Bottom demuestra una jerarquía útil de widgets temporales, pero VTRACKER no necesita inspeccionar ni administrar otros procesos.
+
+**Decisión:** añadir `6: Logs` con gráficos temporales de CPU normalizada y memoria de trabajo, valores actuales, promedios, uptime y hasta sesenta muestras de un segundo del proceso actual. Un panel independiente conserva los máximos de CPU y RAM desde el inicio de la sesión y el instante en que ocurrieron. La zona inferior muestra como máximo cien eventos internos de alto nivel: cambios de fase, resultados de actualizaciones y guardado de configuración. No se muestra un apartado explicativo de privacidad dentro de la interfaz.
+
+**Privacidad y alcance:** las muestras y eventos viven solo en memoria y desaparecen al cerrar VTRACKER o al usar `c`. No se inspeccionan otros procesos, no se añaden acciones de terminación y no se confunde esta bitácora visual con el registro opcional persistente de transiciones.
+
+## ADR-024 — Gruvbox y propiedad de la tipografía (2026-08-30)
+
+**Contexto:** el usuario eligió Gruvbox como referencia cromática y pidió investigar si VTracker puede cambiar la fuente de la terminal. Ratatui controla las celdas, pero el emulador de terminal es quien las representa gráficamente.
+
+**Decisión:** Noche adopta Gruvbox Dark de contraste medio y Claro adopta Gruvbox Light usando los valores RGB oficiales. Los colores funcionales y las familias competitivas se asignan a variantes Gruvbox, manteniendo texto y marcadores para que ninguna información dependa solo del color. Sistema y Sin color conservan su comportamiento.
+
+VTracker no fuerza la tipografía desde la TUI. La solución implementada es un perfil opcional y reversible de Windows Terminal con Fira Mono, instalado únicamente por una acción explícita. Conserva un fragmento aislado y, como compatibilidad para instalaciones que no lo importan, agrega solo el perfil/esquema identificados por GUID a `settings.json` después de guardar una copia previa. `SetCurrentConsoleFontEx` queda descartada como ruta principal por ser una API clásica no recomendada y no controlar hosts basados en ConPTY. Investigación y alternativas: `docs/TERMINAL-APPEARANCE.md`.
+
+**Consecuencias:** la paleta es consistente aunque el host tenga otra tabla ANSI. La ejecución directa sigue siendo compatible con ConHost y otros terminales. Windows Terminal 1.24 y Fira Mono Regular/Medium/Bold quedaron instalados para este usuario; `terminal uninstall` conserva ambos y retira solo la integración de VTracker.

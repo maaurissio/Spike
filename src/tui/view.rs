@@ -1,12 +1,16 @@
 //! Composición en celdas de terminal basada en docs/mockups; sin I/O.
 use ratatui::{
-    layout::{Alignment, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
+    symbols::{self, Marker},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Gauge, Paragraph},
+    widgets::{
+        Axis, Bar, BarChart, Block, BorderType, Borders, Chart, Clear, Dataset, Gauge, GraphType,
+        Paragraph,
+    },
 };
 
-use super::{App, Focus, TABS, relative_time, theme::Palette};
+use super::{App, Focus, LogLevel, relative_time, tab_indices, tab_rows, tab_text, theme::Palette};
 use crate::{
     models::{
         MatchOutcome,
@@ -14,6 +18,8 @@ use crate::{
     },
     providers::capabilities::GamePhase,
 };
+
+type MetricPoints = Vec<(f64, f64)>;
 
 pub(super) struct Screen {
     pub lines: Vec<Line<'static>>,
@@ -130,7 +136,8 @@ pub(super) fn content(app: &App, width: u16) -> Screen {
         1 => match_view(&mut s, app),
         2 => profile(&mut s, app),
         3 => history(&mut s, app),
-        _ => settings(&mut s, app),
+        4 => settings(&mut s, app),
+        _ => {}
     }
     if app.selected_tab < 3 && app.demo.is_none() {
         if app.context_pending {
@@ -206,6 +213,16 @@ fn panel(s: &mut Screen, app: &App) {
     }
 }
 
+fn duration_clock(duration: std::time::Duration) -> String {
+    let seconds = duration.as_secs();
+    format!(
+        "{:02}:{:02}:{:02}",
+        seconds / 3_600,
+        seconds % 3_600 / 60,
+        seconds % 60
+    )
+}
+
 fn profile_summary(s: &mut Screen, app: &App) {
     if app.demo.is_some() {
         let rank = "DIAMANTE 2";
@@ -230,10 +247,7 @@ fn profile_summary(s: &mut Screen, app: &App) {
                         profile.xp, rank.wins, rank.games
                     ));
                 } else {
-                    s.text(format!(
-                        "{} XP · rango confirmado por tu última Ranked",
-                        profile.xp
-                    ));
+                    s.text(format!("{} XP", profile.xp));
                 }
             }
             (Some(profile), None) => {
@@ -1052,9 +1066,9 @@ fn history(s: &mut Screen, app: &App) {
             let wide = s.width >= 70;
             s.row(Line::styled(
                 if wide {
-                    "  RES.      MAPA         AGENTE      K / D / A     HS%     CUÁNDO"
+                    "  RES.      MAPA         AGENTE      K / D / A     HS%    RR     CUÁNDO"
                 } else {
-                    "  RES.  MAPA       K/D/A       CUÁNDO"
+                    "  RES.  MAPA       K/D/A      RR"
                 },
                 s.palette.dim,
             ));
@@ -1088,7 +1102,15 @@ fn history(s: &mut Screen, app: &App) {
                 if wide {
                     row.push_str(&cell(&hs, 8));
                 }
-                row.push_str(&relative_time(item.entry.started_at_ms));
+                row.push_str(&cell(
+                    &item
+                        .rr_change
+                        .map_or_else(|| "—".into(), |rr| format!("{rr:+}")),
+                    if wide { 7 } else { 6 },
+                ));
+                if wide {
+                    row.push_str(&relative_time(item.entry.started_at_ms));
+                }
                 let style = details.map_or(s.palette.base, |details| match details.outcome {
                     MatchOutcome::Win => s.palette.good,
                     MatchOutcome::Loss => s.palette.bad,
@@ -1165,13 +1187,34 @@ fn history(s: &mut Screen, app: &App) {
             if let Some(summary) = history_summary(app) {
                 s.text(summary);
             }
+            if let Some(saved_at) = app.history_cached_at_ms
+                && (app.history_failed
+                    || app.state.as_ref().is_some_and(|state| !state.client_found))
+            {
+                s.row(Line::styled(
+                    format!(
+                        "Datos guardados · {}{}",
+                        relative_time(saved_at),
+                        if app.history_failed {
+                            " · no se pudo actualizar"
+                        } else {
+                            ""
+                        }
+                    ),
+                    s.palette.pending,
+                ));
+            }
         }
     } else {
-        s.text(if app.history_failed {
-            "No se pudo cargar. r reintenta."
-        } else {
-            "Cargando tus partidas…"
-        });
+        s.text(
+            if app.state.as_ref().is_some_and(|state| !state.client_found) {
+                "No hay historial guardado. Abre VALORANT para cargar tus últimas 20 Ranked."
+            } else if app.history_failed {
+                "No se pudo cargar. [r] Reintentar."
+            } else {
+                "Cargando tus partidas…"
+            },
+        );
     }
     if app.history_pending {
         s.text("Actualizando…");
@@ -1281,7 +1324,7 @@ fn settings(s: &mut Screen, app: &App) {
     ]));
     s.text("No controla VALORANT, no accede a memoria y respeta nombres ocultos.");
     s.row(Line::styled(
-        "↑/↓ elegir · +/- cambiar · Espacio alternar",
+        "Usa los controles del borde inferior.",
         s.palette.dim,
     ));
     if app.demo.is_some() {
@@ -1290,6 +1333,11 @@ fn settings(s: &mut Screen, app: &App) {
 }
 
 fn history_summary(app: &App) -> Option<String> {
+    let history = app.history.as_ref()?;
+    let rr_values = history
+        .iter()
+        .filter_map(|item| item.rr_change)
+        .collect::<Vec<_>>();
     let details = app
         .history
         .as_ref()?
@@ -1297,7 +1345,14 @@ fn history_summary(app: &App) -> Option<String> {
         .filter_map(|item| item.details.as_ref())
         .collect::<Vec<_>>();
     if details.is_empty() {
-        return None;
+        return (!rr_values.is_empty()).then(|| {
+            format!(
+                "{} {} · RR {:+}",
+                history.len(),
+                plural(history.len(), "partida", "partidas"),
+                rr_values.into_iter().sum::<i32>()
+            )
+        });
     }
     let wins = details
         .iter()
@@ -1321,14 +1376,16 @@ fn history_summary(app: &App) -> Option<String> {
         })
         .and_then(|(head, body, leg)| headshot_percent(head, body, leg))
         .map_or_else(|| "—".into(), |value| format!("{value:.1}%"));
+    let rr = rr_values.into_iter().sum::<i32>();
     Some(format!(
-        "{} {} · {} {} · {} {}\nK/D {} · KDA {} · HS {}\n{} K / {} D / {} A",
+        "{} {} · {} {} · {} {} · RR {:+}\nK/D {} · KDA {} · HS {}\n{} K / {} D / {} A",
         details.len(),
         plural(details.len(), "partida", "partidas"),
         wins,
         plural(wins, "victoria", "victorias"),
         losses,
         plural(losses, "derrota", "derrotas"),
+        rr,
         kd_text(kills, deaths),
         kd_text(kills.saturating_add(assists), deaths),
         hs,
@@ -1425,6 +1482,393 @@ fn phase_label(app: &App) -> &'static str {
     }
 }
 
+fn footer_line(app: &App, palette: Palette, width: u16) -> Line<'static> {
+    let compact = width < 72;
+    let actions: &[(&str, &str)] = if app.focus == Focus::Tabs {
+        if compact {
+            &[("←/→", "vista"), ("q", "salir")]
+        } else {
+            &[("←/→", "sección"), ("Enter", "abrir"), ("q", "salir")]
+        }
+    } else {
+        match app.selected_tab {
+            0 if compact => &[("r", "actualizar"), ("q", "salir")],
+            0 => &[
+                ("Enter", "partida"),
+                ("r", "actualizar"),
+                ("1-6", "sección"),
+                ("t", "tema"),
+                ("q", "salir"),
+            ],
+            1 if compact => &[("↑/↓", "jugador"), ("q", "salir")],
+            1 if app.demo.as_ref().is_some_and(|demo| demo.post) => &[
+                ("p", "partida"),
+                ("Esc", "cerrar"),
+                ("1-6", "sección"),
+                ("q", "salir"),
+            ],
+            1 => &[
+                ("↑/↓", "jugador"),
+                ("Enter", "detalle"),
+                ("g", "Tracker"),
+                ("r", "actualizar"),
+                ("q", "salir"),
+            ],
+            2 if compact => &[("↑/↓", "mover"), ("q", "salir")],
+            2 => &[
+                ("↑/↓", "desplazar"),
+                ("r", "actualizar"),
+                ("1-6", "sección"),
+                ("q", "salir"),
+            ],
+            3 if compact => &[("↑/↓", "partida"), ("q", "salir")],
+            3 => &[
+                ("↑/↓", "partida"),
+                ("Enter", "detalle"),
+                ("r", "actualizar"),
+                ("q", "salir"),
+            ],
+            4 if compact => &[("↑/↓", "opción"), ("q", "salir")],
+            4 => &[
+                ("↑/↓", "opción"),
+                ("+/-", "cambiar"),
+                ("s", "guardar"),
+                ("r", "descartar"),
+                ("q", "salir"),
+            ],
+            5 if compact => &[("↑/↓", "mover"), ("q", "salir")],
+            5 => &[
+                ("↑/↓", "desplazar"),
+                ("c", "limpiar"),
+                ("1-6", "sección"),
+                ("q", "salir"),
+            ],
+            _ => &[("r", "actualizar"), ("q", "salir")],
+        }
+    };
+    let mut spans = Vec::with_capacity(actions.len() * 6);
+    for (index, (key, label)) in actions.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::styled("[", palette.border));
+        spans.push(Span::styled(
+            (*key).to_owned(),
+            palette.pending.add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled("→", palette.dim));
+        spans.push(Span::styled((*label).to_owned(), palette.base));
+        spans.push(Span::styled("]", palette.border));
+    }
+    Line::from(spans)
+}
+
+fn logs_activity_capacity(area: Rect) -> usize {
+    let panel_height = if area.width >= 76 && area.height >= 13 {
+        area.height.saturating_sub(12)
+    } else if area.height >= 17 {
+        area.height.saturating_sub(14)
+    } else {
+        area.height
+    };
+    usize::from(panel_height.saturating_sub(2).max(1))
+}
+
+fn metric_points(app: &App) -> (MetricPoints, MetricPoints) {
+    let mut cpu = Vec::new();
+    let mut memory = Vec::new();
+    for (index, sample) in app.metrics.history().iter().enumerate() {
+        let x = index as f64;
+        if let Some(value) = sample.cpu_percent {
+            cpu.push((x, value));
+        }
+        if let Some(value) = sample.memory_bytes {
+            memory.push((x, value as f64 / 1_048_576.0));
+        }
+    }
+    (cpu, memory)
+}
+
+fn average(points: &[(f64, f64)]) -> Option<f64> {
+    (!points.is_empty())
+        .then(|| points.iter().map(|point| point.1).sum::<f64>() / points.len() as f64)
+}
+
+fn metric_chart(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    palette: Palette,
+    title: String,
+    points: &[(f64, f64)],
+    bounds: [f64; 2],
+    suffix: &'static str,
+) {
+    let last_x = points.last().map_or(1.0, |point| point.0.max(1.0));
+    let age = last_x.round() as u64;
+    let dataset = Dataset::default()
+        .marker(Marker::Braille)
+        .graph_type(GraphType::Line)
+        .style(palette.focus)
+        .data(points);
+    let chart = Chart::new(vec![dataset])
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(palette.border)
+                .title(Line::styled(format!(" {title} "), palette.focus)),
+        )
+        .x_axis(
+            Axis::default()
+                .bounds([0.0, last_x])
+                .labels([format!("-{age}s"), "ahora".into()])
+                .style(palette.dim),
+        )
+        .y_axis(
+            Axis::default()
+                .bounds(bounds)
+                .labels([
+                    format!("{:.0}{suffix}", bounds[0]),
+                    format!("{:.0}{suffix}", bounds[1]),
+                ])
+                .style(palette.dim),
+        );
+    frame.render_widget(chart, area);
+}
+
+fn render_cpu_panel(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    palette: Palette,
+    points: &[(f64, f64)],
+) {
+    let current = points.last().map(|point| point.1);
+    let avg = average(points);
+    let window_peak = points.iter().map(|point| point.1).fold(0.0_f64, f64::max);
+    let ceiling = ((window_peak.max(4.0) * 1.25) / 5.0).ceil() * 5.0;
+    metric_chart(
+        frame,
+        area,
+        palette,
+        format!(
+            "CPU · ACTUAL {} · PROM. {}",
+            current.map_or_else(|| "—".into(), |value| format!("{value:.1}%")),
+            avg.map_or_else(|| "—".into(), |value| format!("{value:.1}%"))
+        ),
+        points,
+        [0.0, ceiling.clamp(5.0, 100.0)],
+        "%",
+    );
+}
+
+fn render_memory_panel(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    palette: Palette,
+    points: &[(f64, f64)],
+) {
+    let current = points.last().map(|point| point.1);
+    let avg = average(points);
+    let (minimum, maximum) = points.iter().fold((f64::MAX, 0.0_f64), |bounds, point| {
+        (bounds.0.min(point.1), bounds.1.max(point.1))
+    });
+    let minimum = if minimum.is_finite() { minimum } else { 0.0 };
+    let padding = ((maximum - minimum) * 0.2).max(1.0);
+    metric_chart(
+        frame,
+        area,
+        palette,
+        format!(
+            "RAM · ACTUAL {} · PROM. {}",
+            current.map_or_else(|| "—".into(), |value| format!("{value:.1} MiB")),
+            avg.map_or_else(|| "—".into(), |value| format!("{value:.1} MiB"))
+        ),
+        points,
+        [(minimum - padding).max(0.0), (maximum + padding).max(2.0)],
+        "M",
+    );
+}
+
+fn render_current_stats(frame: &mut ratatui::Frame<'_>, area: Rect, palette: Palette, app: &App) {
+    let current = app.metrics.current();
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("CPU      ", palette.dim),
+            Span::styled(
+                current
+                    .cpu_percent
+                    .map_or_else(|| "—".into(), |value| format!("{value:.1}%")),
+                palette.good,
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("RAM      ", palette.dim),
+            Span::styled(
+                current.memory_bytes.map_or_else(
+                    || "—".into(),
+                    |value| format!("{:.1} MiB", value as f64 / 1_048_576.0),
+                ),
+                palette.rank,
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("UPTIME   ", palette.dim),
+            Span::styled(duration_clock(app.metrics.uptime()), palette.base),
+        ]),
+        Line::from(vec![
+            Span::styled("MUESTRAS ", palette.dim),
+            Span::styled(app.metrics.history().len().to_string(), palette.base),
+        ]),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(palette.border)
+                .title(Line::styled(" AHORA ", palette.focus)),
+        ),
+        area,
+    );
+}
+
+fn render_peaks(frame: &mut ratatui::Frame<'_>, area: Rect, palette: Palette, app: &App) {
+    let cpu = app.metrics.peak_cpu().map_or_else(
+        || "—".into(),
+        |(value, at)| format!("{value:.1}% · {}", duration_clock(at)),
+    );
+    let memory = app.metrics.peak_memory().map_or_else(
+        || "—".into(),
+        |(value, at)| {
+            format!(
+                "{:.1} MiB · {}",
+                value as f64 / 1_048_576.0,
+                duration_clock(at)
+            )
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled("CPU MÁX  ", palette.dim),
+                Span::styled(cpu, palette.good),
+            ]),
+            Line::from(vec![
+                Span::styled("RAM MÁX  ", palette.dim),
+                Span::styled(memory, palette.rank),
+            ]),
+            Line::styled("Máximos desde que abriste VTRACKER", palette.dim),
+        ])
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(palette.border)
+                .title(Line::styled(" PICOS DE SESIÓN ", palette.pending)),
+        ),
+        area,
+    );
+}
+
+fn render_activity(frame: &mut ratatui::Frame<'_>, area: Rect, palette: Palette, app: &App) {
+    let lines = if app.logs.is_empty() {
+        vec![Line::styled("No hay eventos en esta sesión.", palette.dim)]
+    } else {
+        app.logs
+            .iter()
+            .rev()
+            .skip(usize::from(app.scroll))
+            .map(|entry| {
+                let (level, style) = match entry.level {
+                    LogLevel::Info => ("INFO ", palette.dim),
+                    LogLevel::Success => ("OK   ", palette.good),
+                    LogLevel::Warning => ("AVISO", palette.bad),
+                };
+                Line::from(vec![
+                    Span::styled(format!("[{}] ", duration_clock(entry.at)), palette.dim),
+                    Span::styled(format!("{level}  "), style),
+                    Span::styled(entry.message.clone(), palette.base),
+                ])
+            })
+            .collect()
+    };
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(palette.border)
+                .title(Line::styled(
+                    " ACTIVIDAD · MÁS RECIENTE PRIMERO ",
+                    palette.focus,
+                )),
+        ),
+        area,
+    );
+}
+
+fn render_logs_dashboard(frame: &mut ratatui::Frame<'_>, area: Rect, palette: Palette, app: &App) {
+    let (cpu, memory) = metric_points(app);
+    if area.height < 13 {
+        let current = app.metrics.current();
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::styled("RENDIMIENTO DE VTRACKER", palette.focus),
+                Line::raw(format!(
+                    "CPU {} · RAM {} · UPTIME {}",
+                    current
+                        .cpu_percent
+                        .map_or_else(|| "—".into(), |value| format!("{value:.1}%")),
+                    current.memory_bytes.map_or_else(
+                        || "—".into(),
+                        |value| format!("{:.1} MiB", value as f64 / 1_048_576.0)
+                    ),
+                    duration_clock(app.metrics.uptime())
+                )),
+                Line::styled(
+                    "Amplía la terminal para ver los gráficos y picos.",
+                    palette.dim,
+                ),
+            ]),
+            area,
+        );
+        return;
+    }
+    if area.width >= 76 {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(6),
+                Constraint::Length(6),
+                Constraint::Min(3),
+            ])
+            .split(area);
+        let cpu_row = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(75), Constraint::Percentage(25)])
+            .split(rows[0]);
+        let memory_row = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+            .split(rows[1]);
+        render_cpu_panel(frame, cpu_row[0], palette, &cpu);
+        render_current_stats(frame, cpu_row[1], palette, app);
+        render_memory_panel(frame, memory_row[0], palette, &memory);
+        render_peaks(frame, memory_row[1], palette, app);
+        render_activity(frame, rows[2], palette, app);
+    } else {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(5),
+                Constraint::Length(5),
+                Constraint::Length(4),
+                Constraint::Min(3),
+            ])
+            .split(area);
+        render_cpu_panel(frame, rows[0], palette, &cpu);
+        render_memory_panel(frame, rows[1], palette, &memory);
+        render_peaks(frame, rows[2], palette, app);
+        render_activity(frame, rows[3], palette, app);
+    }
+}
+
 pub(super) fn render(area: Rect, frame: &mut ratatui::Frame<'_>, app: &mut App) {
     let palette = Palette::new(app.settings.draft.theme);
     frame.render_widget(Block::default().style(palette.base), area);
@@ -1450,19 +1894,38 @@ pub(super) fn render(area: Rect, frame: &mut ratatui::Frame<'_>, app: &mut App) 
             .min(demo.rounds.len().div_ceil(capacity).saturating_sub(1));
     }
     let mut screen = content(app, area.width - 2);
-    let tab_rows = if area.width < 72 { 2 } else { 1 };
-    let footer_rows = if area.width < 72 { 2 } else { 1 };
-    let body = Rect::new(
+    let tab_rows = tab_rows(area.width);
+    let full_body = Rect::new(
         area.x + 1,
         area.y + 2 + tab_rows,
         area.width - 2,
-        area.height.saturating_sub(4 + tab_rows + footer_rows),
+        area.height.saturating_sub(4 + tab_rows),
     );
-    let max_scroll = screen
-        .lines
-        .len()
-        .saturating_sub(body.height as usize)
-        .min(u16::MAX as usize) as u16;
+    let show_rr_chart = app.selected_tab == 3
+        && !app.detail
+        && area.width >= 70
+        && area.height >= 22
+        && rr_bar_values(app).len() >= 2;
+    let chart_height = if show_rr_chart { 9 } else { 0 };
+    let chart_area = Rect::new(full_body.x, full_body.y, full_body.width, chart_height);
+    let body = Rect::new(
+        full_body.x,
+        full_body.y + chart_height,
+        full_body.width,
+        full_body.height.saturating_sub(chart_height),
+    );
+    let max_scroll = if app.selected_tab == 5 {
+        app.logs
+            .len()
+            .saturating_sub(logs_activity_capacity(body))
+            .min(u16::MAX as usize) as u16
+    } else {
+        screen
+            .lines
+            .len()
+            .saturating_sub(body.height as usize)
+            .min(u16::MAX as usize) as u16
+    };
     app.scroll = app.scroll.min(max_scroll);
     if app.follow_selection {
         if let Some(anchor) = screen.anchor {
@@ -1477,26 +1940,30 @@ pub(super) fn render(area: Rect, frame: &mut ratatui::Frame<'_>, app: &mut App) 
         }
         app.follow_selection = false;
     }
-    let status = if app.demo.is_some() {
-        "DEMO · FICTICIO"
+    let title = if app.demo.is_some() {
+        " VTRACKER · DEMO "
     } else {
-        "SOLO LECTURA"
+        " VTRACKER "
     };
-    let bottom = if max_scroll > 0 {
-        format!(" ▲/▼ · {}/{} ", app.scroll + 1, max_scroll + 1)
-    } else {
-        String::new()
-    };
-    let block = Block::default()
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(palette.border)
-        .title(Line::styled(
-            format!(" VTRACKER · {status} "),
-            palette.focus,
-        ))
-        .title_bottom(bottom);
+        .title(Line::styled(title, palette.focus))
+        .title_bottom(footer_line(app, palette, area.width));
+    if max_scroll > 0 && area.width >= 56 {
+        block = block.title_bottom(
+            Line::styled(
+                format!(" {}/{} ", app.scroll + 1, max_scroll + 1),
+                palette.dim,
+            )
+            .alignment(Alignment::Right),
+        );
+    }
     frame.render_widget(block, area);
+    if show_rr_chart {
+        render_rr_chart(frame, chart_area, palette, app);
+    }
     for y in [body.y - 1, body.bottom()]
         .into_iter()
         .chain(screen.sections.iter().filter_map(|line| {
@@ -1515,29 +1982,26 @@ pub(super) fn render(area: Rect, frame: &mut ratatui::Frame<'_>, app: &mut App) 
         );
     }
     for row in 0..tab_rows {
-        let indices = if tab_rows == 1 {
-            0..5
-        } else if row == 0 {
-            0..3
-        } else {
-            3..5
-        };
-        let tabs = indices
-            .map(|i| {
-                Span::styled(
-                    format!(" {} {} ", i + 1, TABS[i]),
-                    if i == app.selected_tab {
-                        if app.focus == Focus::Tabs {
-                            palette
-                                .selected
-                                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        let tabs = tab_indices(area.width, usize::from(row))
+            .iter()
+            .flat_map(|&i| {
+                [
+                    Span::styled(
+                        tab_text(i, area.width < 90),
+                        if i == app.selected_tab {
+                            if app.focus == Focus::Tabs {
+                                palette
+                                    .selected
+                                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                            } else {
+                                palette.focus.add_modifier(Modifier::REVERSED)
+                            }
                         } else {
-                            palette.focus
-                        }
-                    } else {
-                        palette.dim
-                    },
-                )
+                            palette.selected
+                        },
+                    ),
+                    Span::raw(" "),
+                ]
             })
             .collect::<Vec<_>>();
         frame.render_widget(
@@ -1550,50 +2014,86 @@ pub(super) fn render(area: Rect, frame: &mut ratatui::Frame<'_>, app: &mut App) 
         Paragraph::new(separator.clone()),
         Rect::new(area.x + 1, body.y - 1, area.width - 2, 1),
     );
-    frame.render_widget(
-        Paragraph::new(std::mem::take(&mut screen.lines))
-            .scroll((app.scroll, 0))
-            .style(palette.base),
-        body,
-    );
+    if app.selected_tab == 5 {
+        render_logs_dashboard(frame, body, palette, app);
+    } else {
+        frame.render_widget(
+            Paragraph::new(std::mem::take(&mut screen.lines))
+                .scroll((app.scroll, 0))
+                .style(palette.base),
+            body,
+        );
+    }
     frame.render_widget(
         Paragraph::new(separator),
         Rect::new(area.x + 1, body.bottom(), area.width - 2, 1),
     );
-    let hint = if app.focus == Focus::Tabs {
-        "←/→ vista · Enter contenido"
-    } else {
-        match app.selected_tab {
-            0 if app.has_match_context() => "Enter abrir partida",
-            0 => "3 perfil · 4 historial",
-            1 if app.demo.as_ref().is_some_and(|d| d.post) => "p partida · Esc volver",
-            1 if app.has_selectable_roster() => "↑↓ · Enter detalle · g Tracker",
-            3 => "↑↓/clic partida · Enter detalle · r",
-            4 => "↑↓/clic · +/- · s guardar · r descartar",
-            _ => "r actualizar · ▲/▼ desplazar",
-        }
-    };
-    let controls = if app.demo.is_some() && app.selected_tab == 1 {
-        "1–5 · t · p fase · Esc · q salir"
-    } else {
-        "1–5 · t · Esc · q salir"
-    };
-    let footer = if footer_rows == 1 {
-        format!("{hint} · {controls}")
-    } else {
-        format!(
-            "{}\n{}",
-            cell(hint, (area.width - 2) as usize).trim_end(),
-            controls
-        )
-    };
-    frame.render_widget(
-        Paragraph::new(footer).style(palette.dim),
-        Rect::new(area.x + 1, body.bottom() + 1, area.width - 2, footer_rows),
-    );
     if app.context_pending {
         render_context_progress(area, frame, palette, app);
     }
+}
+
+fn rr_bar_values(app: &App) -> Vec<i32> {
+    app.history
+        .as_ref()
+        .into_iter()
+        .flatten()
+        .rev()
+        .filter_map(|item| item.rr_change)
+        .collect()
+}
+
+fn render_rr_chart(frame: &mut ratatui::Frame<'_>, area: Rect, palette: Palette, app: &App) {
+    let values = rr_bar_values(app);
+    let net_rr: i32 = values.iter().sum();
+    let bar_width = if area.width >= 84 { 3 } else { 2 };
+    let bars = values
+        .iter()
+        .enumerate()
+        .map(|(index, rr)| {
+            let style = if *rr >= 0 { palette.good } else { palette.bad };
+            let bar = Bar::with_label((index + 1).to_string(), u64::from(rr.unsigned_abs()))
+                .style(style)
+                .value_style(style.add_modifier(Modifier::BOLD));
+            if bar_width >= 3 {
+                bar.text_value(format!("{rr:+}"))
+            } else {
+                bar
+            }
+        })
+        .collect::<Vec<_>>();
+    let chart = BarChart::new(bars)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(palette.border)
+                .title(Line::styled(
+                    format!(
+                        " RR POR PARTIDA · {} RANKED · NETO {net_rr:+} · + GANANCIA / − PÉRDIDA ",
+                        values.len()
+                    ),
+                    palette.focus,
+                )),
+        )
+        // La consola clásica de Windows no siempre incluye los bloques de
+        // octavos (▁▂▃▅▆▇) usados por defecto. Redondear a bloques completos
+        // evita glifos de reemplazo sin cambiar los valores mostrados.
+        .bar_set(symbols::bar::Set {
+            full: symbols::bar::FULL,
+            seven_eighths: symbols::bar::FULL,
+            three_quarters: symbols::bar::FULL,
+            five_eighths: symbols::bar::FULL,
+            half: symbols::bar::FULL,
+            three_eighths: symbols::bar::FULL,
+            one_quarter: symbols::bar::FULL,
+            one_eighth: symbols::bar::FULL,
+            empty: " ",
+        })
+        .bar_width(bar_width)
+        .bar_gap(1)
+        .label_style(palette.dim)
+        .value_style(palette.base.add_modifier(Modifier::BOLD));
+    frame.render_widget(chart, area);
 }
 
 fn startup_pending(app: &App) -> bool {
@@ -1606,83 +2106,52 @@ fn startup_pending(app: &App) -> bool {
     }
 }
 
-fn render_startup(area: Rect, frame: &mut ratatui::Frame<'_>, palette: Palette, app: &App) {
+const WIDE_LOGO: [&str; 10] = [
+    " ██▒   █▓▄▄▄█████▓ ██▀███   ▄▄▄       ▄████▄   ██ ▄█▀▓█████  ██▀███",
+    "▓██░   █▒▓  ██▒ ▓▒▓██ ▒ ██▒▒████▄    ▒██▀ ▀█   ██▄█▒ ▓█   ▀ ▓██ ▒ ██▒",
+    " ▓██  █▒░▒ ▓██░ ▒░▓██ ░▄█ ▒▒██  ▀█▄  ▒▓█    ▄ ▓███▄░ ▒███   ▓██ ░▄█ ▒",
+    "  ▒██ █░░░ ▓██▓ ░ ▒██▀▀█▄  ░██▄▄▄▄██ ▒▓▓▄ ▄██▒▓██ █▄ ▒▓█  ▄ ▒██▀▀█▄",
+    "   ▒▀█░    ▒██▒ ░ ░██▓ ▒██▒ ▓█   ▓██▒▒ ▓███▀ ░▒██▒ █▄░▒████▒░██▓ ▒██▒",
+    "   ░ ▐░    ▒ ░░   ░ ▒▓ ░▒▓░ ▒▒   ▓▒█░░ ░▒ ▒  ░▒ ▒▒ ▓▒░░ ▒░ ░░ ▒▓ ░▒▓░",
+    "   ░ ░░      ░      ░▒ ░ ▒░  ▒   ▒▒ ░  ░  ▒   ░ ░▒ ▒░ ░ ░  ░  ░▒ ░ ▒░",
+    "     ░░    ░        ░░   ░   ░   ▒   ░        ░ ░░ ░    ░     ░░   ░",
+    "      ░              ░           ░  ░░ ░      ░  ░      ░  ░   ░",
+    "     ░                               ░",
+];
+const COMPACT_LOGO: [&str; 3] = [
+    "╦  ╦╔╦╗╦═╗╔═╗╔═╗╦╔═╔═╗╦═╗",
+    "╚╗╔╝ ║ ╠╦╝╠═╣║  ╠╩╗║╣ ╠╦╝",
+    " ╚╝  ╩ ╩╚═╩ ╩╚═╝╩ ╩╚═╝╩╚═",
+];
+
+fn render_brand_home(
+    area: Rect,
+    frame: &mut ratatui::Frame<'_>,
+    palette: Palette,
+    app: &App,
+    show_status: bool,
+) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .border_style(palette.border)
-        .title(Line::styled(" VTRACKER ", palette.focus));
+        .title(Line::styled(" VTRACKER · 0.1.0 ", palette.focus))
+        .title_bottom(Line::from(vec![
+            Span::styled("[", palette.border),
+            Span::styled("q", palette.pending.add_modifier(Modifier::BOLD)),
+            Span::styled("→", palette.dim),
+            Span::styled("Salir", palette.base),
+            Span::styled("]", palette.border),
+        ]));
     frame.render_widget(block, area);
-    let height = 9_u16.min(area.height.saturating_sub(2));
-    let top = area.y + area.height.saturating_sub(height) / 2;
-    let inner = Rect::new(area.x + 2, top, area.width.saturating_sub(4), height);
-    let (status, detail) = if app.state.is_none() {
-        (
-            "Buscando Riot Client…",
-            "Comprobando el estado de tu sesión",
-        )
-    } else {
-        (
-            "Cargando tu perfil y rango…",
-            "El historial continuará en segundo plano",
-        )
-    };
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled(
-                "INICIANDO VTRACKER",
-                palette.focus.add_modifier(Modifier::BOLD),
-            ),
-            Line::raw(""),
-            Line::styled(status, palette.pending),
-            Line::styled(detail, palette.dim),
-        ])
-        .alignment(Alignment::Center),
-        Rect::new(inner.x, inner.y, inner.width, 4),
-    );
-    let progress = if app.state.is_none() { 25 } else { 70 };
-    frame.render_widget(
-        Gauge::default()
-            .gauge_style(palette.focus)
-            .percent(progress)
-            .label(format!("{progress}%"))
-            .use_unicode(true),
-        Rect::new(inner.x + 2, inner.y + 5, inner.width.saturating_sub(4), 1),
-    );
-    frame.render_widget(
-        Paragraph::new("Solo lectura · no controla VALORANT · q para salir")
-            .alignment(Alignment::Center)
-            .style(palette.dim),
-        Rect::new(inner.x, inner.y + 7, inner.width, 1),
-    );
-}
-
-fn render_splash(area: Rect, frame: &mut ratatui::Frame<'_>, palette: Palette, app: &App) {
-    let wide_logo = [
-        " ██▒   █▓▄▄▄█████▓ ██▀███   ▄▄▄       ▄████▄   ██ ▄█▀▓█████  ██▀███",
-        "▓██░   █▒▓  ██▒ ▓▒▓██ ▒ ██▒▒████▄    ▒██▀ ▀█   ██▄█▒ ▓█   ▀ ▓██ ▒ ██▒",
-        " ▓██  █▒░▒ ▓██░ ▒░▓██ ░▄█ ▒▒██  ▀█▄  ▒▓█    ▄ ▓███▄░ ▒███   ▓██ ░▄█ ▒",
-        "  ▒██ █░░░ ▓██▓ ░ ▒██▀▀█▄  ░██▄▄▄▄██ ▒▓▓▄ ▄██▒▓██ █▄ ▒▓█  ▄ ▒██▀▀█▄",
-        "   ▒▀█░    ▒██▒ ░ ░██▓ ▒██▒ ▓█   ▓██▒▒ ▓███▀ ░▒██▒ █▄░▒████▒░██▓ ▒██▒",
-        "   ░ ▐░    ▒ ░░   ░ ▒▓ ░▒▓░ ▒▒   ▓▒█░░ ░▒ ▒  ░▒ ▒▒ ▓▒░░ ▒░ ░░ ▒▓ ░▒▓░",
-        "   ░ ░░      ░      ░▒ ░ ▒░  ▒   ▒▒ ░  ░  ▒   ░ ░▒ ▒░ ░ ░  ░  ░▒ ░ ▒░",
-        "     ░░    ░        ░░   ░   ░   ▒   ░        ░ ░░ ░    ░     ░░   ░",
-        "      ░              ░           ░  ░░ ░      ░  ░      ░  ░   ░",
-        "     ░                               ░",
-    ];
-    let compact_logo = [
-        "╦  ╦╔╦╗╦═╗╔═╗╔═╗╦╔═╔═╗╦═╗",
-        "╚╗╔╝ ║ ╠╦╝╠═╣║  ╠╩╗║╣ ╠╦╝",
-        " ╚╝  ╩ ╩╚═╩ ╩╚═╝╩ ╩╚═╝╩╚═",
-    ];
     let wide = area.width >= 78 && area.height >= 13;
     let logo = if wide {
-        wide_logo.as_slice()
+        WIDE_LOGO.as_slice()
     } else {
-        compact_logo.as_slice()
+        COMPACT_LOGO.as_slice()
     };
     let elapsed = app.splash_started.elapsed().as_millis() / 250;
-    let lines = logo
+    let mut lines = logo
         .iter()
         .enumerate()
         .map(|(index, line)| {
@@ -1695,14 +2164,40 @@ fn render_splash(area: Rect, frame: &mut ratatui::Frame<'_>, palette: Palette, a
             };
             Line::styled(*line, style)
         })
-        .chain([Line::raw(""), Line::styled("v0.1 | for fun", palette.dim)])
         .collect::<Vec<_>>();
-    let height = (logo.len() + 2) as u16;
+    lines.extend([
+        Line::raw(""),
+        Line::styled("blablabla", palette.pending.add_modifier(Modifier::ITALIC)),
+        Line::styled("────────────────────────", palette.border),
+        Line::styled("https://github.com/maaurissio/vtracker", palette.focus),
+    ]);
+    if show_status {
+        let status = if app.state.is_none() {
+            "Buscando Riot Client…"
+        } else {
+            "Cargando perfil e historial…"
+        };
+        lines.extend([Line::raw(""), Line::styled(status, palette.dim)]);
+    }
+    let height = lines.len() as u16;
     let top = area.y + area.height.saturating_sub(height) / 2;
     frame.render_widget(
         Paragraph::new(lines).alignment(Alignment::Center),
-        Rect::new(area.x, top, area.width, height),
+        Rect::new(
+            area.x + 1,
+            top,
+            area.width.saturating_sub(2),
+            height.min(area.height.saturating_sub(2)),
+        ),
     );
+}
+
+fn render_startup(area: Rect, frame: &mut ratatui::Frame<'_>, palette: Palette, app: &App) {
+    render_brand_home(area, frame, palette, app, true);
+}
+
+fn render_splash(area: Rect, frame: &mut ratatui::Frame<'_>, palette: Palette, app: &App) {
+    render_brand_home(area, frame, palette, app, false);
 }
 
 fn render_context_progress(
@@ -1740,7 +2235,9 @@ fn render_context_progress(
             .gauge_style(palette.focus)
             .percent(app.context_progress.min(100))
             .label(format!("{}%", app.context_progress.min(100)))
-            .use_unicode(true),
+            // La consola clásica de Windows puede carecer del bloque parcial
+            // que Ratatui usa en modo Unicode y mostrarlo como `?`.
+            .use_unicode(false),
         Rect::new(popup.x + 3, popup.y + 4, popup.width.saturating_sub(6), 1),
     );
 }
@@ -1782,7 +2279,67 @@ mod tests {
         assert!(text.contains("CARGANDO PARTIDA"));
         assert!(text.contains("Partida detectada"));
         assert!(text.contains("45%"));
-        assert!(text.contains("▲/▼ desplazar"));
+        assert!(text.contains("↑/↓→desplazar"));
+    }
+
+    #[test]
+    fn history_renders_twenty_match_rr_chart_and_net_change() {
+        let mut app = App::new(&Config::default());
+        app.splash_complete = true;
+        app.selected_tab = 3;
+        app.state = Some(StateInfo::new(
+            GamePhase::ClientClosed,
+            GameState::ClientClosed,
+            Confidence::High,
+            "test",
+            false,
+            false,
+        ));
+        app.history = Some(
+            (0..20)
+                .map(|index| super::super::HistoryItem {
+                    entry: crate::providers::history::HistoryEntry {
+                        queue: "competitivo".into(),
+                        started_at_ms: u64::MAX - index,
+                    },
+                    details: None,
+                    rr_change: Some(if index % 2 == 0 { 20 } else { -10 }),
+                    rr_after: Some(50),
+                })
+                .collect(),
+        );
+
+        let text = snapshot_raw(&mut app, 100, 32);
+
+        assert!(text.contains("RR POR PARTIDA · 20 RANKED"), "{text}");
+        assert!(text.contains("NETO +100"), "{text}");
+        assert_eq!(text.matches("↑/↓").count(), 1, "{text}");
+    }
+
+    #[test]
+    fn logs_view_shows_only_process_metrics_and_sanitized_session_events() {
+        let mut app = App::new(&Config::default());
+        app.splash_complete = true;
+        app.selected_tab = 5;
+        app.state = Some(StateInfo::new(
+            GamePhase::ClientClosed,
+            GameState::ClientClosed,
+            Confidence::High,
+            "test",
+            false,
+            false,
+        ));
+        app.push_log(LogLevel::Success, "Perfil y rango actualizados");
+
+        let text = snapshot_raw(&mut app, 100, 28);
+
+        assert!(text.contains("CPU · ACTUAL"), "{text}");
+        assert!(text.contains("RAM · ACTUAL") && text.contains("UPTIME"));
+        assert!(text.contains("PICOS DE SESIÓN"));
+        assert!(text.contains("ACTIVIDAD · MÁS RECIENTE PRIMERO"));
+        assert!(text.contains("Perfil y rango actualizados"));
+        assert!(!text.contains("PRIVACIDAD"));
+        assert!(!text.contains("Authorization") && !text.contains("accessToken"));
     }
 
     fn demo_app() -> App {
@@ -1833,9 +2390,9 @@ mod tests {
                     && text.contains("—D")
                     && text.contains("R7*")
             );
-            assert!(text.contains("q salir"));
+            assert!(text.contains("salir"));
             assert_eq!(app.scroll, 0);
-            assert!(text.contains("DEMO · FICTICIO"));
+            assert!(text.contains("DEMO"));
         }
     }
 
@@ -1844,7 +2401,7 @@ mod tests {
         let mut app = demo_app();
         for theme in [Theme::System, Theme::Dark, Theme::Light, Theme::Mono] {
             app.settings.draft.theme = theme;
-            for tab in 0..5 {
+            for tab in 0..6 {
                 app.select_tab(tab);
                 for width in [36, 70, 98] {
                     let screen = content(&app, width);
@@ -1858,10 +2415,7 @@ mod tests {
                 for (width, height) in [(1, 1), (30, 8), (38, 10), (38, 26), (72, 24), (120, 40)] {
                     let text = snapshot(&mut app, width, height);
                     if width >= 38 {
-                        assert!(
-                            text.contains("q salir"),
-                            "{width}x{height} tab {tab}\n{text}"
-                        );
+                        assert!(text.contains("salir"), "{width}x{height} tab {tab}\n{text}");
                     }
                 }
             }
@@ -2109,6 +2663,8 @@ mod tests {
                 own_score: Some(13),
                 opponent_score: Some(8),
             }),
+            rr_change: Some(20),
+            rr_after: Some(64),
         }]);
 
         app.select_tab(0);
@@ -2188,15 +2744,15 @@ mod tests {
         let splash = snapshot_raw(&mut app, 80, 24);
 
         assert!(splash.contains("██▒") && splash.contains("▄▄▄█████▓"));
-        assert!(splash.contains("v0.1 | for fun"));
+        assert!(splash.contains("blablabla"));
+        assert!(splash.contains("github.com/maaurissio/vtracker"));
         assert!(!splash.contains("1 Resumen") && !splash.contains("INICIANDO VTRACKER"));
 
         let startup = snapshot(&mut app, 72, 24);
 
-        assert!(startup.contains("INICIANDO VTRACKER"));
+        assert!(startup.contains("blablabla"));
         assert!(startup.contains("Buscando Riot Client"));
-        assert!(startup.contains("Comprobando el estado de tu sesión"));
-        assert!(startup.contains("Solo lectura"));
+        assert!(startup.contains("github.com/maaurissio/vtracker"));
         assert!(!startup.contains("1 Resumen") && !startup.contains("ESTADO DE PARTIDA"));
 
         app.update_state(StateInfo::new(
@@ -2208,8 +2764,7 @@ mod tests {
             true,
         ));
         let profile_loading = snapshot(&mut app, 72, 24);
-        assert!(profile_loading.contains("Cargando tu perfil y rango"));
-        assert!(profile_loading.contains("historial continuará en segundo plano"));
+        assert!(profile_loading.contains("Cargando perfil e historial"));
     }
 
     #[test]

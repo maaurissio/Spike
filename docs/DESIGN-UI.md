@@ -2,7 +2,7 @@
 
 > **Prioridad de producto (2026-08-28, ADR-011):** el roster de aliados y enemigos (diez jugadores en 5v5), con agentes, rangos y estadísticas históricas disponibles y permitidos, es la función principal; no es opcional. La implementación real ya conecta el roster y sus cinco Ranked históricas, pero todavía requiere revalidación en partidas reales tras cada corrección. La demo visual en Rust no cumple por sí sola este requisito. Representar identidades ocultas y datos ausentes sin eludir restricciones.
 
-> **Actualización 2026-08-28:** la referencia visual aprobada es ahora [`mockups/README.md`](mockups/README.md), trasladada a `src/tui/view.rs` (ADR-012). El contenido inferior conserva exploraciones anteriores, no sustituye la nueva maqueta. En la implementación actual: `1–5` cambia vista, `Tab` mueve foco, `t` cambia tema y `Esc` vuelve; Aliados → Tus rondas → Enemigos también en ancho grande. La demo es ficticia y aislada; no implica integración del roster o rondas en vivo.
+> **Actualización 2026-08-30:** la referencia visual aprobada partió de [`mockups/README.md`](mockups/README.md) y evolucionó en `src/tui/view.rs`. En la implementación actual: `1–6` cambia vista, `Tab` mueve foco, `t` cambia tema y `Esc` vuelve; Aliados → Tus rondas → Enemigos también en ancho grande. La sexta vista Logs monitoriza únicamente VTRACKER. La demo es ficticia y aislada; no implica integración del roster o rondas en vivo.
 
 > **Bocetos históricos:** los diagramas y atajos anteriores que aparecen más abajo son exploratorios y quedan subordinados a la maqueta aprobada y ADR-012. Los requisitos de datos y privacidad mantienen su vigencia.
 
@@ -31,7 +31,7 @@
 
 La TUI Rust acepta mouse opcional para pestañas, selección de historial/ajustes y rueda. No depende de él: todos los flujos conservan atajos de teclado y la captura se deshabilita al salir.
 
-El binario sin argumentos abre la TUI. Durante los primeros tres segundos muestra un splash centrado con el logotipo ASCII `VTracker` y `v0.1 | for fun`; el trabajo local comienza en segundo plano y el logo tiene una variante compacta para terminales angostas. Si al terminar el splash aún falta el perfil, una portada sin pestañas comunica la búsqueda de Riot Client o la carga del perfil/rango. En cuanto el perfil queda disponible —o falla de forma recuperable— aparece Resumen; el historial continúa cargando en segundo plano. Fuera de partida, Resumen prioriza rango, nivel, barra de RR y rendimiento reciente antes del estado de partida. Las fuentes y el diagnóstico interno no aparecen en estas vistas; `doctor` y `watch` conservan esa información técnica.
+El binario sin argumentos abre la TUI. Durante los primeros tres segundos muestra una portada enmarcada con el logotipo ASCII `VTracker`, el texto provisional `blablabla` y `https://github.com/maaurissio/vtracker`; el trabajo local comienza en segundo plano y el logo tiene una variante compacta para terminales angostas. Si al terminar el splash aún falta el perfil, la misma portada comunica la búsqueda de Riot Client o la carga de perfil e historial. En cuanto el perfil queda disponible —o falla de forma recuperable— aparece Resumen. Fuera de partida, Resumen prioriza rango, nivel, barra de RR y rendimiento reciente antes del estado de partida. Las fuentes y el diagnóstico interno no aparecen en estas vistas; `doctor` y `watch` conservan esa información técnica.
 
 ## 2. Vista LIVE MATCH — composición
 
@@ -113,6 +113,12 @@ Los atajos finales se confirman al implementar P5; configurables después del MV
 | Sin datos de ronda aún | Timeline vacío con `R1 R2…` atenuadas |
 | Provider falló | Último dato conocido + aviso recuperable en la barra inferior (nunca pantalla vacía) |
 | Modo sin rondas | Sin sección de rondas (ADR-004) |
+
+### Historial propio y controles persistentes
+
+La vista Historial carga hasta 20 partidas Ranked propias. En terminales amplias, un gráfico de barras muestra el RR ganado o perdido en cada partida, desde la más antigua hasta la reciente, y su encabezado indica el neto; la tabla conserva selección, detalle y RR por partida. En terminales pequeñas se prioriza la tabla. El último snapshot normalizado permanece disponible con VALORANT cerrado y se identifica como dato guardado con su antigüedad.
+
+La navegación superior usa cinco botones visualmente separados por espacio y fondo, sin contornos laterales (`1: Resumen` … `5: Ajustes`). El pie vive dentro del borde inferior y presenta acciones contextuales como `[tecla→acción]`; en anchos compactos conserva solo los controles esenciales. La navegación vertical usa siempre `↑/↓`, y el contador de desplazamiento se alinea a la derecha sin repetir el icono. El marco principal se titula `VTRACKER`; `DEMO` solo se añade cuando corresponde para distinguir datos ficticios.
 
 ## 7. Preguntas abiertas
 

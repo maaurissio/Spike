@@ -74,9 +74,10 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 - [x] Definir modelos normalizados de jugador, partida, **ronda** (`src/models/mod.rs`: `Round`, `PlayerRoundStat`, `MatchRounds`, outcome y totales oficiales) con validación de secuencia/modo.
 - [x] Implementar la capa base de providers por capacidades: perfil básico, historial propio, detalle de partida y rondas.
 - [x] Implementar caché L1 en memoria con TTL (`src/cache/mod.rs`, `moka` TinyLFU/LRU; capacidad acotada, `get_with` anti-stampede, sin persistir secretos).
-- [ ] Implementar caché L2 en disco con versión de esquema y expiración (solo si aporta valor; v1 puede ser solo RAM).
+- [x] Implementar caché L2 del historial propio con versión de esquema: guarda hasta 20 Ranked normalizadas en `%APPDATA%/vtracker/history-cache.json`, sin tokens, PUUID ni MatchID, y permite consultar el último snapshot con VALORANT cerrado.
 - [ ] Centralizar solicitudes con timeout, deduplicación y reintentos seguros (Requests Manager `dedupe`/backoff/bounded channels).
 - [x] Añadir `vtracker history [--limit 1..20]`: una única consulta de historial propio que muestra modo y antigüedad, sin IDs de partidas.
+- [x] Ampliar Historial TUI a 20 Ranked, asociar RR propio, mostrar variación por fila y gráfico de barras con ganancias/pérdidas por partida.
 - [x] **Flujo perfil básico:** al detectar `Idle`, muestra nivel y XP propios; la caché L1 conserva el último perfil durante 60 s si una consulta falla.
 - [ ] **Flujo perfil ampliado:** añadir estadísticas agregadas y snapshot competitivo al perfil cacheado de `watch`.
 - [ ] **Flujo equipo y enemigos (principal):** la implementación en `InMatch` ya muestra los diez jugadores, agentes y estadísticas históricas; falta completar la validación real de nombres públicos, rangos y campos ausentes, y definir lo permitido en selección de agente. Respetar identidades ocultas y no inventar datos faltantes.
@@ -102,6 +103,8 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 - [x] Añadir Ratatui y Crossterm con un dashboard inicial, navegación por teclado y dirty-flag (sin I/O durante render).
 - [x] Portar la composición de `docs/mockups` a Rust: cinco vistas, Aliados → Tus rondas → Enemigos, foco, selección/detalle y modo `dashboard --demo` aislado de red/configuración personal.
 - [x] Temas Sistema/Noche/Claro/Sin color, previsualización con `t` y persistencia explícita con `s`; compatibilidad con archivos de configuración anteriores.
+- [x] Adoptar Gruvbox Dark/Light con RGB verdadero para Noche/Claro e investigar la tipografía del host; documentar un perfil aislado de Windows Terminal como solución recomendada.
+- [x] Añadir `terminal install|status|launch|uninstall` para el perfil VTRACKER con Fira Mono, Gruvbox, GUID estable, copia previa y eliminación selectiva; el usuario autorizó explícitamente las instalaciones externas.
 - [x] Crear Dashboard base con estado, perfil propio y resumen de las cinco Ranked recientes; el diagnóstico detallado de salud de fuentes permanece en `doctor`.
 - [x] Abrir la TUI por defecto al ejecutar el binario sin argumentos, conservar `watch` como comando explícito y mostrar una portada breve durante la primera conexión.
 - [x] Priorizar Mi perfil en Resumen fuera de partida y representar el progreso competitivo como rango + barra de RR sobre 100.
@@ -112,12 +115,16 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 - [x] Crear y conectar vistas Match, Player, History y **Settings (Configuración)** con datos reales disponibles y estados de carga/falla comprensibles.
 - [ ] Conectar datos reales confirmados al timeline compacto entre aliados y enemigos; su presentación de tres filas (`1K/4K`, `R1/R2`, `0D/2D`), ronda pendiente y paginación ya existe en la demo Rust.
 - [x] Acceso externo a Tracker.gg del jugador visible seleccionado: construir URL HTTPS sobre dominio fijo solo desde un Riot ID resuelto, codificar el segmento y mantenerlo deshabilitado para `Jugador N`/identidad ausente. `[↗]` indica disponibilidad y `g` abre por acción explícita.
-- [ ] Sustituir la portada base por un wordmark ASCII con nombre definitivo y versión `v0.1`; aplazado por el usuario hasta definir esa identidad visual.
+- [x] Presentar el wordmark ASCII en una portada enmarcada inspirada en Binsider, con versión, enlace oficial y frase provisional `blablabla` pendiente de definición.
 - [ ] **Settings debe permitir:** ver/editar `config.toml` (intervalo, `log_transitions`, `profile.riot_id`, `profile.region`, `autostart.enabled/minimized`), gestionar `.env` (solo estado `***`/`no configurada`), TTL de caché y apariencia.
 - [x] **Settings básico:** editar intervalo (1–60 s) y registro con borrador, guardado explícito, descarte y aplicación en la sesión sin reiniciar.
 - [x] Añadir `vtracker config show|edit|validate` y persistencia atómica de `config.toml`, sin mostrar secretos.
 - [x] Añadir navegación por teclado, ayuda de atajos, desplazamiento de tablas y estados de carga/error con último dato disponible.
 - [x] Añadir mouse opcional en terminal: pestañas, filas de Historial, selección de Ajustes y rueda; conservar equivalencia completa por teclado y restaurar la captura al salir.
+- [x] Presentar las cinco secciones como botones con fondo, sin contornos laterales, e integrar en el borde un pie contextual `[tecla→acción]` con `↑/↓` uniforme y sin indicadores duplicados.
+- [x] Establecer `VTRACKER` como título de ventana y marco; en Windows, igualar el búfer al área visible mientras la TUI está abierta para ocultar la barra lateral.
+- [x] Añadir `6: Logs`, inspirada en la composición modular de Bottom, con gráficos de CPU/RAM, valores actuales, promedios, picos de sesión, uptime, 60 muestras y 100 eventos sanitizados.
+- [ ] Integrar el icono definitivo del ejecutable Windows después de que el usuario elija la imagen; no usar un diseño generado provisional.
 - [x] Corregir retroceso de temas con `-` y conservar la partida seleccionada al actualizar el historial; cerrar el detalle si deja de estar disponible. Cubierto con regresiones.
 - [x] Adaptar layouts a terminales pequeñas y grandes (mínimo 38×10; demo completa 72×24/38×26, selección visible, scroll y paginación del timeline).
 - [x] Conectar el roster real enriquecido a la TUI (ADR-014): equipos/participantes, nombre visible, agente, rango disponible, K/D, HS%, KAST, WR y forma históricos. Kills, marcador y rondas de la partida actual siguen pendientes por falta de una fuente live verificada.
@@ -129,7 +136,7 @@ Este documento ordena el trabajo restante. Las integraciones con Riot u otros pr
 - [x] Mantener las consultas y escrituras fuera del hilo de interfaz: trabajador con colas acotadas, solicitudes duplicadas suprimidas y descarte de respuestas de fases anteriores. El estado de pantalla no retiene el roster postpartida.
 - [x] Añadir splash ASCII centrado y responsivo durante tres segundos, gauge de carga conectado a etapas reales del worker para Agent Select/partida/postpartida y ayudas de desplazamiento con flechas Unicode.
 
-> Verificación TUI/modelos: 199 pruebas globales, incluyendo splash temporizado, progreso por generación de partida, gauge, arranque por defecto, perfil con progreso de RR, historial exclusivamente Ranked, Agent Select, roster real normalizado, nivel propio autoritativo y respaldo histórico, Presence plano/anidado, premades rivales, Name Service limitado a nombres públicos/party propia, enlaces Tracker codificados, rangos compactos, postpartida estructurada, mouse, Deathmatch sin equipos ficticios, ausencia de IDs, aislamiento de demo, privacidad, celdas Unicode, tamaños objetivo, temas y navegación. Las pruebas usan fixtures y no consultan VALORANT. El roster y sus métricas ya se observaron en una Ranked real; falta revalidar grupos rivales, nombres de party, cola competitiva, gauge y apertura del navegador en una sesión real.
+> Verificación TUI/modelos: 206 pruebas globales, incluyendo splash temporizado, progreso por generación de partida, gauge, arranque por defecto, perfil con progreso de RR, historial exclusivamente Ranked, gráficos de consumo, perfil de Windows Terminal, Agent Select, roster real normalizado, nivel propio autoritativo y respaldo histórico, Presence plano/anidado, premades rivales, Name Service limitado a nombres públicos/party propia, enlaces Tracker codificados, rangos compactos, postpartida estructurada, mouse, Deathmatch sin equipos ficticios, ausencia de IDs, aislamiento de demo, privacidad, celdas Unicode, tamaños objetivo, temas y navegación. Las pruebas usan fixtures y no consultan VALORANT. El roster y sus métricas ya se observaron en una Ranked real; falta revalidar grupos rivales, nombres de party, cola competitiva, gauge y apertura del navegador en una sesión real.
 
 ## Prioridad 6 — Robustez, autoinicio y distribución + ISO
 

@@ -3,9 +3,10 @@
 use std::time::Duration;
 
 use reqwest::{StatusCode, blocking::Client};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{ProviderError, match_detail::MatchDetailRequest};
+use super::{ProviderError, match_detail::MatchDetailRequest, profile::ProfileRequest};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const CLIENT_PLATFORM: &str = "ew0KCSJwbGF0Zm9ybVR5cGUiOiAiUEMiLA0KCSJwbGF0Zm9ybU9TIjogIldpbmRvd3MiLA0KCSJwbGF0Zm9ybU9TVmVyc2lvbiI6ICIxMC4wLjE5MDQyLjEuMjU2LjY0Yml0IiwNCgkicGxhdGZvcm1DaGlwc2V0IjogIlVua25vd24iDQp9";
@@ -32,6 +33,16 @@ impl HistoryRequest {
             own_puuid: self.own_puuid.clone(),
         }
     }
+
+    pub(crate) fn profile_request(&self) -> ProfileRequest {
+        ProfileRequest {
+            shard: self.shard.clone(),
+            client_version: self.client_version.clone(),
+            access_token: self.access_token.clone(),
+            entitlement_token: self.entitlement_token.clone(),
+            own_puuid: self.own_puuid.clone(),
+        }
+    }
 }
 
 impl std::fmt::Debug for HistoryRequest {
@@ -48,7 +59,7 @@ impl std::fmt::Debug for HistoryRequest {
 }
 
 /// Entrada segura para la interfaz; no contiene MatchID.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct HistoryEntry {
     pub queue: String,
     pub started_at_ms: u64,

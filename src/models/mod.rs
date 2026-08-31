@@ -3,6 +3,7 @@
 
 pub(crate) mod roster;
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -148,7 +149,7 @@ impl MatchRounds {
 }
 
 /// Totales oficiales del scoreboard, no derivados de eventos de kills por ronda.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PlayerMatchStats {
     pub kills: u32,
     pub deaths: u32,
@@ -160,7 +161,7 @@ pub struct PlayerMatchStats {
     pub legshots: Option<u32>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum MatchOutcome {
     Win,
     Loss,

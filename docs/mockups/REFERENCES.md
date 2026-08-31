@@ -15,9 +15,10 @@ Estas aplicaciones son referencias de composición, no plantillas vinculantes. E
 
 ## Color y tamaño
 
-- Cian: navegación y foco. Verde: aliados, victorias y kills. Coral: enemigos, derrotas y muertes. El rango usa su familia competitiva, siempre acompañada por el nombre. Ámbar: dato oculto o pendiente.
+- La interfaz usa [Gruvbox](https://github.com/morhetz/gruvbox) como sistema cromático. Noche corresponde a Gruvbox Dark de contraste medio (`dark0 #282828`, `light1 #ebdbb2`) y Claro a Gruvbox Light (`light0 #fbf1c7`, `dark1 #3c3836`). Se emiten valores RGB verdaderos para no depender de cómo el host reasigne ANSI 0–15.
+- Aqua: navegación y foco. Verde: aliados, victorias y kills. Rojo: enemigos, derrotas y muertes. El rango usa una familia Gruvbox diferenciada, siempre acompañada por el nombre. Amarillo: dato oculto o pendiente.
 - Riot explica que revisó la iconografía para distinguir mejor los colores de cada rango: [Rangos y modo competitivo](https://playvalorant.com/es-es/news/dev/los-rangos-y-el-modo-competitivo-de-valorant/). La [versión 5.0](https://playvalorant.com/es-es/news/game-updates/notas-de-la-version-5-0-de-valorant/) introdujo Ascendente entre Diamante e Inmortal. El catálogo comunitario de assets consultado el 2026-08-29 expone los tonos actuales por tier: [Competitive tiers](https://valorant-api.com/v1/competitivetiers). Se contrastó la familia y su iconografía, sin tratar ese espejo como documentación oficial de Riot.
-- Paleta oscura: Hierro `#868986`, Bronce `#A5855D`, Plata `#BBC2C2`, Oro `#ECCF56`, Platino `#59A9B6`, Diamante `#B489C4`, Ascendente `#6AE2AF`, Inmortal `#BB3D65` y Radiante `#FFFFAA`. En Claro se usan equivalentes más oscuros cuando el tono original no alcanza contraste suficiente.
+- Familias en Noche: Hierro `#928374`, Bronce `#fe8019`, Plata `#d5c4a1`, Oro `#fabd2f`, Platino `#8ec07c`, Diamante `#83a598`, Ascendente `#b8bb26`, Inmortal `#d3869b` y Radiante `#fabd2f`. Claro usa las variantes faded oficiales cuando el tono brillante no alcanza contraste.
 - Fondos, bordes y texto secundarios discretos; un único renglón resaltado indica la selección. Sin degradados, sombras, tarjetas ni retratos que eleven todas las filas.
 - Sistema, Noche, Claro y Sin color. El teclado y los marcadores `›`, `V`, `D`, `K` y `—` no dependen de reconocer colores.
 - 72 columnas: roster con rango, K/D, WR y últimas cinco. 38 columnas: conservar jugador, agente, rango y K/D; WR queda en el detalle.
@@ -26,9 +27,9 @@ Estas aplicaciones son referencias de composición, no plantillas vinculantes. E
 
 ## Tipografía
 
-Una TUI no elige de forma portable la fuente: Ratatui escribe caracteres y estilos, mientras el emulador decide cómo dibujarlos. Las [secuencias de terminal virtual de Windows](https://learn.microsoft.com/es-es/windows/console/console-virtual-terminal-sequences) cubren cursor, color y atributos, pero no una selección de familia tipográfica. Windows Terminal configura `font.face`, tamaño y peso en el perfil, según su [documentación oficial de apariencia](https://learn.microsoft.com/en-us/windows/terminal/customize-settings/profile-appearance).
+Una TUI no elige de forma portable la fuente: Ratatui escribe caracteres y estilos, mientras el emulador decide cómo dibujarlos. Las [secuencias de terminal virtual de Windows](https://learn.microsoft.com/es-es/windows/console/console-virtual-terminal-sequences) cubren cursor, color y atributos, pero no una selección de familia tipográfica. Windows Terminal configura `font.face`, tamaño y peso en el perfil, según su [documentación oficial de apariencia](https://learn.microsoft.com/en-us/windows/terminal/customize-settings/profile-appearance). La investigación y las alternativas de integración están en [`docs/TERMINAL-APPEARANCE.md`](../TERMINAL-APPEARANCE.md).
 
-VTracker recomienda **Cascadia Mono** en Windows Terminal porque es monoespaciada y viene como fuente predeterminada, pero no modifica `settings.json`: hacerlo afectaría otras consolas y dependería de qué host lanzó la app. Consolas, Cascadia Code u otra fuente monoespaciada compatible siguen funcionando. Los glifos esenciales mantienen alternativa textual y no requieren Nerd Fonts.
+Gruvbox muestra **Fira Mono** en sus capturas y **Fantasque Sans Mono** en su galería. En este equipo solo están disponibles Cascadia Mono, Cascadia Code y Consolas entre las candidatas inspeccionadas. VTracker no modifica la fuente global ni instala tipografías sin una decisión explícita del usuario. Los glifos esenciales mantienen alternativa textual y no requieren Nerd Fonts.
 
 ## ¿Se pueden poner imágenes?
 

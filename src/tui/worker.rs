@@ -1,12 +1,13 @@
 //! Un único trabajador limita la concurrencia de red; la TUI nunca espera una respuesta.
 use std::{
-    io,
+    fs, io,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, SyncSender, TryRecvError},
     },
     thread,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use crate::{
@@ -327,7 +328,11 @@ impl Sources {
         if stop.load(Ordering::Acquire) {
             return Err(());
         }
-        let request = self.local.history_request(5).map_err(|_| ())?;
+        let request = self.local.history_request(20).map_err(|_| ())?;
+        let updates = self
+            .profile
+            .fetch_own_competitive_updates(&request.profile_request(), 20)
+            .unwrap_or_default();
         let matches = self.history.fetch_own_matches(&request).map_err(|_| ())?;
         let mut indexed = Vec::with_capacity(matches.len());
         let mut matches = matches.into_iter().enumerate();
@@ -341,6 +346,10 @@ impl Sources {
                     .into_iter()
                     .map(|(index, item)| {
                         let detail_request = request.match_detail_request(item.match_id);
+                        let rr_change = updates.get(index).map(|update| update.rr_earned);
+                        let rr_after = updates
+                            .get(index)
+                            .and_then(|update| update.ranked_rating_after);
                         scope.spawn(move || {
                             let details =
                                 self.details
@@ -360,6 +369,8 @@ impl Sources {
                                 super::HistoryItem {
                                     entry: item.entry,
                                     details,
+                                    rr_change,
+                                    rr_after,
                                 },
                             )
                         })
@@ -372,14 +383,76 @@ impl Sources {
             indexed.append(&mut results);
         }
         indexed.sort_by_key(|(index, _)| *index);
-        Ok(indexed.into_iter().map(|(_, item)| item).collect())
+        let items = indexed
+            .into_iter()
+            .map(|(_, item)| item)
+            .collect::<Vec<_>>();
+        let _ = save_cached_history(&items);
+        Ok(items)
     }
+}
+
+fn history_cache_path() -> Option<std::path::PathBuf> {
+    config::config_path().map(|path| path.with_file_name("history-cache.json"))
+}
+
+fn save_cached_history(items: &[super::HistoryItem]) -> Result<(), ()> {
+    let path = history_cache_path().ok_or(())?;
+    let parent = path.parent().ok_or(())?;
+    fs::create_dir_all(parent).map_err(|_| ())?;
+    let cached = super::CachedHistory {
+        schema: 1,
+        saved_at_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| ())?
+            .as_millis() as u64,
+        items: items.iter().take(20).cloned().collect(),
+    };
+    let bytes = serde_json::to_vec(&cached).map_err(|_| ())?;
+    let temporary = path.with_extension("json.tmp");
+    fs::write(&temporary, bytes).map_err(|_| ())?;
+    fs::rename(&temporary, &path).map_err(|_| {
+        let _ = fs::remove_file(&temporary);
+    })
+}
+
+pub(super) fn load_cached_history() -> Option<super::CachedHistory> {
+    let bytes = fs::read(history_cache_path()?).ok()?;
+    let mut cached: super::CachedHistory = serde_json::from_slice(&bytes).ok()?;
+    if cached.schema != 1 || cached.saved_at_ms == 0 {
+        return None;
+    }
+    cached.items.truncate(20);
+    Some(cached)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn persisted_history_schema_contains_no_session_identifiers_or_tokens() {
+        let cached = super::super::CachedHistory {
+            schema: 1,
+            saved_at_ms: 1,
+            items: vec![super::super::HistoryItem {
+                entry: crate::providers::history::HistoryEntry {
+                    queue: "competitivo".into(),
+                    started_at_ms: 2,
+                },
+                details: None,
+                rr_change: Some(18),
+                rr_after: Some(64),
+            }],
+        };
+
+        let json = serde_json::to_string(&cached).unwrap();
+
+        for forbidden in ["MatchID", "puuid", "access_token", "entitlement"] {
+            assert!(!json.contains(forbidden), "{json}");
+        }
+    }
 
     #[test]
     fn slow_work_is_bounded_and_does_not_block_submission_or_shutdown() {
