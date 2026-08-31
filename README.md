@@ -29,10 +29,6 @@ Spike es una aplicación de terminal para VALORANT creada con Rust, Ratatui y Cr
   </tr>
 </table>
 
-#### Partida detectada
-
-![Vista de partida de la demo de Spike](assets/screenshots/demo-partida.png)
-
 La demo funciona sin abrir VALORANT y permite recorrer la interfaz con datos ficticios:
 
 ```powershell
