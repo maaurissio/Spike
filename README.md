@@ -45,7 +45,7 @@ cargo run -- dashboard --demo
 - Habilita la vista contextual **Partida** durante selección de agente, partida o postpartida.
 - Muestra el roster disponible de aliados y enemigos, sus rangos y estadísticas cuando la fuente lo permite.
 - Incluye **Logs** con CPU, RAM, uptime, picos de consumo y actividad sanitizada de la sesión.
-- Ofrece un perfil opcional de Windows Terminal con tema Gruvbox y Fira Mono.
+- Usa un perfil dedicado de Windows Terminal con tema Gruvbox y Fira Mono.
 
 > [!IMPORTANT]
 > El objetivo principal de Spike es presentar el roster de la partida actual —aliados y enemigos en modos 5v5— junto con los datos disponibles y permitidos. El perfil, historial y postpartida lo complementan.
@@ -61,19 +61,26 @@ Por ahora Spike se ejecuta desde el código fuente en Windows.
 - Windows 10 u 11.
 - [Rust](https://www.rust-lang.org/tools/install) estable con Cargo.
 - VALORANT y Riot Client para consultar datos locales reales.
-- Windows Terminal es opcional, pero recomendado para la experiencia visual.
+- [Windows Terminal](https://apps.microsoft.com/detail/9n0dx20hk701) instalado.
+- [Fira Mono](https://fonts.google.com/specimen/Fira+Mono) instalada para el usuario actual.
+
+> [!IMPORTANT]
+> **Windows Terminal y Fira Mono son requisitos obligatorios de Spike.** La interfaz está diseñada, probada y distribuida únicamente con ese perfil. No se admite ni documenta la ejecución en la consola clásica de Windows ni con otra fuente.
 
 ```powershell
 git clone https://github.com/maaurissio/Spike.git
 Set-Location Spike
-cargo run
+cargo build --release
+.\target\release\spike.exe terminal install
+.\target\release\spike.exe terminal launch
 ```
 
-Para una compilación optimizada:
+`terminal install` verifica ambos requisitos, instala el perfil aislado **SPIKE**, aplica Gruvbox y copia el ejecutable a `%LOCALAPPDATA%\Spike`. Si falta Windows Terminal o Fira Mono, se detiene con un error claro: instálalos antes de continuar.
+
+Para comprobar que el entorno quedó correcto:
 
 ```powershell
-cargo build --release
-.\target\release\spike.exe
+.\target\release\spike.exe terminal status
 ```
 
 > [!WARNING]
@@ -95,21 +102,23 @@ cargo build --release
 
 Dentro de la interfaz, las teclas `1` a `5` cambian entre las vistas persistentes. Cuando hay una partida activa, aparece un acceso contextual a **Partida** en la parte superior derecha.
 
-## Tema de Windows Terminal
+## Perfil obligatorio de Windows Terminal
 
-Spike puede instalar un perfil separado de Windows Terminal, sin modificar los demás perfiles:
+La instalación crea un perfil separado llamado **SPIKE** sin modificar los demás perfiles. Es el único entorno compatible de ejecución:
 
 ```powershell
-cargo run -- terminal install
-cargo run -- terminal launch
+.\target\release\spike.exe terminal install
+.\target\release\spike.exe terminal launch
 ```
 
 Para comprobarlo o quitarlo:
 
 ```powershell
-cargo run -- terminal status
-cargo run -- terminal uninstall
+.\target\release\spike.exe terminal status
+.\target\release\spike.exe terminal uninstall
 ```
+
+Consulta el historial de cambios en [CHANGELOG.md](CHANGELOG.md).
 
 ## Privacidad, datos y límites
 
