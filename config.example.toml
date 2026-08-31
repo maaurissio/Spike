@@ -1,12 +1,38 @@
-# VTracker — Ejemplo de configuración local
+# VTracker — Ejemplo de configuración local — nombre temporal
 # Ubicación real: %APPDATA%\vtracker\config.toml (Windows) o $XDG_CONFIG_HOME/vtracker/config.toml
 # Copia este archivo a esa ruta si quieres personalizar. Nunca pongas secretos aquí.
-
-# Tema visual: "system", "dark", "light" o "mono".
-theme = "dark"
+# Ver README.md:Configuración y secretos y Arquitectura-inicial.md:19.
 
 # Intervalo de comprobación entre 1 y 60 segundos.
 interval_seconds = 3
 
 # Guarda cada cambio de estado en %APPDATA%\vtracker\watch.log.
 log_transitions = false
+
+# Tema TUI: dark (paleta recomendada), system, light o mono.
+# En dashboard: t previsualiza; Ajustes / s guarda.
+theme = "dark"
+
+# ── Perfil propio (se muestra al iniciar con cliente disponible) ─────────────
+# Riot ID del jugador principal. Requiere RSO/opt-in para datos privados.
+# [profile]
+# riot_id = "Nombre#TAG"
+# region = "americas"   # americas | europe | asia | latam | esports
+
+# ── Autoinicio — apartado de configuración (Prioridad 6) ─────────────────────
+# Controla si VTracker (nombre temporal) se inicia al encender el PC o al abrir VALORANT.
+# Desactivado por defecto; requiere `vtracker autostart enable` o editar aquí y reiniciar.
+# Implementado con crate `auto-launch` (Windows: Run key / Startup folder).
+# [autostart]
+# enabled = false
+# minimized = true   # arranca en segundo plano sin robar foco
+
+# ── Proveedores y caché (Prioridad 2+) ───────────────────────────────────────
+# Los secretos (API keys) NO van aquí; van en `.env` (ver `.env.example`).
+# [providers]
+# riot_api_key_env = "RIOT_API_KEY"   # nombre de la variable de entorno a leer
+# region = "americas"
+
+# [cache]
+# ttl_seconds = 300
+# max_entries_l1 = 128

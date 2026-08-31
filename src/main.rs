@@ -8,6 +8,7 @@ mod diagnostics;
 mod game;
 mod models;
 mod providers;
+mod terminal_profile;
 mod tui;
 mod ui;
 mod watch;
@@ -16,7 +17,7 @@ use std::{env, io, thread};
 
 use analytics::{summarize, summarize_by_category};
 use cache::{L1Cache, L1CacheSettings};
-use cli::{Command, ConfigCommand};
+use cli::{Command, ConfigCommand, TerminalCommand};
 use config::Config;
 use providers::{
     GameStateSource, HistorySource, LiveMatchSource, LocalClientSource, MatchDetailSource,
@@ -36,6 +37,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 mod test_support;
 
 fn main() {
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle("VTRACKER"));
     let raw_args: Vec<String> = env::args().skip(1).collect();
     let command = match cli::parse(&raw_args) {
         Ok(cmd) => cmd,
@@ -75,6 +77,21 @@ fn main() {
         }
         Command::Stats(args) => {
             run_stats(args.limit);
+        }
+        Command::Terminal(command) => {
+            let result = match command {
+                TerminalCommand::Install => terminal_profile::install(),
+                TerminalCommand::Status => terminal_profile::status(),
+                TerminalCommand::Launch => terminal_profile::launch(),
+                TerminalCommand::Uninstall => terminal_profile::uninstall(),
+            };
+            match result {
+                Ok(output) => println!("{output}"),
+                Err(error) => {
+                    eprintln!("No se pudo gestionar el perfil de terminal: {error}");
+                    std::process::exit(1);
+                }
+            }
         }
         Command::Config(command) => {
             let result = match command {

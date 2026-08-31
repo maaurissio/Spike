@@ -97,7 +97,7 @@ fn player_view(
 }
 pub fn print_help() {
     println!(
-        "vtracker {VERSION}\n\nUSO:\n  vtracker                           # interfaz principal\n  vtracker dashboard [--demo]        # interfaz explícita; demo ficticia sin conexión\n  vtracker watch [--once] [--interval SEGUNDOS]\n  vtracker player\n  vtracker history [--limit 1..20]\n  vtracker stats [--limit 1..5]\n  vtracker doctor\n  vtracker config show|validate\n  vtracker config edit [--interval SEGUNDOS] [--log-transitions true|false]\n\nVARIABLES:\n  VTRACKER_STATE=closed|idle|game  Simula un estado para pruebas."
+        "vtracker {VERSION}\n\nUSO:\n  vtracker                           # interfaz principal\n  vtracker dashboard [--demo]        # interfaz explícita; demo ficticia sin conexión\n  vtracker watch [--once] [--interval SEGUNDOS]\n  vtracker player\n  vtracker history [--limit 1..20]\n  vtracker stats [--limit 1..5]\n  vtracker doctor\n  vtracker config show|validate\n  vtracker config edit [--interval SEGUNDOS] [--log-transitions true|false]\n  vtracker terminal install|status|launch|uninstall\n\nVARIABLES:\n  VTRACKER_STATE=closed|idle|game  Simula un estado para pruebas."
     );
 }
 

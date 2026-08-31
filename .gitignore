@@ -8,6 +8,7 @@
 .env
 .env.local
 .env.*.local
+!.env.example
 
 # Config real (fuera de repo) y logs locales
 /config.toml

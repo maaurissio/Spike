@@ -2513,8 +2513,10 @@ dependencies = [
  "native-tls",
  "ratatui",
  "reqwest",
+ "serde",
  "serde_json",
  "tungstenite",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

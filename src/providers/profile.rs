@@ -174,7 +174,7 @@ impl PlayerProfileSource {
         request: &ProfileRequest,
         limit: u8,
     ) -> Result<Vec<CompetitiveUpdate>, ProviderError> {
-        if !(1..=5).contains(&limit) {
+        if !(1..=20).contains(&limit) {
             return Err(ProviderError::Parse(
                 "límite de cambios competitivos inválido".into(),
             ));

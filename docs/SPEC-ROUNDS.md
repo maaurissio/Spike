@@ -1,0 +1,119 @@
+# SPEC-ROUNDS — Tracking y visualización de rondas
+
+> **Presentación vigente (2026-08-28):** el usuario reemplazó las K/D apiladas por cantidades por ronda: fila `1K 0K 4K …`, fila `R1 R2 R3 …` y fila `1D 0D 2D …`. Tres líneas entre aliados y enemigos; ronda en curso `—K / —D`, no ceros inventados. Esta revisión prevalece sobre los diagramas históricos de §5. No cambia las condiciones de disponibilidad de datos ni las fuentes autorizadas.
+
+> Estado: render y normalización postpartida implementados; proveedor de eventos en vivo pendiente. Decisiones estructurales en `docs/DECISIONS.md`, especialmente ADR-018.
+
+## 1. Alcance por modo (ADR-004)
+
+| Modo | ¿RoundTimeline? | Notas |
+|---|---|---|
+| Unrated (Normal) | ✅ | Primero a 13 |
+| Competitivo | ✅ | Primero a 13 + OT (rondas OT continúan numeración: R25, R26…) |
+| Personalizada formato estándar/competitivo | ✅ | `ProvisioningFlow: CustomGame` + modo base estándar |
+| Swiftplay | ❌ | Fuera de alcance |
+| Deathmatch / Team Deathmatch / Escalation | ❌ | Continuos; resumen básico post-partida sin rondas |
+
+Detección en vivo: `Current Game Match` → `ModeID` + `ProvisioningFlow`. Si el modo no está en la lista → la vista de rondas no existe.
+
+## 2. Modelo de datos (normalizado, fuente-agnóstico)
+
+```rust
+// Borrador — sujeto a refinamiento antes de implementar
+
+pub struct MatchRounds {
+    pub match_id: String,
+    pub mode: GameMode,            // solo variantes con ronda llegan aquí
+    pub rounds: Vec<Round>,
+}
+
+pub struct Round {
+    pub round_num: u32,            // 1..=n, OT continúa la numeración
+    pub winning_team: Team,        // Blue | Red
+    pub round_result: RoundResult, // Eliminated | Detonate | Defuse | Surrendered | TimerExpired
+    pub ceremony: Option<RoundCeremony>, // Ace | TeamAce | Clutch | Flawless | Thrifty | Closer | Default
+    pub players: Vec<PlayerRoundStat>,
+}
+
+pub struct PlayerRoundStat {
+    pub puuid: String,
+    pub kills: u8,                 // 0..=5
+    pub deaths: u8,                // 0..=2  (ADR-008: Clove/Sage permiten 2)
+    pub score: Option<u32>,        // combat score de la ronda si la fuente lo entrega
+    pub damage: Option<u32>,       // daño total de la ronda si la fuente lo entrega
+}
+```
+
+Reglas:
+* `deaths` es **conteo (0-2)**, nunca booleano (ADR-008).
+* El K/D de partida sale de `players[].stats` del scoreboard oficial (ADR-007); puede dar muertes > rondas jugadas por revives.
+* Campos `Option<>` = la fuente puede no entregarlos; nunca se inventan (principio de honestidad de datos).
+
+## 3. Rutas de datos (ADR-005/018)
+
+1. **Eventos live aprobados (pendiente)** — Tracker Network documenta que Valorant Tracker funciona sobre Overwolf. El GEP oficial de Overwolf para VALORANT expone `round_number`, `round_phase`, `round_report`, scoreboard y eventos `kill`/`death`. Una integración futura debe ser un `LiveRoundEventSource` registrado y aislado del modelo de pantalla.
+2. **Post-partida (implementado)** — `pd.{shard}.a.pvp.net/match-details/v1/matches/{id}` entrega `roundResults[]` después de terminar. VTracker calcula únicamente las rondas propias y muestra `—` si faltan campos.
+
+`match-details` no se considera una fuente live hasta que exista una garantía documentada del proveedor. OCR, lectura de memoria, inyección y simulación de entrada no forman parte de la ruta predeterminada. Sin el proveedor de eventos, la TUI dice que las rondas live no están integradas y espera el resumen oficial postpartida.
+
+## 4. Detección de la frontera de ronda
+
+* **Vía GEP futura:** `round_phase`/`round_number` delimitan la ronda y los eventos propios `kill`/`death` actualizan el acumulador. En cada frontera se publica un snapshot inmutable a la TUI.
+* **Vía cliente local actual:** el WebSocket mantiene la fase general `AgentSelect/InMatch/PostMatch`; no se le atribuyen eventos de combate que no documenta.
+* **Postpartida:** `roundResults[]` ya viene dividido por ronda y reemplaza cualquier acumulado provisional con el resultado oficial.
+
+## 5. Visualización — RoundTimeline
+
+> **⚠️ CONCEPTUAL — NO es el diseño final.** El arte ASCII y las reglas visuales de esta sección son exploratorios (validan el concepto del usuario). Lo vinculante: el modelo de datos (§2), las rutas de datos (§3) y las reglas de negocio. El render final se decide en implementación (P5).
+
+Concepto del usuario (prototipo validado): kills apilados hacia arriba, muertes hacia abajo, una columna por ronda.
+
+```
+          K
+          K
+   K      K  K      K
+   K  K   K  K  K   K
+  ─────────────────────────
+   R1 R2  R3 R4 R5  R6 …
+  ─────────────────────────
+   D  D         D   D
+   D
+```
+
+Lectura del ejemplo: R1 = 3K + 2D (revivido), R2 = 1K + 1D, R3 = 2K, R4 = 0K, R5 = 4K + 1D (★ si fue ACE/CLUTCH), R6 = 1K + 1D.
+
+Reglas de render:
+* **Colores:** K verde, D rojo; etiqueta `R#` verde si ganamos la ronda, rojo si la perdimos; rondas futuras atenuadas; `★` sobre la columna si `ceremony` = Ace/Clutch.
+* **Elástico:** columnas por bloque = ancho disponible / 3-4 chars, recalculado cada frame (Ratatui entrega el área por frame). Bloques apilados verticalmente si no caben todas las rondas.
+* **Alto de bloque fijo:** 5 filas K + separador + etiquetas + separador + 2 filas D ≈ 10 filas.
+* **Paginación:** si los bloques no caben en alto → `←/→` o auto-scroll al bloque actual.
+* **Colapso:** en terminal angosta, el timeline colapsa a una línea (`R7 · 6K 4D · [enter] expandir`).
+* **Convive con rosters** (ver `DESIGN-UI.md`): dos columnas en terminal ancha; apilado/colapsado en angosta.
+
+## 6. Casos borde y pendientes de definición
+
+| Caso | Estado | Decisión pendiente |
+|---|---|---|
+| Clove self-revive: 2 muertes en ronda | ✅ Definido (conteo 0-2) | — |
+| Sage res: 2 muertes en ronda | ✅ Definido (conteo 0-2) | — |
+| Phoenix ult: sin kill para enemigo, sin death para Phoenix; kills de Phoenix en ult SÍ cuentan | ✅ Definido (ADR-008) | Cómo marcar en timeline (¿columna sin D aunque hubo "muerte" visual?) |
+| KAY/O downed en ult | ⚠️ Verificar empíricamente | ¿Cuenta como muerte? |
+| KAST "Survived" con revives | ⚠️ Pendiente | Definir con datos reales de fixture |
+| Diferencia killfeed vs scoreboard por ronda (Phoenix) | ⚠️ Pendiente | ¿Nota al pie en la columna o aceptar diferencia? |
+| Rendición (surrender) a mitad de ronda | ⚠️ Verificar | ¿Cómo la reporta `roundResults`? |
+| Partida abandonada (reconnect) | ⚠️ Verificar | Rondas ausente: `wasAfk`/`wasPenalized` existen en la fuente |
+
+## 7. Fixtures de prueba (definición temprana)
+
+* `fixture_5_rounds`: el ejemplo del usuario — 5 rondas, muere en R1/R2/R5, mata 2 en R1/R3/R4/R5 → valida conteo, colores y wrap.
+* `fixture_ot`: partida 13-11 con OT → valida numeración continua y paginación.
+* `fixture_clove`: ronda con 2 muertes → valida pila de D.
+* `fixture_phoenix`: kill event en ult sin death en scoreboard → valida diferencia killfeed/scoreboard.
+* `fixture_narrow`: render en 40 cols → valida wrap a bloques.
+
+## 8. Preguntas abiertas para siguiente iteración
+
+1. ¿El timeline muestra también a otros jugadores seleccionables desde el roster (aliados/enemigos) o solo al usuario?
+2. ¿Fila opcional de daño por ronda (configurable en Settings)?
+3. ¿Auto-scroll al bloque actual durante partida en vivo o manual?
+4. Definir si una distribución con bridge/paquete Overwolf es aceptable para el producto final; hasta entonces el timeline live permanece como no disponible.
