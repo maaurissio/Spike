@@ -319,6 +319,7 @@ struct App {
     metrics: metrics::ProcessMetrics,
     network: NetworkUsage,
     logs: VecDeque<LogEntry>,
+    custom_palette: Option<theme::EditablePalette>,
 }
 
 impl App {
@@ -367,6 +368,7 @@ impl App {
             metrics: metrics::ProcessMetrics::new(),
             network: NetworkUsage::default(),
             logs: VecDeque::new(),
+            custom_palette: None,
         };
         app.push_log(LogLevel::Info, "Interfaz iniciada");
         app
@@ -402,6 +404,19 @@ impl App {
         });
         while self.logs.len() > LOG_LIMIT {
             self.logs.pop_front();
+        }
+        self.dirty = true;
+    }
+
+    fn reload_palette(&mut self) {
+        match theme::load_or_create_palette() {
+            Ok(palette) => {
+                self.custom_palette = Some(palette);
+                self.push_log(LogLevel::Success, "Paleta recargada desde palette.toml");
+            }
+            Err(error) => {
+                self.push_log(LogLevel::Warning, format!("Paleta inválida: {error}"));
+            }
         }
         self.dirty = true;
     }
@@ -753,6 +768,7 @@ impl App {
             return;
         }
         match key.code {
+            KeyCode::F(5) => self.reload_palette(),
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Esc => {
                 if self.detail {
@@ -1207,6 +1223,7 @@ fn run_loop(
         Worker::start()?
     };
     let mut app = App::new(&config);
+    app.reload_palette();
     if !demo && let Some(cached) = worker::load_cached_history() {
         let count = cached.items.len();
         app.history = Some(cached.items);
@@ -1219,7 +1236,14 @@ fn run_loop(
     if demo {
         app.demo = Some(demo::Demo::default());
         app.selected_tab = 1;
-        app.push_log(LogLevel::Info, "Modo demo activado");
+        // Las capturas de la demo deben ser reproducibles, sin depender del
+        // tema que cada persona tenga guardado localmente.
+        app.settings.draft.theme = crate::config::Theme::Dark;
+        app.metrics = metrics::ProcessMetrics::demo();
+        app.push_log(LogLevel::Info, "Demo: datos ficticios cargados");
+        app.push_log(LogLevel::Success, "Demo: historial Ranked preparado");
+        app.push_log(LogLevel::Success, "Demo: roster de partida preparado");
+        app.push_log(LogLevel::Info, "Demo: métricas locales simuladas");
     }
     let mut last_refresh: Option<Instant> = None;
 

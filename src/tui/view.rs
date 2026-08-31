@@ -1,4 +1,6 @@
 //! Composición en celdas de terminal basada en docs/mockups; sin I/O.
+use std::collections::BTreeMap;
+
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
@@ -79,6 +81,11 @@ impl Screen {
             .trim_end()
             .to_string();
         let remaining = self.width.saturating_sub(Span::raw(&title).width() + 3);
+        let style = if style == self.palette.focus {
+            self.palette.title
+        } else {
+            style
+        };
         self.row(Line::from(vec![
             Span::styled("─ ", self.palette.border),
             Span::styled(title, style),
@@ -133,7 +140,10 @@ fn cell(value: &str, width: usize) -> String {
 }
 
 pub(super) fn content(app: &App, width: u16) -> Screen {
-    let mut s = Screen::new(width, Palette::new(app.settings.draft.theme));
+    let mut s = Screen::new(
+        width,
+        Palette::with_custom(app.settings.draft.theme, app.custom_palette.as_ref()),
+    );
     match app.selected_tab {
         0 => panel(&mut s, app),
         1 => match_view(&mut s, app),
@@ -163,10 +173,14 @@ fn panel(s: &mut Screen, app: &App) {
     profile_summary(s, app);
     s.section("ÚLTIMAS 5 RANKED", s.palette.focus);
     if let Some(demo) = &app.demo {
-        let kills: u32 = demo.matches.iter().map(|m| m.kills).sum();
-        let deaths: u32 = demo.matches.iter().map(|m| m.deaths).sum();
+        let recent = demo.matches.iter().take(5).collect::<Vec<_>>();
+        let kills: u32 = recent.iter().map(|m| m.kills).sum();
+        let deaths: u32 = recent.iter().map(|m| m.deaths).sum();
+        let wins = recent.iter().filter(|m| m.won).count();
+        let losses = recent.len().saturating_sub(wins);
         s.text(format!(
-            "3 partidas · 2 V / 1 D · K/D {:.2} · HS 26.0%\n{kills} kills / {deaths} muertes",
+            "{} partidas · {wins} V / {losses} D · K/D {:.2} · HS 26.0%\n{kills} kills / {deaths} muertes",
+            recent.len(),
             kills as f64 / deaths as f64
         ));
     } else if let Some(summary) = history_summary(app) {
@@ -321,6 +335,7 @@ fn profile(s: &mut Screen, app: &App) {
         s.text("AGENTE     PJ    K/D    WR\nSova       12    1.24   58%\nOmen        5    1.08   40%\nKilljoy     3    1.11   67%");
     } else if let Some(summary) = history_summary(app) {
         s.text(summary);
+        profile_agents(s, app);
     } else if app.history_pending {
         s.text("Calculando tu rendimiento reciente…");
     } else {
@@ -363,6 +378,62 @@ fn profile(s: &mut Screen, app: &App) {
                 },
             ));
         }
+    }
+}
+
+#[derive(Default)]
+struct AgentSummary {
+    games: u32,
+    wins: u32,
+    kills: u32,
+    deaths: u32,
+}
+
+fn profile_agents(s: &mut Screen, app: &App) {
+    let mut agents = BTreeMap::<String, AgentSummary>::new();
+    for details in app
+        .history
+        .as_ref()
+        .into_iter()
+        .flat_map(|history| history.iter().filter_map(|item| item.details.as_ref()))
+    {
+        let entry = agents.entry(details.agent.clone()).or_default();
+        entry.games += 1;
+        entry.wins += u32::from(details.outcome == MatchOutcome::Win);
+        entry.kills = entry.kills.saturating_add(details.stats.kills);
+        entry.deaths = entry.deaths.saturating_add(details.stats.deaths);
+    }
+    s.section("POR AGENTE", s.palette.focus);
+    if agents.is_empty() {
+        s.text("No hay detalles suficientes por agente.");
+        return;
+    }
+    let mut agents = agents.into_iter().collect::<Vec<_>>();
+    agents.sort_by(|(left_name, left), (right_name, right)| {
+        right
+            .games
+            .cmp(&left.games)
+            .then_with(|| left_name.cmp(right_name))
+    });
+    s.row(Line::styled(
+        if s.width >= 60 {
+            "AGENTE           PJ    K/D    WR"
+        } else {
+            "AGENTE      PJ   K/D   WR"
+        },
+        s.palette.dim,
+    ));
+    for (agent, summary) in agents.into_iter().take(5) {
+        let win_rate = summary.wins as f64 * 100.0 / summary.games as f64;
+        s.row(Line::from(vec![
+            Span::styled(
+                cell(&agent, if s.width >= 60 { 17 } else { 11 }),
+                s.palette.base,
+            ),
+            Span::raw(cell(&summary.games.to_string(), 6)),
+            Span::raw(cell(&kd_text(summary.kills, summary.deaths), 7)),
+            Span::styled(format!("{win_rate:.0}%"), s.palette.good),
+        ]));
     }
 }
 
@@ -1250,10 +1321,10 @@ fn settings(s: &mut Screen, app: &App) {
     ));
     s.row(Line::from(vec![
         Span::raw("  Tipografía                 "),
-        Span::styled("Cascadia Mono recomendada", s.palette.base),
+        Span::styled("Fira Mono obligatoria", s.palette.base),
     ]));
     s.row(Line::styled(
-        "  La fuente pertenece al terminal y se cambia allí.",
+        "  Paleta: %APPDATA%\\spike\\palette.toml · F5 recarga.",
         s.palette.dim,
     ));
 
@@ -1474,7 +1545,7 @@ fn phase_label(app: &App) -> &'static str {
         return if demo.post {
             "Postpartida simulada"
         } else {
-            "En partida simulada"
+            "Partida detectada"
         };
     }
     match app.state.as_ref().map(|v| v.phase) {
@@ -1533,10 +1604,9 @@ fn footer_line(app: &App, palette: Palette, width: u16) -> Line<'static> {
             ],
             4 if compact => &[("↑/↓", "opción"), ("q", "salir")],
             4 => &[
-                ("↑/↓", "opción"),
                 ("+/-", "cambiar"),
                 ("s", "guardar"),
-                ("r", "descartar"),
+                ("F5", "paleta"),
                 ("q", "salir"),
             ],
             5 if compact => &[("↑/↓", "mover"), ("q", "salir")],
@@ -1623,7 +1693,7 @@ fn metric_chart(
                 .borders(Borders::ALL)
                 .border_style(palette.border)
                 .style(palette.base)
-                .title(Line::styled(format!(" {title} "), palette.focus)),
+                .title(Line::styled(format!(" {title} "), palette.title)),
         )
         .x_axis(
             Axis::default()
@@ -1699,32 +1769,36 @@ fn render_memory_panel(
 fn render_current_stats(frame: &mut ratatui::Frame<'_>, area: Rect, palette: Palette, app: &App) {
     let current = app.metrics.current();
     let network = &app.network;
-    let (network_label, network_style) = match network.last_sync {
-        Some(last) => {
-            let failures = if network.failed_syncs > 0 {
-                format!(
-                    " · {} fallo{}",
-                    network.failed_syncs,
-                    if network.failed_syncs == 1 { "" } else { "s" }
-                )
-            } else {
-                String::new()
-            };
-            (
-                format!(
-                    "{} consulta{} Riot · {}{failures}",
-                    network.riot_syncs,
-                    if network.riot_syncs == 1 { "" } else { "s" },
-                    duration_clock(last.at),
-                ),
-                if last.succeeded {
-                    palette.good
+    let (network_label, network_style) = if app.demo.is_some() {
+        ("DEMO · sin red".into(), palette.dim)
+    } else {
+        match network.last_sync {
+            Some(last) => {
+                let failures = if network.failed_syncs > 0 {
+                    format!(
+                        " · {} fallo{}",
+                        network.failed_syncs,
+                        if network.failed_syncs == 1 { "" } else { "s" }
+                    )
                 } else {
-                    palette.bad
-                },
-            )
+                    String::new()
+                };
+                (
+                    format!(
+                        "{} consulta{} Riot · {}{failures}",
+                        network.riot_syncs,
+                        if network.riot_syncs == 1 { "" } else { "s" },
+                        duration_clock(last.at),
+                    ),
+                    if last.succeeded {
+                        palette.good
+                    } else {
+                        palette.bad
+                    },
+                )
+            }
+            None => ("Local · sin consultas Riot".into(), palette.dim),
         }
-        None => ("Local · sin consultas Riot".into(), palette.dim),
     };
     let lines = vec![
         Line::from(vec![
@@ -1760,7 +1834,7 @@ fn render_current_stats(frame: &mut ratatui::Frame<'_>, area: Rect, palette: Pal
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(palette.border)
-                .title(Line::styled(" AHORA ", palette.focus)),
+                .title(Line::styled(" AHORA ", palette.title)),
         ),
         area,
     );
@@ -1845,7 +1919,7 @@ fn render_logs_dashboard(frame: &mut ratatui::Frame<'_>, area: Rect, palette: Pa
         let current = app.metrics.current();
         frame.render_widget(
             Paragraph::new(vec![
-                Line::styled("RENDIMIENTO DE SPIKE", palette.focus),
+                Line::styled("RENDIMIENTO DE SPIKE", palette.title),
                 Line::raw(format!(
                     "CPU {} · RAM {} · UPTIME {}",
                     current
@@ -1906,7 +1980,7 @@ fn render_logs_dashboard(frame: &mut ratatui::Frame<'_>, area: Rect, palette: Pa
 }
 
 pub(super) fn render(area: Rect, frame: &mut ratatui::Frame<'_>, app: &mut App) {
-    let palette = Palette::new(app.settings.draft.theme);
+    let palette = Palette::with_custom(app.settings.draft.theme, app.custom_palette.as_ref());
     frame.render_widget(Block::default().style(palette.base), area);
     if area.width < 38 || area.height < 10 {
         frame.render_widget(
@@ -1986,7 +2060,7 @@ pub(super) fn render(area: Rect, frame: &mut ratatui::Frame<'_>, app: &mut App) 
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(palette.border)
-        .title(Line::styled(title, palette.focus))
+        .title(Line::styled(title, palette.title))
         .title_bottom(footer_line(app, palette, area.width));
     if max_scroll > 0 && area.width >= 56 {
         block = block.title_bottom(
@@ -2094,6 +2168,9 @@ pub(super) fn render(area: Rect, frame: &mut ratatui::Frame<'_>, app: &mut App) 
 }
 
 fn rr_bar_values(app: &App) -> Vec<i32> {
+    if let Some(demo) = &app.demo {
+        return demo.matches.iter().rev().map(|item| item.rr).collect();
+    }
     app.history
         .as_ref()
         .into_iter()
@@ -2190,7 +2267,10 @@ fn render_brand_home(
         .borders(Borders::ALL)
         .border_type(BorderType::Plain)
         .border_style(palette.border)
-        .title(Line::styled(" SPIKE · 0.1.0 ", palette.focus))
+        .title(Line::styled(
+            format!(" SPIKE · {} ", env!("CARGO_PKG_VERSION")),
+            palette.title,
+        ))
         .title_bottom(Line::from(vec![
             Span::styled("[", palette.border),
             Span::styled("q", palette.pending.add_modifier(Modifier::BOLD)),
@@ -2222,7 +2302,10 @@ fn render_brand_home(
         .collect::<Vec<_>>();
     lines.extend([
         Line::raw(""),
-        Line::styled("blablabla", palette.pending.add_modifier(Modifier::ITALIC)),
+        Line::styled(
+            "love, love, love...",
+            palette.pending.add_modifier(Modifier::ITALIC),
+        ),
         Line::styled("────────────────────────", palette.border),
         Line::styled("https://github.com/maaurissio/spike", palette.focus),
     ]);
@@ -2275,7 +2358,7 @@ fn render_context_progress(
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(palette.border)
-            .title(Line::styled(" CARGANDO PARTIDA ", palette.focus))
+            .title(Line::styled(" CARGANDO PARTIDA ", palette.title))
             .style(palette.base),
         popup,
     );
@@ -2488,7 +2571,7 @@ mod tests {
         }
         assert_eq!(app.player_index, 9);
         let text = snapshot(&mut app, 38, 14);
-        assert!(text.contains("Ámbar") && app.scroll > 0);
+        assert!(text.contains("Jugador 10") && app.scroll > 0);
         key(&mut app, &worker, KeyCode::Enter);
         assert!(snapshot(&mut app, 38, 14).contains("ADR 129"));
         key(&mut app, &worker, KeyCode::Esc);
@@ -2735,6 +2818,9 @@ mod tests {
         app.select_tab(2);
         let profile = snapshot(&mut app, 100, 30);
         assert!(profile.contains("20 K / 10 D / 5 A"));
+        assert!(
+            profile.contains("POR AGENTE") && profile.contains("Sova") && profile.contains("100%")
+        );
         assert!(!profile.contains("pendiente") && !profile.contains("CLI"));
 
         app.select_tab(3);
@@ -2798,7 +2884,8 @@ mod tests {
         let settings = snapshot(&mut app, 100, 30);
         assert!(settings.contains("Frecuencia"));
         assert!(settings.contains("Registro de diagnóstico"));
-        assert!(settings.contains("Cascadia Mono recomendada"));
+        assert!(settings.contains("Fira Mono obligatoria"));
+        assert!(settings.contains("palette.toml"));
         assert!(settings.contains("Solo lectura"));
         assert!(!settings.contains("Log cambios") && !settings.contains("Retratos opcionales"));
     }
@@ -2809,13 +2896,13 @@ mod tests {
         let splash = snapshot_raw(&mut app, 80, 24);
 
         assert!(splash.contains("██████") && splash.contains("▓█████"));
-        assert!(splash.contains("blablabla"));
+        assert!(splash.contains("love, love, love..."));
         assert!(splash.contains("github.com/maaurissio/spike"));
         assert!(!splash.contains("1 Resumen") && !splash.contains("INICIANDO SPIKE"));
 
         let startup = snapshot(&mut app, 72, 24);
 
-        assert!(startup.contains("blablabla"));
+        assert!(startup.contains("love, love, love..."));
         assert!(startup.contains("Buscando Riot Client"));
         assert!(startup.contains("github.com/maaurissio/spike"));
         assert!(!startup.contains("1 Resumen") && !startup.contains("ESTADO DE PARTIDA"));

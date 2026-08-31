@@ -40,6 +40,31 @@ impl ProcessMetrics {
         }
     }
 
+    /// Muestras deterministas para la vitrina local. Nunca consulta procesos,
+    /// por lo que la demo sigue siendo completamente ficticia y sin I/O.
+    pub fn demo() -> Self {
+        let now = Instant::now();
+        let history = (0..60)
+            .map(|index| {
+                let wave = ((index * 7) % 13) as f64 / 10.0;
+                MetricSample {
+                    cpu_percent: Some(0.4 + wave),
+                    memory_bytes: Some((17_200_000 + index as u64 * 24_000).min(18_600_000)),
+                }
+            })
+            .collect::<VecDeque<_>>();
+        let current = *history.back().expect("la demo siempre tiene muestras");
+        Self {
+            started_at: now - Duration::from_secs(60),
+            last_sample_at: now,
+            last_cpu_time: None,
+            current,
+            history,
+            peak_cpu: Some((4.8, Duration::from_secs(42))),
+            peak_memory: Some((18_600_000, Duration::from_secs(58))),
+        }
+    }
+
     pub fn tick(&mut self) -> bool {
         let elapsed = self.last_sample_at.elapsed();
         if elapsed < SAMPLE_INTERVAL {
@@ -165,5 +190,17 @@ mod tests {
         let metrics = ProcessMetrics::new();
         assert_eq!(metrics.history().len(), 1);
         assert!(metrics.uptime() <= Duration::from_secs(1));
+    }
+
+    #[test]
+    fn demo_has_fixed_samples_and_peaks_without_reading_the_process() {
+        let metrics = ProcessMetrics::demo();
+        assert_eq!(metrics.history().len(), 60);
+        assert!(metrics.current().cpu_percent.is_some());
+        assert_eq!(metrics.peak_cpu().map(|(value, _)| value), Some(4.8));
+        assert_eq!(
+            metrics.peak_memory().map(|(value, _)| value),
+            Some(18_600_000)
+        );
     }
 }

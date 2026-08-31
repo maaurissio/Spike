@@ -1,15 +1,22 @@
 # Changelog
 
-Todos los cambios relevantes de Spike se documentan aquí. El formato toma como referencia [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto sigue [versionado semántico](https://semver.org/lang/es/).
-
-## [Sin publicar]
+## [0.2.0] - 2026-08-31
 
 ### Añadido
 
 - Galería de la demo con tema Gruvbox en el README.
 - Requisito explícito de Windows Terminal y Fira Mono para la experiencia compatible de Spike.
+- Archivo `%APPDATA%\spike\palette.toml` para personalizar la interfaz sin recompilar.
+- Recarga inmediata de la paleta mediante `F5`.
+- Paletas independientes para los temas Gruvbox Noche y Gruvbox Claro.
 
-## [0.1.0] - En desarrollo
+### Cambiado
+
+- Los colores semánticos ahora separan fondo, texto del contenido, títulos, foco, bordes, selección, rangos, advertencias, victorias y derrotas.
+- Encabezados como **SPIKE**, **MI PERFIL**, **ÚLTIMAS 5 RANKED** y **ESTADO DE PARTIDA** usan `title`, mientras el contenido normal usa `body` y los controles destacados usan `primary`.
+- Los archivos de paleta del formato inicial se migran automáticamente a secciones explícitas `[dark]` y `[light]` sin perder los colores personalizados.
+
+## [0.1.0] - 2026-08-31
 
 ### Añadido
 
@@ -27,5 +34,5 @@ Todos los cambios relevantes de Spike se documentan aquí. El formato toma como 
 - Operación de solo lectura: no se lee memoria del juego, no se inyecta código ni se automatizan controles.
 - No se guardan credenciales de sesión; se respetan datos ausentes e identidades ocultas.
 
-[Sin publicar]: https://github.com/maaurissio/Spike/compare/v0.1.0...HEAD
+[0.2.0]: https://github.com/maaurissio/Spike/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/maaurissio/Spike/releases/tag/v0.1.0
