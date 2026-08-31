@@ -7,8 +7,8 @@ use std::{
 
 use serde_json::{Value, json};
 
-const PROFILE_NAME: &str = "VTRACKER";
-const SCHEME_NAME: &str = "VTRACKER Gruvbox Dark";
+const PROFILE_NAME: &str = "SPIKE";
+const SCHEME_NAME: &str = "SPIKE Gruvbox Dark";
 const FONT_NAME: &str = "Fira Mono";
 const PROFILE_GUID: &str = "{fae68b8f-fb8c-4e21-aec6-0d6fb610f080}";
 
@@ -32,9 +32,9 @@ fn paths() -> io::Result<InstallationPaths> {
             .join("Microsoft")
             .join("Windows Terminal")
             .join("Fragments")
-            .join("VTracker")
-            .join("vtracker.json"),
-        executable: local.join("VTracker").join("vtracker.exe"),
+            .join("Spike")
+            .join("spike.json"),
+        executable: local.join("Spike").join("spike.exe"),
         font: local
             .join("Microsoft")
             .join("Windows")
@@ -49,7 +49,7 @@ fn paths() -> io::Result<InstallationPaths> {
             .join("Packages")
             .join("Microsoft.WindowsTerminal_8wekyb3d8bbwe")
             .join("LocalState")
-            .join("settings.vtracker-backup.json"),
+            .join("settings.spike-backup.json"),
     })
 }
 
@@ -105,7 +105,10 @@ fn profile(executable: &str) -> Value {
                 "weight": "normal"
             },
             "antialiasingMode": "grayscale",
-            "padding": "8",
+            // El marco de la TUI ya aporta su propio borde. Dejar padding en
+            // Windows Terminal aparentaba una barra lateral aun con el scroll
+            // oculto y quitaba columnas útiles a Ratatui.
+            "padding": "0",
             "scrollbarState": "hidden",
             "tabTitle": PROFILE_NAME,
             "suppressApplicationTitle": true,
@@ -281,7 +284,7 @@ pub fn install() -> io::Result<String> {
 pub fn status() -> io::Result<String> {
     let paths = paths()?;
     Ok(format!(
-        "Windows Terminal: {}\nFira Mono: {}\nPerfil VTRACKER: {}\nEjecutable instalado: {}",
+        "Windows Terminal: {}\nFira Mono: {}\nPerfil SPIKE: {}\nEjecutable instalado: {}",
         available(terminal_executable().is_some()),
         available(paths.font.is_file()),
         available(paths.fragment.is_file() && settings_profile_installed(&paths.settings)),
@@ -294,7 +297,7 @@ pub fn launch() -> io::Result<String> {
     if !paths.fragment.is_file() || !paths.executable.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "el perfil no está instalado; ejecuta `vtracker terminal install`",
+            "el perfil no está instalado; ejecuta `spike terminal install`",
         ));
     }
     let terminal = terminal_executable().ok_or_else(|| {
@@ -306,7 +309,7 @@ pub fn launch() -> io::Result<String> {
     Command::new(terminal)
         .args(["-w", "new", "new-tab", "-p", PROFILE_GUID])
         .spawn()?;
-    Ok("Abriendo VTRACKER en su perfil de Windows Terminal.".into())
+    Ok("Abriendo SPIKE en su perfil de Windows Terminal.".into())
 }
 
 pub fn uninstall() -> io::Result<String> {
@@ -321,7 +324,7 @@ pub fn uninstall() -> io::Result<String> {
     if let Some(directory) = paths.fragment.parent() {
         let _ = fs::remove_dir(directory);
     }
-    Ok("Perfil VTRACKER eliminado. Windows Terminal y Fira Mono se conservaron.".into())
+    Ok("Perfil SPIKE eliminado. Windows Terminal y Fira Mono se conservaron.".into())
 }
 
 fn available(value: bool) -> &'static str {
@@ -334,12 +337,13 @@ mod tests {
 
     #[test]
     fn fragment_is_isolated_and_uses_gruvbox_with_fira_mono() {
-        let fragment = profile_fragment(r"C:\\Program Files\\VTracker\\vtracker.exe");
+        let fragment = profile_fragment(r"C:\\Program Files\\Spike\\spike.exe");
         let profile = &fragment["profiles"][0];
         assert_eq!(profile["name"], PROFILE_NAME);
         assert_eq!(profile["guid"], PROFILE_GUID);
         assert_eq!(profile["font"]["face"], FONT_NAME);
         assert_eq!(profile["font"]["size"], 12);
+        assert_eq!(profile["padding"], "0");
         assert_eq!(profile["scrollbarState"], "hidden");
         assert_eq!(fragment["schemes"][0]["background"], "#282828");
         assert_eq!(fragment["schemes"][0]["brightYellow"], "#FABD2F");

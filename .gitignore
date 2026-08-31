@@ -3,6 +3,11 @@
 /target-*
 /debug
 /release
+/releases
+
+# Material local de desarrollo — no se publica todavía en el repositorio estable
+/docs/
+/README.md
 
 # Secretos y entorno local — NUNCA commitear
 .env

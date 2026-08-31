@@ -142,7 +142,7 @@ impl Config {
 
     fn encode(&self) -> String {
         format!(
-            "# Generado por vtracker. No guardes secretos aquí.\ninterval_seconds = {}\nlog_transitions = {}\ntheme = \"{}\"\n",
+            "# Generado por spike. No guardes secretos aquí.\ninterval_seconds = {}\nlog_transitions = {}\ntheme = \"{}\"\n",
             self.interval.as_secs(),
             self.log_transitions,
             self.theme.key(),
@@ -227,7 +227,7 @@ fn format_config(config: &Config, path: &std::path::Path, configured: bool) -> S
 pub fn config_path() -> Option<PathBuf> {
     env::var_os("APPDATA")
         .map(PathBuf::from)
-        .map(|path| path.join("vtracker").join("config.toml"))
+        .map(|path| path.join("spike").join("config.toml"))
 }
 
 #[cfg(test)]
@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn saves_configuration_atomically() {
-        let path = std::env::temp_dir().join("vtracker-config-atomic-test.toml");
+        let path = std::env::temp_dir().join("spike-config-atomic-test.toml");
         let config = Config {
             interval: Duration::from_secs(9),
             log_transitions: true,

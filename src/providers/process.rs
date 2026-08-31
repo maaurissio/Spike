@@ -52,40 +52,40 @@ mod tests {
 
     #[test]
     fn process_source_maps_game_state_to_phase() {
-        // Usa VTRACKER_STATE para simular sin depender de procesos reales.
+        // Usa SPIKE_STATE para simular sin depender de procesos reales.
         let _guard = crate::test_support::env_lock();
-        let original = std::env::var_os("VTRACKER_STATE");
+        let original = std::env::var_os("SPIKE_STATE");
 
-        unsafe { std::env::set_var("VTRACKER_STATE", "idle") };
+        unsafe { std::env::set_var("SPIKE_STATE", "idle") };
         let info = ProcessGameStateSource::new().fetch().unwrap();
         assert_eq!(info.phase, GamePhase::Idle);
         assert_eq!(info.coarse, GameState::Idle);
         assert_eq!(info.confidence, Confidence::Low);
         assert!(info.client_found);
 
-        unsafe { std::env::set_var("VTRACKER_STATE", "game") };
+        unsafe { std::env::set_var("SPIKE_STATE", "game") };
         let info = ProcessGameStateSource::new().fetch().unwrap();
         assert_eq!(info.phase, GamePhase::GameOpen);
         assert_eq!(info.confidence, Confidence::Low);
         assert!(info.game_found);
 
-        unsafe { std::env::set_var("VTRACKER_STATE", "closed") };
+        unsafe { std::env::set_var("SPIKE_STATE", "closed") };
         let info = ProcessGameStateSource::new().fetch().unwrap();
         assert_eq!(info.phase, GamePhase::ClientClosed);
 
         if let Some(v) = original {
-            unsafe { std::env::set_var("VTRACKER_STATE", v) };
+            unsafe { std::env::set_var("SPIKE_STATE", v) };
         } else {
-            unsafe { std::env::remove_var("VTRACKER_STATE") };
+            unsafe { std::env::remove_var("SPIKE_STATE") };
         }
     }
 
     #[test]
     fn process_source_never_returns_fine_grained_without_provider() {
         let _guard = crate::test_support::env_lock();
-        let original = std::env::var_os("VTRACKER_STATE");
+        let original = std::env::var_os("SPIKE_STATE");
         for val in ["closed", "idle", "game", "unknown_value"] {
-            unsafe { std::env::set_var("VTRACKER_STATE", val) };
+            unsafe { std::env::set_var("SPIKE_STATE", val) };
             let info = ProcessGameStateSource::new().fetch().unwrap();
             assert!(
                 !info.phase.is_fine_grained(),
@@ -94,9 +94,9 @@ mod tests {
             );
         }
         if let Some(v) = original {
-            unsafe { std::env::set_var("VTRACKER_STATE", v) };
+            unsafe { std::env::set_var("SPIKE_STATE", v) };
         } else {
-            unsafe { std::env::remove_var("VTRACKER_STATE") };
+            unsafe { std::env::remove_var("SPIKE_STATE") };
         }
     }
 }

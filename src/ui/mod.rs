@@ -42,7 +42,7 @@ fn player_view(
     completed_match: Option<&CompletedMatch>,
 ) -> String {
     let mut view = format!(
-        "VTRACKER  ·  v{VERSION}\n────────────────────────────────────────\nEstado          {}\n────────────────────────────────────────\n",
+        "SPIKE  ·  v{VERSION}\n────────────────────────────────────────\nEstado          {}\n────────────────────────────────────────\n",
         info.phase
     );
     if let Some(live_match) = live_match {
@@ -97,7 +97,7 @@ fn player_view(
 }
 pub fn print_help() {
     println!(
-        "vtracker {VERSION}\n\nUSO:\n  vtracker                           # interfaz principal\n  vtracker dashboard [--demo]        # interfaz explícita; demo ficticia sin conexión\n  vtracker watch [--once] [--interval SEGUNDOS]\n  vtracker player\n  vtracker history [--limit 1..20]\n  vtracker stats [--limit 1..5]\n  vtracker doctor\n  vtracker config show|validate\n  vtracker config edit [--interval SEGUNDOS] [--log-transitions true|false]\n  vtracker terminal install|status|launch|uninstall\n\nVARIABLES:\n  VTRACKER_STATE=closed|idle|game  Simula un estado para pruebas."
+        "spike {VERSION}\n\nUSO:\n  spike                           # interfaz principal\n  spike dashboard [--demo]        # interfaz explícita; demo ficticia sin conexión\n  spike watch [--once] [--interval SEGUNDOS]\n  spike player\n  spike history [--limit 1..20]\n  spike stats [--limit 1..5]\n  spike doctor\n  spike config show|validate\n  spike config edit [--interval SEGUNDOS] [--log-transitions true|false]\n  spike terminal install|status|launch|uninstall\n\nVARIABLES:\n  SPIKE_STATE=closed|idle|game  Simula un estado para pruebas."
     );
 }
 
@@ -108,7 +108,7 @@ pub fn stats_view(
     by_agent: &[crate::analytics::CategorySummary],
 ) -> String {
     let mut view = format!(
-        "VTRACKER · Estadísticas propias\n────────────────────────────────────────\nPartidas        {}\nVictorias       {}\nDerrotas        {}\nK/D             {}\nKDA             {}\nWin rate        {}\n────────────────────────────────────────",
+        "SPIKE · Estadísticas propias\n────────────────────────────────────────\nPartidas        {}\nVictorias       {}\nDerrotas        {}\nK/D             {}\nKDA             {}\nWin rate        {}\n────────────────────────────────────────",
         summary.matches,
         summary.wins,
         summary.losses,
@@ -150,7 +150,7 @@ fn metric(value: Option<f32>) -> String {
 
 pub fn history_view(entries: &[crate::providers::history::HistoryEntry]) -> String {
     let mut view =
-        String::from("VTRACKER · Historial propio\n────────────────────────────────────────\n");
+        String::from("SPIKE · Historial propio\n────────────────────────────────────────\n");
     if entries.is_empty() {
         view.push_str("No hay partidas recientes disponibles.\n");
     } else {
@@ -173,7 +173,7 @@ pub fn player_view_profile(
     updates: &[crate::providers::profile::CompetitiveUpdate],
 ) -> String {
     let mut view = format!(
-        "VTRACKER · Mi perfil\n────────────────────────────────────────\nNivel de cuenta {}\nExperiencia      {} XP\n",
+        "SPIKE · Mi perfil\n────────────────────────────────────────\nNivel de cuenta {}\nExperiencia      {} XP\n",
         profile.level, profile.xp
     );
     if let Some(competitive) = competitive {

@@ -62,25 +62,49 @@ const TABS: [&str; 6] = [
 const INPUT_TIMEOUT: Duration = Duration::from_millis(100);
 const SPLASH_DURATION: Duration = Duration::from_secs(3);
 
-fn tab_indices(width: u16, row: usize) -> &'static [usize] {
-    const WIDE: [usize; 6] = [0, 1, 2, 3, 4, 5];
-    const COMPACT_TOP: [usize; 2] = [0, 1];
-    const COMPACT_MIDDLE: [usize; 2] = [2, 3];
-    const COMPACT_BOTTOM: [usize; 2] = [4, 5];
-    const MEDIUM_TOP: [usize; 3] = [0, 1, 2];
-    const MEDIUM_BOTTOM: [usize; 3] = [3, 4, 5];
+/// Las cinco vistas persistentes. `Partida` se muestra aparte solo si hay contexto activo.
+const BASE_TABS: [usize; 5] = [0, 2, 3, 4, 5];
+
+fn tab_indices(width: u16, row: usize, match_visible: bool) -> &'static [usize] {
+    const WIDE: [usize; 5] = [0, 2, 3, 4, 5];
+    const COMPACT_TOP: [usize; 2] = [0, 2];
+    const COMPACT_MIDDLE: [usize; 2] = [3, 4];
+    const COMPACT_BOTTOM: [usize; 1] = [5];
+    const COMPACT_ACTIVE_TOP: [usize; 1] = [0];
+    const COMPACT_ACTIVE_MIDDLE: [usize; 2] = [2, 3];
+    const COMPACT_ACTIVE_BOTTOM: [usize; 2] = [4, 5];
+    const MEDIUM_TOP: [usize; 3] = [0, 2, 3];
+    const MEDIUM_BOTTOM: [usize; 2] = [4, 5];
+    const MEDIUM_ACTIVE_TOP: [usize; 2] = [0, 2];
+    const MEDIUM_ACTIVE_BOTTOM: [usize; 3] = [3, 4, 5];
     if width >= 90 {
         &WIDE
     } else if width >= 58 {
         if row == 0 {
-            &MEDIUM_TOP
+            if match_visible {
+                &MEDIUM_ACTIVE_TOP
+            } else {
+                &MEDIUM_TOP
+            }
+        } else if match_visible {
+            &MEDIUM_ACTIVE_BOTTOM
         } else {
             &MEDIUM_BOTTOM
         }
     } else if row == 0 {
-        &COMPACT_TOP
+        if match_visible {
+            &COMPACT_ACTIVE_TOP
+        } else {
+            &COMPACT_TOP
+        }
     } else if row == 1 {
-        &COMPACT_MIDDLE
+        if match_visible {
+            &COMPACT_ACTIVE_MIDDLE
+        } else {
+            &COMPACT_MIDDLE
+        }
+    } else if match_visible {
+        &COMPACT_ACTIVE_BOTTOM
     } else {
         &COMPACT_BOTTOM
     }
@@ -108,11 +132,27 @@ fn tab_text(index: usize, compact: bool) -> String {
     } else {
         TABS[index]
     };
+    let number = match index {
+        0 => 1,
+        2 => 2,
+        3 => 3,
+        4 => 4,
+        5 => 5,
+        _ => 0,
+    };
     if compact {
-        format!(" {}: {} ", index + 1, label)
+        format!(" {number}: {label} ")
     } else {
-        format!("  {}: {}  ", index + 1, label)
+        format!("  {number}: {label}  ")
     }
+}
+
+fn match_tab_text(compact: bool) -> &'static str {
+    if compact { " Partida " } else { "  Partida  " }
+}
+
+fn match_tab_x(width: u16, compact: bool) -> u16 {
+    width.saturating_sub(match_tab_text(compact).chars().count() as u16 + 1)
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -220,6 +260,21 @@ struct LogEntry {
     message: String,
 }
 
+/// Actividad de red propia durante esta ejecución. Cuenta sincronizaciones de
+/// alto nivel con Riot, no bytes ni tráfico de otros procesos del equipo.
+#[derive(Default)]
+struct NetworkUsage {
+    riot_syncs: u32,
+    failed_syncs: u32,
+    last_sync: Option<NetworkSync>,
+}
+
+#[derive(Clone, Copy)]
+struct NetworkSync {
+    at: Duration,
+    succeeded: bool,
+}
+
 struct App {
     splash_started: Instant,
     splash_complete: bool,
@@ -262,6 +317,7 @@ struct App {
     dirty: bool,
     should_quit: bool,
     metrics: metrics::ProcessMetrics,
+    network: NetworkUsage,
     logs: VecDeque<LogEntry>,
 }
 
@@ -309,6 +365,7 @@ impl App {
             dirty: true,
             should_quit: false,
             metrics: metrics::ProcessMetrics::new(),
+            network: NetworkUsage::default(),
             logs: VecDeque::new(),
         };
         app.push_log(LogLevel::Info, "Interfaz iniciada");
@@ -316,7 +373,12 @@ impl App {
     }
 
     fn select_next(&mut self) {
-        self.select_tab((self.selected_tab + 1) % TABS.len());
+        let tabs = self.navigation_tabs();
+        let index = tabs
+            .iter()
+            .position(|&tab| tab == self.selected_tab)
+            .unwrap_or(0);
+        self.select_tab(tabs[(index + 1) % tabs.len()]);
     }
 
     fn tick(&mut self) {
@@ -344,12 +406,44 @@ impl App {
         self.dirty = true;
     }
 
+    fn record_riot_sync(&mut self, label: &'static str, succeeded: bool) {
+        self.network.riot_syncs = self.network.riot_syncs.saturating_add(1);
+        if !succeeded {
+            self.network.failed_syncs = self.network.failed_syncs.saturating_add(1);
+        }
+        self.network.last_sync = Some(NetworkSync {
+            at: self.metrics.uptime(),
+            succeeded,
+        });
+        self.push_log(
+            if succeeded {
+                LogLevel::Success
+            } else {
+                LogLevel::Warning
+            },
+            if succeeded {
+                format!("Red Riot: {label} sincronizado")
+            } else {
+                format!("Red Riot: no se pudo sincronizar {label}")
+            },
+        );
+    }
+
     fn select_previous(&mut self) {
-        self.select_tab((self.selected_tab + TABS.len() - 1) % TABS.len());
+        let tabs = self.navigation_tabs();
+        let index = tabs
+            .iter()
+            .position(|&tab| tab == self.selected_tab)
+            .unwrap_or(0);
+        self.select_tab(tabs[(index + tabs.len() - 1) % tabs.len()]);
     }
 
     fn select_tab(&mut self, tab: usize) {
-        self.selected_tab = tab;
+        self.selected_tab = if tab == 1 && !self.match_tab_visible() {
+            0
+        } else {
+            tab
+        };
         self.scroll = 0;
         self.detail = false;
         self.tracker_notice = false;
@@ -359,9 +453,11 @@ impl App {
     }
 
     fn has_match_context(&self) -> bool {
+        self.match_tab_visible()
+    }
+
+    fn match_tab_visible(&self) -> bool {
         self.demo.is_some()
-            || self.live_match.is_some()
-            || self.completed_match.is_some()
             || self.state.as_ref().is_some_and(|state| {
                 matches!(
                     state.phase,
@@ -371,6 +467,14 @@ impl App {
                         | GamePhase::PostMatch
                 )
             })
+    }
+
+    fn navigation_tabs(&self) -> Vec<usize> {
+        let mut tabs = BASE_TABS.to_vec();
+        if self.match_tab_visible() {
+            tabs.push(1);
+        }
+        tabs
     }
 
     fn selected_live_player(&self) -> Option<&RosterPlayer> {
@@ -432,6 +536,9 @@ impl App {
         }
         self.dirty |= changed || self.refresh_failed;
         self.state = Some(state);
+        if self.selected_tab == 1 && !self.match_tab_visible() {
+            self.select_tab(0);
+        }
         self.refresh_failed = false;
         phase_changed
     }
@@ -466,6 +573,7 @@ impl App {
             }
             Reply::Context { generation, data } => {
                 self.context_pending = false;
+                self.record_riot_sync("contexto de partida", data.is_ok());
                 if generation != self.generation {
                     self.dirty = true;
                     return;
@@ -508,6 +616,7 @@ impl App {
             }
             Reply::Profile { epoch, data } => {
                 self.profile_pending = false;
+                self.record_riot_sync("perfil", data.is_ok());
                 if epoch != self.epoch {
                     self.dirty = true;
                     return;
@@ -524,6 +633,7 @@ impl App {
             }
             Reply::History { epoch, data } => {
                 self.history_pending = false;
+                self.record_riot_sync("historial", data.is_ok());
                 if epoch != self.epoch {
                     self.dirty = true;
                     return;
@@ -659,8 +769,8 @@ impl App {
                 self.focus = Focus::Content;
                 self.follow_selection = true;
             }
-            KeyCode::Char(c @ '1'..='6') => {
-                self.select_tab((c as u8 - b'1') as usize);
+            KeyCode::Char(c @ '1'..='5') => {
+                self.select_tab(BASE_TABS[(c as u8 - b'1') as usize]);
                 self.focus = Focus::Content;
             }
             KeyCode::Tab | KeyCode::BackTab => {
@@ -821,10 +931,16 @@ impl App {
             _ => return,
         }
 
+        let match_visible = self.match_tab_visible();
         let tab_rows = tab_rows(width);
         if mouse.row >= 1 && mouse.row <= tab_rows {
+            if match_visible && mouse.row == 1 && mouse.column >= match_tab_x(width, width < 90) {
+                self.select_tab(1);
+                self.focus = Focus::Content;
+                return;
+            }
             let row = usize::from(mouse.row.saturating_sub(1));
-            let indices = tab_indices(width, row);
+            let indices = tab_indices(width, row, match_visible);
             let mut x = 1_u16;
             for &index in indices {
                 let label_width = u16::try_from(tab_text(index, width < 90).chars().count() + 1)
@@ -1068,7 +1184,7 @@ pub(crate) fn run(config: Config, demo: bool) -> io::Result<()> {
     let mut stdout = io::stdout();
     execute!(
         stdout,
-        crossterm::terminal::SetTitle("VTRACKER"),
+        crossterm::terminal::SetTitle("SPIKE"),
         EnterAlternateScreen,
         EnableMouseCapture,
         Clear(ClearType::Purge),
@@ -1200,11 +1316,37 @@ mod tests {
     };
 
     #[test]
-    fn navigation_wraps_between_available_views() {
+    fn match_tab_is_contextual_and_navigation_keeps_five_base_views() {
         let mut app = App::new(&Config::default());
+        assert!(!app.match_tab_visible());
+        assert_eq!(app.navigation_tabs(), BASE_TABS);
+        app.select_tab(1);
+        assert_eq!(app.selected_tab, 0);
         app.select_previous();
         assert_eq!(app.selected_tab, TABS.len() - 1);
         app.select_next();
+        assert_eq!(app.selected_tab, 0);
+
+        app.update_state(StateInfo::new(
+            GamePhase::InMatch,
+            GameState::GameOpen,
+            Confidence::High,
+            "local-client",
+            true,
+            true,
+        ));
+        assert!(app.match_tab_visible());
+        assert_eq!(app.navigation_tabs(), [0, 2, 3, 4, 5, 1]);
+        app.select_tab(1);
+        app.update_state(StateInfo::new(
+            GamePhase::Idle,
+            GameState::Idle,
+            Confidence::High,
+            "local-client",
+            true,
+            false,
+        ));
+        assert!(!app.match_tab_visible());
         assert_eq!(app.selected_tab, 0);
     }
 
@@ -1274,10 +1416,10 @@ mod tests {
         };
 
         app.mouse(click(17, 1), 80, 24);
-        assert_eq!(app.selected_tab, 1);
+        assert_eq!(app.selected_tab, 2);
 
         app.mouse(click(5, 2), 60, 24);
-        assert_eq!(app.selected_tab, 3);
+        assert_eq!(app.selected_tab, 4);
 
         app.history = Some(vec![history_item(200), history_item(100)]);
         app.select_tab(3);

@@ -24,14 +24,14 @@ pub fn find_riot_processes(output: &str) -> Vec<String> {
 }
 
 pub fn build_report() -> String {
-    build_report_inner(env::var_os("VTRACKER_STATE").is_some())
+    build_report_inner(env::var_os("SPIKE_STATE").is_some())
 }
 
 pub(crate) fn build_report_inner(simulation_active: bool) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "VTRACKER DOCTOR  ·  v{VERSION}\n────────────────────────────────────────"
+        "SPIKE DOCTOR  ·  v{VERSION}\n────────────────────────────────────────"
     );
     let _ = writeln!(out, "Sistema         {}", env::consts::OS);
     let _ = writeln!(
@@ -103,7 +103,7 @@ pub(crate) fn build_report_inner(simulation_active: bool) -> String {
     if simulation_active {
         let _ = writeln!(
             out,
-            "Simulación      activa mediante VTRACKER_STATE (el estado mostrado no es real)"
+            "Simulación      activa mediante SPIKE_STATE (el estado mostrado no es real)"
         );
     }
     let _ = writeln!(out, "Estado actual   {}", detect().state);
@@ -301,7 +301,7 @@ mod tests {
     #[test]
     fn report_contains_expected_sections() {
         let report = build_report();
-        assert!(report.contains("VTRACKER DOCTOR"));
+        assert!(report.contains("SPIKE DOCTOR"));
         assert!(report.contains("Sistema"));
         assert!(report.contains("Detector"));
         assert!(report.contains("Intervalo"));
@@ -359,7 +359,7 @@ mod tests {
     fn report_shows_simulation_when_env_set() {
         let report = build_report_inner(true);
         assert!(report.contains("Simulación"));
-        assert!(report.contains("VTRACKER_STATE"));
+        assert!(report.contains("SPIKE_STATE"));
         let report_no_sim = build_report_inner(false);
         assert!(!report_no_sim.contains("Simulación"));
     }
@@ -367,15 +367,15 @@ mod tests {
     #[test]
     fn build_report_respects_env_var() {
         // Verifica que build_report() lee realmente la variable de entorno.
-        // Se usa serialización manual para evitar carreras con otros tests que tocan VTRACKER_STATE.
+        // Se usa serialización manual para evitar carreras con otros tests que tocan SPIKE_STATE.
         let _guard = crate::test_support::env_lock();
-        let original = std::env::var_os("VTRACKER_STATE");
-        unsafe { std::env::set_var("VTRACKER_STATE", "idle") };
+        let original = std::env::var_os("SPIKE_STATE");
+        unsafe { std::env::set_var("SPIKE_STATE", "idle") };
         let with_sim = build_report();
         if let Some(val) = original {
-            unsafe { std::env::set_var("VTRACKER_STATE", val) };
+            unsafe { std::env::set_var("SPIKE_STATE", val) };
         } else {
-            unsafe { std::env::remove_var("VTRACKER_STATE") };
+            unsafe { std::env::remove_var("SPIKE_STATE") };
         }
         let without_sim = build_report();
         assert!(with_sim.contains("Simulación"));

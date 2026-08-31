@@ -1,12 +1,12 @@
-# VTracker — Ejemplo de configuración local — nombre temporal
-# Ubicación real: %APPDATA%\vtracker\config.toml (Windows) o $XDG_CONFIG_HOME/vtracker/config.toml
+# Spike — Ejemplo de configuración local
+# Ubicación real: %APPDATA%\spike\config.toml (Windows) o $XDG_CONFIG_HOME/spike/config.toml
 # Copia este archivo a esa ruta si quieres personalizar. Nunca pongas secretos aquí.
 # Ver README.md:Configuración y datos locales y Arquitectura-inicial.md:19.
 
 # Intervalo de comprobación entre 1 y 60 segundos.
 interval_seconds = 3
 
-# Guarda cada cambio de estado en %APPDATA%\vtracker\watch.log.
+# Guarda cada cambio de estado en %APPDATA%\spike\watch.log.
 log_transitions = false
 
 # Tema TUI: dark (paleta recomendada), system, light o mono.
@@ -20,8 +20,8 @@ theme = "dark"
 # region = "americas"   # americas | europe | asia | latam | esports
 
 # ── Autoinicio — apartado de configuración (Prioridad 6) ─────────────────────
-# Controla si VTracker (nombre temporal) se inicia al encender el PC o al abrir VALORANT.
-# Desactivado por defecto; requiere `vtracker autostart enable` o editar aquí y reiniciar.
+# Controla si Spike se inicia al encender el PC o al abrir VALORANT.
+# Desactivado por defecto; requiere `spike autostart enable` o editar aquí y reiniciar.
 # Implementado con crate `auto-launch` (Windows: Run key / Startup folder).
 # [autostart]
 # enabled = false

@@ -1,4 +1,4 @@
-//! Punto de entrada del MVP de VTracker.
+//! Punto de entrada del MVP de Spike.
 
 mod analytics;
 mod cache;
@@ -37,7 +37,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 mod test_support;
 
 fn main() {
-    let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle("VTRACKER"));
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle("SPIKE"));
     let raw_args: Vec<String> = env::args().skip(1).collect();
     let command = match cli::parse(&raw_args) {
         Ok(cmd) => cmd,

@@ -10,7 +10,10 @@ use ratatui::{
     },
 };
 
-use super::{App, Focus, LogLevel, relative_time, tab_indices, tab_rows, tab_text, theme::Palette};
+use super::{
+    App, Focus, LogLevel, match_tab_text, match_tab_x, relative_time, tab_indices, tab_rows,
+    tab_text, theme::Palette,
+};
 use crate::{
     models::{
         MatchOutcome,
@@ -1496,7 +1499,7 @@ fn footer_line(app: &App, palette: Palette, width: u16) -> Line<'static> {
             0 => &[
                 ("Enter", "partida"),
                 ("r", "actualizar"),
-                ("1-6", "sección"),
+                ("1-5", "sección"),
                 ("t", "tema"),
                 ("q", "salir"),
             ],
@@ -1504,7 +1507,7 @@ fn footer_line(app: &App, palette: Palette, width: u16) -> Line<'static> {
             1 if app.demo.as_ref().is_some_and(|demo| demo.post) => &[
                 ("p", "partida"),
                 ("Esc", "cerrar"),
-                ("1-6", "sección"),
+                ("1-5", "sección"),
                 ("q", "salir"),
             ],
             1 => &[
@@ -1518,7 +1521,7 @@ fn footer_line(app: &App, palette: Palette, width: u16) -> Line<'static> {
             2 => &[
                 ("↑/↓", "desplazar"),
                 ("r", "actualizar"),
-                ("1-6", "sección"),
+                ("1-5", "sección"),
                 ("q", "salir"),
             ],
             3 if compact => &[("↑/↓", "partida"), ("q", "salir")],
@@ -1540,7 +1543,7 @@ fn footer_line(app: &App, palette: Palette, width: u16) -> Line<'static> {
             5 => &[
                 ("↑/↓", "desplazar"),
                 ("c", "limpiar"),
-                ("1-6", "sección"),
+                ("1-5", "sección"),
                 ("q", "salir"),
             ],
             _ => &[("r", "actualizar"), ("q", "salir")],
@@ -1610,11 +1613,16 @@ fn metric_chart(
         .graph_type(GraphType::Line)
         .style(palette.focus)
         .data(points);
+    // Chart usa `Style::default()` para su lienzo interno. Sin un fondo
+    // explícito, ese lienzo restaura el fondo del emulador (negro en algunos
+    // hosts) aunque el resto del dashboard use Gruvbox.
     let chart = Chart::new(vec![dataset])
+        .style(palette.base)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(palette.border)
+                .style(palette.base)
                 .title(Line::styled(format!(" {title} "), palette.focus)),
         )
         .x_axis(
@@ -1690,6 +1698,34 @@ fn render_memory_panel(
 
 fn render_current_stats(frame: &mut ratatui::Frame<'_>, area: Rect, palette: Palette, app: &App) {
     let current = app.metrics.current();
+    let network = &app.network;
+    let (network_label, network_style) = match network.last_sync {
+        Some(last) => {
+            let failures = if network.failed_syncs > 0 {
+                format!(
+                    " · {} fallo{}",
+                    network.failed_syncs,
+                    if network.failed_syncs == 1 { "" } else { "s" }
+                )
+            } else {
+                String::new()
+            };
+            (
+                format!(
+                    "{} consulta{} Riot · {}{failures}",
+                    network.riot_syncs,
+                    if network.riot_syncs == 1 { "" } else { "s" },
+                    duration_clock(last.at),
+                ),
+                if last.succeeded {
+                    palette.good
+                } else {
+                    palette.bad
+                },
+            )
+        }
+        None => ("Local · sin consultas Riot".into(), palette.dim),
+    };
     let lines = vec![
         Line::from(vec![
             Span::styled("CPU      ", palette.dim),
@@ -1711,12 +1747,12 @@ fn render_current_stats(frame: &mut ratatui::Frame<'_>, area: Rect, palette: Pal
             ),
         ]),
         Line::from(vec![
-            Span::styled("UPTIME   ", palette.dim),
-            Span::styled(duration_clock(app.metrics.uptime()), palette.base),
+            Span::styled("RED      ", palette.dim),
+            Span::styled(network_label, network_style),
         ]),
         Line::from(vec![
-            Span::styled("MUESTRAS ", palette.dim),
-            Span::styled(app.metrics.history().len().to_string(), palette.base),
+            Span::styled("UPTIME   ", palette.dim),
+            Span::styled(duration_clock(app.metrics.uptime()), palette.base),
         ]),
     ];
     frame.render_widget(
@@ -1755,7 +1791,7 @@ fn render_peaks(frame: &mut ratatui::Frame<'_>, area: Rect, palette: Palette, ap
                 Span::styled("RAM MÁX  ", palette.dim),
                 Span::styled(memory, palette.rank),
             ]),
-            Line::styled("Máximos desde que abriste VTRACKER", palette.dim),
+            Line::styled("Máximos desde que abriste SPIKE", palette.dim),
         ])
         .block(
             Block::default()
@@ -1809,7 +1845,7 @@ fn render_logs_dashboard(frame: &mut ratatui::Frame<'_>, area: Rect, palette: Pa
         let current = app.metrics.current();
         frame.render_widget(
             Paragraph::new(vec![
-                Line::styled("RENDIMIENTO DE VTRACKER", palette.focus),
+                Line::styled("RENDIMIENTO DE SPIKE", palette.focus),
                 Line::raw(format!(
                     "CPU {} · RAM {} · UPTIME {}",
                     current
@@ -1894,6 +1930,7 @@ pub(super) fn render(area: Rect, frame: &mut ratatui::Frame<'_>, app: &mut App) 
             .min(demo.rounds.len().div_ceil(capacity).saturating_sub(1));
     }
     let mut screen = content(app, area.width - 2);
+    let match_visible = app.match_tab_visible();
     let tab_rows = tab_rows(area.width);
     let full_body = Rect::new(
         area.x + 1,
@@ -1941,9 +1978,9 @@ pub(super) fn render(area: Rect, frame: &mut ratatui::Frame<'_>, app: &mut App) 
         app.follow_selection = false;
     }
     let title = if app.demo.is_some() {
-        " VTRACKER · DEMO "
+        " SPIKE · DEMO "
     } else {
-        " VTRACKER "
+        " SPIKE "
     };
     let mut block = Block::default()
         .borders(Borders::ALL)
@@ -1982,7 +2019,7 @@ pub(super) fn render(area: Rect, frame: &mut ratatui::Frame<'_>, app: &mut App) 
         );
     }
     for row in 0..tab_rows {
-        let tabs = tab_indices(area.width, usize::from(row))
+        let tabs = tab_indices(area.width, usize::from(row), match_visible)
             .iter()
             .flat_map(|&i| {
                 [
@@ -2007,6 +2044,29 @@ pub(super) fn render(area: Rect, frame: &mut ratatui::Frame<'_>, app: &mut App) 
         frame.render_widget(
             Paragraph::new(Line::from(tabs)),
             Rect::new(area.x + 1, area.y + 1 + row, area.width - 2, 1),
+        );
+    }
+    if match_visible {
+        let compact = area.width < 90;
+        let style = if app.selected_tab == 1 {
+            if app.focus == Focus::Tabs {
+                palette
+                    .selected
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            } else {
+                palette.focus.add_modifier(Modifier::REVERSED)
+            }
+        } else {
+            palette.selected
+        };
+        frame.render_widget(
+            Paragraph::new(Line::styled(match_tab_text(compact), style)),
+            Rect::new(
+                area.x + match_tab_x(area.width, compact),
+                area.y + 1,
+                match_tab_text(compact).chars().count() as u16,
+                1,
+            ),
         );
     }
     let separator = Line::styled("─".repeat((area.width - 2) as usize), palette.border);
@@ -2106,23 +2166,18 @@ fn startup_pending(app: &App) -> bool {
     }
 }
 
-const WIDE_LOGO: [&str; 10] = [
-    " ██▒   █▓▄▄▄█████▓ ██▀███   ▄▄▄       ▄████▄   ██ ▄█▀▓█████  ██▀███",
-    "▓██░   █▒▓  ██▒ ▓▒▓██ ▒ ██▒▒████▄    ▒██▀ ▀█   ██▄█▒ ▓█   ▀ ▓██ ▒ ██▒",
-    " ▓██  █▒░▒ ▓██░ ▒░▓██ ░▄█ ▒▒██  ▀█▄  ▒▓█    ▄ ▓███▄░ ▒███   ▓██ ░▄█ ▒",
-    "  ▒██ █░░░ ▓██▓ ░ ▒██▀▀█▄  ░██▄▄▄▄██ ▒▓▓▄ ▄██▒▓██ █▄ ▒▓█  ▄ ▒██▀▀█▄",
-    "   ▒▀█░    ▒██▒ ░ ░██▓ ▒██▒ ▓█   ▓██▒▒ ▓███▀ ░▒██▒ █▄░▒████▒░██▓ ▒██▒",
-    "   ░ ▐░    ▒ ░░   ░ ▒▓ ░▒▓░ ▒▒   ▓▒█░░ ░▒ ▒  ░▒ ▒▒ ▓▒░░ ▒░ ░░ ▒▓ ░▒▓░",
-    "   ░ ░░      ░      ░▒ ░ ▒░  ▒   ▒▒ ░  ░  ▒   ░ ░▒ ▒░ ░ ░  ░  ░▒ ░ ▒░",
-    "     ░░    ░        ░░   ░   ░   ▒   ░        ░ ░░ ░    ░     ░░   ░",
-    "      ░              ░           ░  ░░ ░      ░  ░      ░  ░   ░",
-    "     ░                               ░",
+const WIDE_LOGO: [&str; 9] = [
+    "  ██████  ██▓███   ██▓ ██ ▄█▀▓█████    ",
+    "▒██    ▒ ▓██░  ██▒▓██▒ ██▄█▒ ▓█   ▀    ",
+    "░ ▓██▄   ▓██░ ██▓▒▒██▒▓███▄░ ▒███      ",
+    "  ▒   ██▒▒██▄█▓▒ ▒░██░▓██ █▄ ▒▓█  ▄    ",
+    "▒██████▒▒▒██▒ ░  ░░██░▒██▒ █▄░▒████▒   ",
+    "▒ ▒▓▒ ▒ ░▒▓▒░ ░  ░░▓  ▒ ▒▒ ▓▒░░ ▒░ ░   ",
+    "░ ░▒  ░ ░░▒ ░      ▒ ░░ ░▒ ▒░ ░ ░  ░   ",
+    "░  ░  ░  ░░        ▒ ░░ ░░ ░    ░      ",
+    "      ░            ░  ░  ░      ░  ░   ",
 ];
-const COMPACT_LOGO: [&str; 3] = [
-    "╦  ╦╔╦╗╦═╗╔═╗╔═╗╦╔═╔═╗╦═╗",
-    "╚╗╔╝ ║ ╠╦╝╠═╣║  ╠╩╗║╣ ╠╦╝",
-    " ╚╝  ╩ ╩╚═╩ ╩╚═╝╩ ╩╚═╝╩╚═",
-];
+const COMPACT_LOGO: [&str; 3] = ["╔═╗╔═╗╦╔═╔═╗╔═╗", "╚═╗╠═╝║╠╩╗║╣ ╠╣ ", "╚═╝╩  ╩╚═╚═╝╚═╝"];
 
 fn render_brand_home(
     area: Rect,
@@ -2135,7 +2190,7 @@ fn render_brand_home(
         .borders(Borders::ALL)
         .border_type(BorderType::Plain)
         .border_style(palette.border)
-        .title(Line::styled(" VTRACKER · 0.1.0 ", palette.focus))
+        .title(Line::styled(" SPIKE · 0.1.0 ", palette.focus))
         .title_bottom(Line::from(vec![
             Span::styled("[", palette.border),
             Span::styled("q", palette.pending.add_modifier(Modifier::BOLD)),
@@ -2169,7 +2224,7 @@ fn render_brand_home(
         Line::raw(""),
         Line::styled("blablabla", palette.pending.add_modifier(Modifier::ITALIC)),
         Line::styled("────────────────────────", palette.border),
-        Line::styled("https://github.com/maaurissio/vtracker", palette.focus),
+        Line::styled("https://github.com/maaurissio/spike", palette.focus),
     ]);
     if show_status {
         let status = if app.state.is_none() {
@@ -2330,12 +2385,14 @@ mod tests {
             false,
         ));
         app.push_log(LogLevel::Success, "Perfil y rango actualizados");
+        app.record_riot_sync("perfil", true);
 
         let text = snapshot_raw(&mut app, 100, 28);
 
         assert!(text.contains("CPU · ACTUAL"), "{text}");
         assert!(text.contains("RAM · ACTUAL") && text.contains("UPTIME"));
         assert!(text.contains("PICOS DE SESIÓN"));
+        assert!(text.contains("RED") && text.contains("1 consulta"));
         assert!(text.contains("ACTIVIDAD · MÁS RECIENTE PRIMERO"));
         assert!(text.contains("Perfil y rango actualizados"));
         assert!(!text.contains("PRIVACIDAD"));
@@ -2696,6 +2753,14 @@ mod tests {
             assert!(history.contains(value), "missing {value}\n{history}");
         }
 
+        app.update_state(StateInfo::new(
+            GamePhase::PostMatch,
+            GameState::GameOpen,
+            Confidence::High,
+            "local-client",
+            true,
+            true,
+        ));
         app.select_tab(1);
         app.completed_match = Some(super::super::PostMatch {
             mode: crate::models::GameMode::Competitive,
@@ -2743,16 +2808,16 @@ mod tests {
         let mut app = App::new(&Config::default());
         let splash = snapshot_raw(&mut app, 80, 24);
 
-        assert!(splash.contains("██▒") && splash.contains("▄▄▄█████▓"));
+        assert!(splash.contains("██████") && splash.contains("▓█████"));
         assert!(splash.contains("blablabla"));
-        assert!(splash.contains("github.com/maaurissio/vtracker"));
-        assert!(!splash.contains("1 Resumen") && !splash.contains("INICIANDO VTRACKER"));
+        assert!(splash.contains("github.com/maaurissio/spike"));
+        assert!(!splash.contains("1 Resumen") && !splash.contains("INICIANDO SPIKE"));
 
         let startup = snapshot(&mut app, 72, 24);
 
         assert!(startup.contains("blablabla"));
         assert!(startup.contains("Buscando Riot Client"));
-        assert!(startup.contains("github.com/maaurissio/vtracker"));
+        assert!(startup.contains("github.com/maaurissio/spike"));
         assert!(!startup.contains("1 Resumen") && !startup.contains("ESTADO DE PARTIDA"));
 
         app.update_state(StateInfo::new(
@@ -2771,14 +2836,14 @@ mod tests {
     fn navigation_focus_and_demo_history_follow_the_mockup() {
         let worker = Worker::demo().unwrap();
         let mut app = demo_app();
-        key(&mut app, &worker, KeyCode::Char('4'));
+        key(&mut app, &worker, KeyCode::Char('3'));
         key(&mut app, &worker, KeyCode::Down);
         key(&mut app, &worker, KeyCode::Enter);
         let text = snapshot(&mut app, 72, 24);
         assert!(text.contains("DERROTA") && text.contains("Haven"));
         key(&mut app, &worker, KeyCode::Esc);
         assert!(!app.demo.as_ref().unwrap().post);
-        key(&mut app, &worker, KeyCode::Char('5'));
+        key(&mut app, &worker, KeyCode::Char('4'));
         key(&mut app, &worker, KeyCode::Tab);
         let draft = app.settings.draft.clone();
         key(&mut app, &worker, KeyCode::Char('+'));

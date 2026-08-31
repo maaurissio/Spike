@@ -90,13 +90,13 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     }
     if command == "config" {
         let Some(subcommand) = iter.next() else {
-            return Err("Uso: vtracker config show|validate".into());
+            return Err("Uso: spike config show|validate".into());
         };
         return match subcommand {
             "show" => parse_config_readonly(&mut iter, ConfigCommand::Show),
             "validate" => parse_config_readonly(&mut iter, ConfigCommand::Validate),
             "edit" => parse_config_edit(&mut iter),
-            _ => Err("Uso: vtracker config show|validate".into()),
+            _ => Err("Uso: spike config show|validate".into()),
         };
     }
     if command == "history" {
@@ -113,14 +113,14 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     }
     if command == "terminal" {
         let Some(subcommand) = iter.next() else {
-            return Err("Uso: vtracker terminal install|status|launch|uninstall".into());
+            return Err("Uso: spike terminal install|status|launch|uninstall".into());
         };
         let terminal_command = match subcommand {
             "install" => TerminalCommand::Install,
             "status" => TerminalCommand::Status,
             "launch" => TerminalCommand::Launch,
             "uninstall" => TerminalCommand::Uninstall,
-            _ => return Err("Uso: vtracker terminal install|status|launch|uninstall".into()),
+            _ => return Err("Uso: spike terminal install|status|launch|uninstall".into()),
         };
         if let Some(option) = iter.next() {
             return Err(format!("Opción desconocida: {option}"));
@@ -129,7 +129,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     }
     if command != "watch" {
         return Err(format!(
-            "Comando no disponible: {command}\nUsa `vtracker` o `vtracker --help`."
+            "Comando no disponible: {command}\nUsa `spike` o `spike --help`."
         ));
     }
 
@@ -247,7 +247,7 @@ fn parse_config_edit<'a>(iter: &mut impl Iterator<Item = &'a str>) -> Result<Com
     }
     if edit.interval_secs.is_none() && edit.log_transitions.is_none() {
         return Err(
-            "Uso: vtracker config edit --interval SEGUNDOS|--log-transitions true|false".into(),
+            "Uso: spike config edit --interval SEGUNDOS|--log-transitions true|false".into(),
         );
     }
     Ok(Command::Config(ConfigCommand::Edit(edit)))
@@ -387,13 +387,11 @@ mod tests {
     fn rejects_invalid_config_subcommands() {
         assert_eq!(
             parse(&s(&["config"])),
-            Err("Uso: vtracker config show|validate".into())
+            Err("Uso: spike config show|validate".into())
         );
         assert_eq!(
             parse(&s(&["config", "edit"])),
-            Err(
-                "Uso: vtracker config edit --interval SEGUNDOS|--log-transitions true|false".into()
-            )
+            Err("Uso: spike config edit --interval SEGUNDOS|--log-transitions true|false".into())
         );
     }
 

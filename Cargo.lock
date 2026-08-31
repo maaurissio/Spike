@@ -2011,6 +2011,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "spike"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "crossterm",
+ "moka",
+ "native-tls",
+ "ratatui",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tungstenite",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2501,22 +2517,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6d9b2acfb050df409c972a37d3b8e08cdea3bddb0c09db9d53137e504cfabed0"
 dependencies = [
  "utf8parse",
-]
-
-[[package]]
-name = "vtracker"
-version = "0.1.0"
-dependencies = [
- "base64",
- "crossterm",
- "moka",
- "native-tls",
- "ratatui",
- "reqwest",
- "serde",
- "serde_json",
- "tungstenite",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

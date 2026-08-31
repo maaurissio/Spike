@@ -186,7 +186,7 @@ impl LocalClientSource {
     pub fn start_event_listener(&self) {
         let source = self.clone();
         let _ = thread::Builder::new()
-            .name("vtracker-local-events".into())
+            .name("spike-local-events".into())
             .spawn(move || source.listen_for_events());
     }
 
@@ -294,7 +294,7 @@ impl LocalClientSource {
     }
 
     /// Consulta autoritativa de solo lectura. A diferencia del WebSocket, estos
-    /// endpoints responden con el estado actual aunque VTracker se abra tarde.
+    /// endpoints responden con el estado actual aunque Spike se abra tarde.
     fn probe_active_phase(&self, lockfile: &Lockfile) -> Result<ActivePhaseProbe, ProviderError> {
         let tokens = self.tokens_from(lockfile)?;
         let sessions = self.json_from(lockfile, EXTERNAL_SESSIONS_ENDPOINT)?;
@@ -1113,7 +1113,7 @@ mod tests {
 
     fn temp_lockfile(contents: &str) -> PathBuf {
         let id = NEXT_TEST_FILE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("vtracker-local-{id}.lockfile"));
+        let path = std::env::temp_dir().join(format!("spike-local-{id}.lockfile"));
         fs::write(&path, contents).unwrap();
         path
     }
@@ -1174,7 +1174,7 @@ mod tests {
 
     #[test]
     fn missing_lockfile_means_client_closed() {
-        let path = std::env::temp_dir().join("vtracker-lockfile-that-does-not-exist");
+        let path = std::env::temp_dir().join("spike-lockfile-that-does-not-exist");
         let source = LocalClientSource::with_lockfile_path(Some(path));
 
         let result = source.fetch().unwrap();

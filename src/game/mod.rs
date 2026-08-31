@@ -69,7 +69,7 @@ pub fn observation_from_process_list(list: &str) -> Observation {
 }
 
 pub fn detect() -> Observation {
-    if let Ok(value) = env::var("VTRACKER_STATE") {
+    if let Ok(value) = env::var("SPIKE_STATE") {
         let state = match value.to_lowercase().as_str() {
             "closed" => GameState::ClientClosed,
             "idle" => GameState::Idle,
@@ -149,21 +149,21 @@ mod tests {
     }
 
     #[test]
-    fn detect_respects_vtracker_state_env() {
+    fn detect_respects_spike_state_env() {
         let _guard = crate::test_support::env_lock();
-        let original = std::env::var_os("VTRACKER_STATE");
-        unsafe { std::env::set_var("VTRACKER_STATE", "closed") };
+        let original = std::env::var_os("SPIKE_STATE");
+        unsafe { std::env::set_var("SPIKE_STATE", "closed") };
         assert_eq!(detect().state, GameState::ClientClosed);
-        unsafe { std::env::set_var("VTRACKER_STATE", "idle") };
+        unsafe { std::env::set_var("SPIKE_STATE", "idle") };
         assert_eq!(detect().state, GameState::Idle);
-        unsafe { std::env::set_var("VTRACKER_STATE", "game") };
+        unsafe { std::env::set_var("SPIKE_STATE", "game") };
         assert_eq!(detect().state, GameState::GameOpen);
-        unsafe { std::env::set_var("VTRACKER_STATE", "unknown_value") };
+        unsafe { std::env::set_var("SPIKE_STATE", "unknown_value") };
         assert_eq!(detect().state, GameState::Unknown);
         if let Some(val) = original {
-            unsafe { std::env::set_var("VTRACKER_STATE", val) };
+            unsafe { std::env::set_var("SPIKE_STATE", val) };
         } else {
-            unsafe { std::env::remove_var("VTRACKER_STATE") };
+            unsafe { std::env::remove_var("SPIKE_STATE") };
         }
     }
 }

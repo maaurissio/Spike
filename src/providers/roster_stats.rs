@@ -21,7 +21,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const HISTORY_MATCHES: usize = 5;
 const MAX_PLAYERS: usize = 12;
 const MAX_CONCURRENCY: usize = 6;
-// Tracker Network no publica su ventana exacta. VTracker usa una definición
+// Tracker Network no publica su ventana exacta. Spike usa una definición
 // explícita y estable: la baja debe ser respondida por un compañero en 5 s.
 const TRADE_WINDOW_MS: u64 = 5_000;
 

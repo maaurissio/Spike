@@ -121,7 +121,7 @@ impl Worker {
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = Arc::clone(&stop);
         thread::Builder::new()
-            .name("vtracker-tui-data".into())
+            .name("spike-tui-data".into())
             .spawn(move || {
                 while let Ok(request) = incoming.recv() {
                     if stopped.load(Ordering::Acquire) {
@@ -175,7 +175,7 @@ struct Sources {
 impl Sources {
     fn new() -> Self {
         let local = LocalClientSource::new();
-        let simulation = std::env::var_os("VTRACKER_STATE").is_some();
+        let simulation = std::env::var_os("SPIKE_STATE").is_some();
         if !simulation {
             local.start_event_listener();
         }
