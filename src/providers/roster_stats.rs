@@ -49,6 +49,12 @@ pub(crate) struct RosterStatsSource {
     base_url: Option<String>,
 }
 
+pub(crate) struct RosterEnrichment {
+    pub stats: HashMap<String, HistoricalStats>,
+    /// PUUID -> identificador opaco de grupo inferido. No contiene MatchID.
+    pub inferred_parties: HashMap<String, String>,
+}
+
 impl RosterStatsSource {
     pub(crate) fn new() -> Self {
         Self {
@@ -78,7 +84,7 @@ impl RosterStatsSource {
         &self,
         request: &RosterStatsRequest,
         subjects: &[String],
-    ) -> HashMap<String, HistoricalStats> {
+    ) -> RosterEnrichment {
         let subjects = unique_subjects(subjects);
         let mut histories = HashMap::<String, Vec<String>>::new();
 
@@ -106,6 +112,7 @@ impl RosterStatsSource {
             }
         }
 
+        let inferred_parties = inferred_parties(&histories);
         let match_ids = unique_match_ids(&histories);
         let mut details = HashMap::<String, Value>::new();
         for chunk in match_ids.chunks(MAX_CONCURRENCY) {
@@ -132,7 +139,7 @@ impl RosterStatsSource {
             }
         }
 
-        histories
+        let stats = histories
             .into_iter()
             .filter_map(|(subject, match_ids)| {
                 let mut stats = HistoricalStats::default();
@@ -143,7 +150,11 @@ impl RosterStatsSource {
                 }
                 (stats.matches > 0).then_some((subject, stats))
             })
-            .collect()
+            .collect();
+        RosterEnrichment {
+            stats,
+            inferred_parties,
+        }
     }
 
     fn fetch_history(
@@ -193,6 +204,31 @@ impl RosterStatsSource {
             .map_err(|_| ProviderError::Network("no se pudo consultar detalle de roster".into()))?;
         response_json(response, "match-details del roster")
     }
+}
+
+/// Durante una partida Riot no publica de forma fiable el PartyID enemigo.
+/// Dos jugadores cuyo encuentro competitivo más reciente es el mismo se
+/// consideran compañeros de cola. El identificador real se descarta aquí.
+fn inferred_parties(histories: &HashMap<String, Vec<String>>) -> HashMap<String, String> {
+    let mut by_latest = HashMap::<&str, Vec<&str>>::new();
+    for (subject, matches) in histories {
+        if let Some(latest) = matches.first() {
+            by_latest.entry(latest).or_default().push(subject);
+        }
+    }
+    let mut groups = by_latest
+        .into_values()
+        .filter(|members| members.len() > 1)
+        .collect::<Vec<_>>();
+    groups.sort_by_key(|members| members.iter().min().copied().unwrap_or_default());
+    let mut result = HashMap::new();
+    for (index, members) in groups.into_iter().enumerate() {
+        let group = format!("inferred-{}", index + 1);
+        for subject in members {
+            result.insert(subject.to_owned(), group.clone());
+        }
+    }
+    result
 }
 
 impl Default for RosterStatsSource {
@@ -574,6 +610,25 @@ mod tests {
     }
 
     #[test]
+    fn infers_live_parties_from_the_latest_shared_match_only() {
+        let histories = HashMap::from([
+            ("ally-a".into(), vec!["shared-a".into(), "older-1".into()]),
+            ("ally-b".into(), vec!["shared-a".into(), "older-2".into()]),
+            ("enemy-a".into(), vec!["shared-b".into()]),
+            ("enemy-b".into(), vec!["shared-b".into(), "older-3".into()]),
+            ("solo".into(), vec!["unique".into()]),
+        ]);
+
+        let inferred = inferred_parties(&histories);
+
+        assert_eq!(inferred["ally-a"], inferred["ally-b"]);
+        assert_eq!(inferred["enemy-a"], inferred["enemy-b"]);
+        assert_ne!(inferred["ally-a"], inferred["enemy-a"]);
+        assert!(!inferred.contains_key("solo"));
+        assert!(inferred.values().all(|group| !group.contains("shared")));
+    }
+
+    #[test]
     fn source_enriches_visible_and_hidden_subjects_and_fetches_shared_detail_once() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -627,11 +682,15 @@ mod tests {
             entitlement_token: "entitlement".into(),
         };
 
-        let stats = source.fetch(&request, &["visible".into(), "hidden".into()]);
+        let enrichment = source.fetch(&request, &["visible".into(), "hidden".into()]);
 
-        assert_eq!(stats.len(), 2);
-        assert_eq!(stats["hidden"].kd_hundredths(), Some(200));
-        assert_eq!(stats["visible"].win_rate_tenths(), Some(0));
+        assert_eq!(enrichment.stats.len(), 2);
+        assert_eq!(enrichment.stats["hidden"].kd_hundredths(), Some(200));
+        assert_eq!(enrichment.stats["visible"].win_rate_tenths(), Some(0));
+        assert_eq!(
+            enrichment.inferred_parties["hidden"],
+            enrichment.inferred_parties["visible"]
+        );
         server.join().unwrap();
     }
 }

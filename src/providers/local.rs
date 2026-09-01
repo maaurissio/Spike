@@ -930,6 +930,9 @@ fn presence_party_ids(payload: &Value) -> HashMap<String, String> {
                 .and_then(Value::as_str)
                 .filter(|value| !value.is_empty())?;
             let decoded = decoded_private_presence(presence)?;
+            if decoded.get("isValid").and_then(Value::as_bool) == Some(false) {
+                return None;
+            }
             let party = [
                 "/partyId",
                 "/partyID",
@@ -1536,6 +1539,7 @@ mod tests {
                 {"puuid":"two", "private":"{\"partyId\":\"party-a\"}"},
                 {"puuid":"enemy-one", "private":{"partyPresenceData":{"partyId":"party-b","partySize":2}}},
                 {"puuid":"enemy-two", "private":"{\"partyPresenceData\":{\"partyId\":\"party-b\"}}"},
+                {"puuid":"stale", "private":{"isValid":false,"partyId":"party-stale"}},
                 {"puuid":"missing", "private":"not-json"}
             ]
         }));
@@ -1551,6 +1555,7 @@ mod tests {
             Some("party-b")
         );
         assert!(!parties.contains_key("missing"));
+        assert!(!parties.contains_key("stale"));
     }
 
     #[test]

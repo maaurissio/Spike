@@ -34,14 +34,14 @@ use crate::{
     config::Config,
     models::{
         GameMode, MatchOutcome, PlayerMatchStats,
-        roster::{DataAvailability, RosterPlayer},
+        roster::{DataAvailability, RosterPlayer, RosterSide},
     },
     providers::{
         StateInfo,
         capabilities::GamePhase,
         history::HistoryEntry,
         live_match::LiveMatchContext,
-        match_detail::CompletedMatch,
+        match_detail::{CompletedMatch, CompletedPlayerSide, CompletedRosterPlayer},
         profile::{CompetitiveProfile, CompetitiveUpdate, OwnProfile},
     },
 };
@@ -59,6 +59,8 @@ const TABS: [&str; 6] = [
 ];
 const INPUT_TIMEOUT: Duration = Duration::from_millis(100);
 const SPLASH_DURATION: Duration = Duration::from_secs(3);
+const PARTY_REFRESH_INTERVAL: Duration = Duration::from_secs(4);
+const MAX_PARTY_REFRESH_ATTEMPTS: u8 = 8;
 
 /// Las cinco vistas persistentes. `Partida` se muestra aparte solo si hay contexto activo.
 const BASE_TABS: [usize; 5] = [0, 2, 3, 4, 5];
@@ -162,6 +164,7 @@ struct HistoryDetails {
     stats: PlayerMatchStats,
     own_score: Option<u32>,
     opponent_score: Option<u32>,
+    roster: Vec<CompletedRosterPlayer>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -294,6 +297,8 @@ struct App {
     competitive_updates: Vec<CompetitiveUpdate>,
     history: Option<Vec<HistoryItem>>,
     history_cached_at_ms: Option<u64>,
+    postmatch_history_ready: bool,
+    postmatch_history_refresh_pending: bool,
     history_failed: bool,
     history_requested: bool,
     profile_pending: bool,
@@ -306,6 +311,9 @@ struct App {
     context_failed: bool,
     context_progress: u16,
     context_progress_label: &'static str,
+    party_pending: bool,
+    party_attempts: u8,
+    party_retry_at: Option<Instant>,
     history_pending: bool,
     generation: u64,
     epoch: u64,
@@ -314,6 +322,7 @@ struct App {
     refresh_failed: bool,
     dirty: bool,
     should_quit: bool,
+    quit_after_save: bool,
     restart_requested: bool,
     metrics: metrics::ProcessMetrics,
     network: NetworkUsage,
@@ -344,6 +353,8 @@ impl App {
             competitive_updates: Vec::new(),
             history: None,
             history_cached_at_ms: None,
+            postmatch_history_ready: false,
+            postmatch_history_refresh_pending: false,
             history_failed: false,
             history_requested: false,
             profile_pending: false,
@@ -356,6 +367,9 @@ impl App {
             context_failed: false,
             context_progress: 0,
             context_progress_label: "Esperando contexto de partida",
+            party_pending: false,
+            party_attempts: 0,
+            party_retry_at: None,
             history_pending: false,
             generation: 0,
             epoch: 0,
@@ -364,6 +378,7 @@ impl App {
             refresh_failed: false,
             dirty: true,
             should_quit: false,
+            quit_after_save: false,
             restart_requested: false,
             metrics: metrics::ProcessMetrics::new(),
             network: NetworkUsage::default(),
@@ -511,8 +526,33 @@ impl App {
             .get(self.player_index)
     }
 
+    fn selected_history_player(&self) -> Option<&CompletedRosterPlayer> {
+        self.history
+            .as_ref()?
+            .get(self.history_index)?
+            .details
+            .as_ref()?
+            .roster
+            .get(self.player_index)
+    }
+
+    fn selected_postmatch_player(&self) -> Option<&CompletedRosterPlayer> {
+        if !self.postmatch_history_ready {
+            return None;
+        }
+        self.history
+            .as_ref()?
+            .first()?
+            .details
+            .as_ref()?
+            .roster
+            .get(self.player_index)
+    }
+
     fn has_selectable_roster(&self) -> bool {
-        self.demo.as_ref().is_some_and(|demo| !demo.post) || self.selected_live_player().is_some()
+        self.demo.is_some()
+            || self.selected_live_player().is_some()
+            || self.selected_postmatch_player().is_some()
     }
 
     fn update_state(&mut self, state: StateInfo) -> bool {
@@ -537,10 +577,21 @@ impl App {
             self.generation = self.generation.wrapping_add(1);
             self.context_requested = false;
             self.context_failed = false;
+            self.party_pending = false;
+            self.party_attempts = 0;
+            self.party_retry_at = None;
+            self.postmatch_history_ready = false;
+            self.postmatch_history_refresh_pending = false;
             self.live_match = None;
             // El último resumen permanece disponible tras volver al menú.
             if matches!(state.phase, GamePhase::InMatch | GamePhase::ClientClosed) {
                 self.completed_match = None;
+            }
+            if state.phase == GamePhase::PostMatch {
+                self.history_requested = false;
+                self.history_failed = false;
+                self.history_index = 0;
+                self.player_index = 0;
             }
             if state.phase == GamePhase::ClientClosed {
                 self.epoch = self.epoch.wrapping_add(1);
@@ -615,6 +666,9 @@ impl App {
                             })
                             .unwrap_or(0);
                         self.live_match = Some(context);
+                        self.party_pending = false;
+                        self.party_attempts = 0;
+                        self.party_retry_at = Some(Instant::now() + PARTY_REFRESH_INTERVAL);
                         self.push_log(LogLevel::Success, "Contexto de partida actualizado");
                     }
                     Ok(Context::Completed(summary)) => {
@@ -626,6 +680,43 @@ impl App {
                         "No se pudo actualizar el contexto de partida",
                     ),
                 }
+            }
+            Reply::Parties { generation, data } => {
+                self.party_pending = false;
+                if generation != self.generation {
+                    self.dirty = true;
+                    return;
+                }
+                let mut complete = false;
+                if let Ok(update) = data {
+                    complete = update.complete;
+                    if let Some(roster) = self
+                        .live_match
+                        .as_mut()
+                        .and_then(|context| context.roster.as_mut())
+                        && roster.players.len() == update.premades.len()
+                    {
+                        for (player, premade) in roster.players.iter_mut().zip(update.premades) {
+                            let inferred_group = matches!(
+                                &player.premade,
+                                DataAvailability::Available(label) if label.starts_with("Grupo ")
+                            );
+                            let refreshed_group = matches!(
+                                &premade,
+                                DataAvailability::Available(label) if label.starts_with("Grupo ")
+                            );
+                            if refreshed_group || !inferred_group {
+                                player.premade = premade;
+                            }
+                        }
+                    }
+                }
+                self.party_retry_at =
+                    if complete || self.party_attempts >= MAX_PARTY_REFRESH_ATTEMPTS {
+                        None
+                    } else {
+                        Some(Instant::now() + PARTY_REFRESH_INTERVAL)
+                    };
             }
             Reply::ContextProgress {
                 generation,
@@ -663,6 +754,12 @@ impl App {
                     self.dirty = true;
                     return;
                 }
+                let in_postmatch = self
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.phase == GamePhase::PostMatch);
+                let fresh_postmatch = in_postmatch && self.postmatch_history_refresh_pending;
+                self.postmatch_history_refresh_pending = false;
                 self.history_failed = data.is_err();
                 if let Ok(entries) = data {
                     let entry_count = entries.len();
@@ -674,19 +771,48 @@ impl App {
                         .and_then(|old| old.get(self.history_index));
                     let preserved =
                         selected.and_then(|old| entries.iter().position(|entry| entry == old));
-                    self.history_index = preserved
-                        .unwrap_or_else(|| self.history_index.min(entries.len().saturating_sub(1)));
+                    self.history_index = if fresh_postmatch {
+                        0
+                    } else {
+                        preserved.unwrap_or_else(|| {
+                            self.history_index.min(entries.len().saturating_sub(1))
+                        })
+                    };
                     if preserved.is_none() && self.selected_tab == 3 {
                         self.detail = false;
                     }
                     self.follow_selection = true;
+                    if fresh_postmatch {
+                        self.player_index = entries
+                            .first()
+                            .and_then(|item| item.details.as_ref())
+                            .and_then(|details| {
+                                details.roster.iter().position(|player| player.is_self)
+                            })
+                            .unwrap_or(0);
+                    }
+                    let has_postmatch_detail = entries
+                        .first()
+                        .and_then(|item| item.details.as_ref())
+                        .is_some();
                     self.history = Some(entries);
                     self.history_cached_at_ms = Some(now_ms());
+                    self.postmatch_history_ready = fresh_postmatch && has_postmatch_detail;
+                    if in_postmatch && !fresh_postmatch {
+                        // Esta respuesta se pidió antes de terminar la partida.
+                        // Programar otra consulta para incluir el resultado nuevo.
+                        self.history_requested = false;
+                    }
                     self.push_log(
                         LogLevel::Success,
                         format!("Historial actualizado: {entry_count} partidas"),
                     );
                 } else {
+                    self.postmatch_history_ready = false;
+                    if in_postmatch && !fresh_postmatch {
+                        self.history_requested = false;
+                        self.history_failed = false;
+                    }
                     self.push_log(LogLevel::Warning, "No se pudo actualizar el historial");
                 }
             }
@@ -712,6 +838,13 @@ impl App {
                         // No relanzar con un tema distinto al que el usuario
                         // acaba de elegir si el guardado falló.
                         self.restart_requested = false;
+                    }
+                }
+                if self.quit_after_save {
+                    if succeeded {
+                        self.should_quit = true;
+                    } else {
+                        self.quit_after_save = false;
                     }
                 }
             }
@@ -755,6 +888,23 @@ impl App {
             self.context_progress_label = "Preparando la consulta";
             self.dirty = true;
         }
+        if !self.party_pending
+            && self.party_attempts < MAX_PARTY_REFRESH_ATTEMPTS
+            && self
+                .party_retry_at
+                .is_some_and(|retry_at| Instant::now() >= retry_at)
+            && let Some(phase @ (GamePhase::PreGame | GamePhase::AgentSelect | GamePhase::InMatch)) =
+                self.state.as_ref().map(|info| info.phase)
+            && worker.submit(Request::Parties {
+                phase,
+                generation: self.generation,
+            })
+        {
+            self.party_pending = true;
+            self.party_attempts = self.party_attempts.saturating_add(1);
+            self.party_retry_at = None;
+            self.dirty = true;
+        }
         if connected && !self.history_requested && !self.history_failed {
             self.request_history(worker);
         }
@@ -768,6 +918,10 @@ impl App {
             self.history_pending = true;
             self.history_requested = true;
             self.history_failed = false;
+            self.postmatch_history_refresh_pending = self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.phase == GamePhase::PostMatch);
             self.dirty = true;
         }
     }
@@ -777,7 +931,7 @@ impl App {
             return;
         }
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.should_quit = true;
+            self.request_quit(worker);
             return;
         }
         if key
@@ -817,7 +971,7 @@ impl App {
                 self.restart_requested = true;
                 self.should_quit = true;
             }
-            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('q') => self.request_quit(worker),
             KeyCode::Esc => {
                 if self.detail {
                     self.detail = false;
@@ -845,7 +999,10 @@ impl App {
                 };
                 self.follow_selection = true;
             }
-            KeyCode::Char('t') => self.settings.cycle_theme(),
+            KeyCode::Char('t') => {
+                self.settings.cycle_theme();
+                self.request_settings_save(worker);
+            }
             KeyCode::Right | KeyCode::Char('l') => self.select_next(),
             KeyCode::Left | KeyCode::Char('h') => self.select_previous(),
             KeyCode::Enter if self.focus == Focus::Tabs => self.focus = Focus::Content,
@@ -859,15 +1016,31 @@ impl App {
                 self.follow_selection = true;
             }
             KeyCode::Char('+') | KeyCode::Char('=') if self.selected_tab == 4 => {
-                self.settings.adjust(true)
+                let persist_theme = self.settings.selected == 0;
+                self.settings.adjust(true);
+                if persist_theme {
+                    self.request_settings_save(worker);
+                }
             }
-            KeyCode::Char('-') if self.selected_tab == 4 => self.settings.adjust(false),
+            KeyCode::Char('-') if self.selected_tab == 4 => {
+                let persist_theme = self.settings.selected == 0;
+                self.settings.adjust(false);
+                if persist_theme {
+                    self.request_settings_save(worker);
+                }
+            }
             KeyCode::Char(' ') | KeyCode::Enter
                 if self.selected_tab == 4 && self.settings.selected == 3 =>
             {
                 self.open_palette_editor()
             }
-            KeyCode::Char(' ') | KeyCode::Enter if self.selected_tab == 4 => self.settings.toggle(),
+            KeyCode::Char(' ') | KeyCode::Enter if self.selected_tab == 4 => {
+                let persist_theme = self.settings.selected == 0;
+                self.settings.toggle();
+                if persist_theme {
+                    self.request_settings_save(worker);
+                }
+            }
             KeyCode::Char('s') if self.selected_tab == 4 => {
                 if let Some(config) = self.settings.to_save()
                     && worker.submit(Request::Save(config))
@@ -878,6 +1051,17 @@ impl App {
             KeyCode::Char('r') if self.selected_tab == 4 => self.settings.discard(),
             KeyCode::Char('c') if self.selected_tab == 5 => self.logs.clear(),
             KeyCode::Char('r') if self.selected_tab == 3 => self.request_history(worker),
+            KeyCode::Char('r')
+                if self.selected_tab == 1
+                    && self
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.phase == GamePhase::PostMatch) =>
+            {
+                self.postmatch_history_ready = false;
+                self.history_requested = false;
+                self.request_history(worker);
+            }
             KeyCode::Char('r') => {
                 if !self.context_pending {
                     self.context_requested = false;
@@ -915,6 +1099,18 @@ impl App {
                 self.tracker_open_failed = self
                     .selected_live_player()
                     .and_then(tracker_url)
+                    .or_else(|| {
+                        self.selected_postmatch_player()
+                            .and_then(history_tracker_url)
+                    })
+                    .is_some_and(|url| open_tracker(&url).is_err());
+                self.follow_selection = true;
+            }
+            KeyCode::Char('g') if self.selected_tab == 3 && self.detail => {
+                self.tracker_notice = true;
+                self.tracker_open_failed = self
+                    .selected_history_player()
+                    .and_then(history_tracker_url)
                     .is_some_and(|url| open_tracker(&url).is_err());
                 self.follow_selection = true;
             }
@@ -925,8 +1121,21 @@ impl App {
                 if let Some(demo) = &mut self.demo {
                     demo.post = true;
                     self.select_tab(1);
+                    self.player_index = 3;
                 } else {
+                    let opening = !self.detail;
                     self.detail = !self.detail;
+                    if opening {
+                        self.player_index = self
+                            .history
+                            .as_ref()
+                            .and_then(|items| items.get(self.history_index))
+                            .and_then(|item| item.details.as_ref())
+                            .and_then(|details| {
+                                details.roster.iter().position(|player| player.is_self)
+                            })
+                            .unwrap_or(0);
+                    }
                 }
                 self.follow_selection = true;
             }
@@ -934,6 +1143,21 @@ impl App {
                 self.detail = !self.detail;
                 self.tracker_notice = false;
                 self.tracker_open_failed = false;
+                self.follow_selection = true;
+            }
+            KeyCode::Up | KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('k')
+                if self.selected_tab == 3 && self.detail =>
+            {
+                let down = matches!(key.code, KeyCode::Down | KeyCode::Char('j'));
+                let order = self
+                    .history
+                    .as_ref()
+                    .and_then(|items| items.get(self.history_index))
+                    .and_then(|item| item.details.as_ref())
+                    .map_or_else(Vec::new, |details| {
+                        completed_roster_display_order(&details.roster)
+                    });
+                self.player_index = adjacent_display_index(&order, self.player_index, down);
                 self.follow_selection = true;
             }
             KeyCode::Up | KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('k')
@@ -950,16 +1174,30 @@ impl App {
                         ),
                     )
                 } else {
-                    let count = self.demo.as_ref().map_or_else(
-                        || {
-                            self.live_match
-                                .as_ref()
-                                .and_then(|context| context.roster.as_ref())
-                                .map_or(0, |roster| roster.players.len())
-                        },
-                        |demo| demo.players.len(),
-                    );
-                    (&mut self.player_index, count)
+                    let order = if let Some(demo) = &self.demo {
+                        (0..demo.players.len()).collect()
+                    } else if self.postmatch_history_ready {
+                        self.history
+                            .as_ref()
+                            .and_then(|items| items.first())
+                            .and_then(|item| item.details.as_ref())
+                            .map_or_else(Vec::new, |details| {
+                                completed_roster_display_order(&details.roster)
+                            })
+                    } else {
+                        self.live_match
+                            .as_ref()
+                            .and_then(|context| context.roster.as_ref())
+                            .map_or_else(Vec::new, |roster| {
+                                live_roster_display_order(&roster.players)
+                            })
+                    };
+                    self.player_index = adjacent_display_index(&order, self.player_index, down);
+                    self.tracker_notice = false;
+                    self.tracker_open_failed = false;
+                    self.follow_selection = true;
+                    self.dirty = true;
+                    return;
                 };
                 if count > 0 {
                     *index = if down {
@@ -980,6 +1218,32 @@ impl App {
             _ => return,
         }
         self.dirty = true;
+    }
+
+    fn request_quit(&mut self, worker: &Worker) {
+        if self.settings.saving {
+            self.quit_after_save = true;
+            return;
+        }
+        if let Some(config) = self.settings.to_save() {
+            if worker.submit(Request::Save(config)) {
+                self.settings.saving = true;
+                self.quit_after_save = true;
+                self.push_log(LogLevel::Info, "Guardando ajustes antes de salir");
+                return;
+            }
+            self.push_log(LogLevel::Warning, "No se pudieron guardar los ajustes");
+            return;
+        }
+        self.should_quit = true;
+    }
+
+    fn request_settings_save(&mut self, worker: &Worker) {
+        if let Some(config) = self.settings.to_save()
+            && worker.submit(Request::Save(config))
+        {
+            self.settings.saving = true;
+        }
     }
 
     fn mouse(&mut self, mouse: MouseEvent, width: u16, height: u16) {
@@ -1071,6 +1335,58 @@ fn tracker_url(player: &RosterPlayer) -> Option<String> {
     };
     let (name, tag) = identity.rsplit_once('#')?;
     if name.is_empty() || tag.is_empty() || identity == "Tú" {
+        return None;
+    }
+    tracker_url_for_riot_id(identity)
+}
+
+fn adjacent_display_index(order: &[usize], current: usize, down: bool) -> usize {
+    let Some(position) = order.iter().position(|index| *index == current) else {
+        return order.first().copied().unwrap_or(0);
+    };
+    let next = if down {
+        (position + 1) % order.len()
+    } else {
+        (position + order.len() - 1) % order.len()
+    };
+    order[next]
+}
+
+fn completed_roster_display_order(roster: &[CompletedRosterPlayer]) -> Vec<usize> {
+    [
+        CompletedPlayerSide::Ally,
+        CompletedPlayerSide::Enemy,
+        CompletedPlayerSide::Participant,
+    ]
+    .into_iter()
+    .flat_map(|side| {
+        roster
+            .iter()
+            .enumerate()
+            .filter_map(move |(index, player)| (player.side == side).then_some(index))
+    })
+    .collect()
+}
+
+fn live_roster_display_order(roster: &[RosterPlayer]) -> Vec<usize> {
+    [RosterSide::Ally, RosterSide::Enemy, RosterSide::Participant]
+        .into_iter()
+        .flat_map(|side| {
+            roster
+                .iter()
+                .enumerate()
+                .filter_map(move |(index, player)| (player.side == side).then_some(index))
+        })
+        .collect()
+}
+
+fn history_tracker_url(player: &CompletedRosterPlayer) -> Option<String> {
+    tracker_url_for_riot_id(player.riot_id.as_deref()?)
+}
+
+fn tracker_url_for_riot_id(identity: &str) -> Option<String> {
+    let (name, tag) = identity.rsplit_once('#')?;
+    if name.is_empty() || tag.is_empty() {
         return None;
     }
     Some(format!(
@@ -1452,7 +1768,10 @@ mod tests {
     use super::*;
     use crate::{
         game::GameState,
-        providers::capabilities::{Confidence, GamePhase},
+        providers::{
+            capabilities::{Confidence, GamePhase},
+            live_match::{LivePartyUpdate, parse_live_match},
+        },
     };
 
     #[test]
@@ -1528,6 +1847,31 @@ mod tests {
     }
 
     #[test]
+    fn theme_changes_are_saved_and_pending_settings_finish_before_quitting() {
+        let worker = Worker::demo().unwrap();
+        let mut app = App::new(&Config::default());
+
+        app.key(
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
+            &worker,
+        );
+        assert!(app.settings.saving);
+        let selected = app.settings.draft.clone();
+        app.apply(Reply::Saved(Ok(selected.clone())));
+        assert_eq!(app.settings.active.theme, selected.theme);
+
+        app.settings.draft.theme = crate::config::Theme::Mono;
+        app.key(
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+            &worker,
+        );
+        assert!(app.quit_after_save && !app.should_quit);
+        let pending = app.settings.draft.clone();
+        app.apply(Reply::Saved(Ok(pending)));
+        assert!(app.should_quit);
+    }
+
+    #[test]
     fn context_progress_tracks_only_the_current_match_generation() {
         let mut app = App::new(&Config::default());
         app.context_pending = true;
@@ -1546,6 +1890,48 @@ mod tests {
             label: "Respuesta antigua",
         });
         assert_eq!(app.context_progress, 45);
+    }
+
+    #[test]
+    fn progressive_party_reply_updates_the_existing_roster() {
+        let mut app = App::new(&Config::default());
+        app.generation = 4;
+        app.live_match = Some(
+            parse_live_match(
+                &serde_json::json!({
+                    "ModeID":"/Game/GameModes/Bomb/Bomb",
+                    "MapID":"/Game/Maps/Ascent/Ascent",
+                    "Players":[
+                        {"Subject":"me", "TeamID":"Blue"},
+                        {"Subject":"enemy", "TeamID":"Red"}
+                    ]
+                }),
+                "me",
+            )
+            .unwrap(),
+        );
+        app.party_pending = true;
+
+        app.apply(Reply::Parties {
+            generation: 4,
+            data: Ok(LivePartyUpdate {
+                premades: vec![
+                    DataAvailability::Available("Solo".into()),
+                    DataAvailability::Available("Solo".into()),
+                ],
+                complete: true,
+            }),
+        });
+
+        let roster = app.live_match.unwrap().roster.unwrap();
+        assert!(
+            roster
+                .players
+                .iter()
+                .all(|player| { player.premade == DataAvailability::Available("Solo".to_owned()) })
+        );
+        assert!(!app.party_pending);
+        assert!(app.party_retry_at.is_none());
     }
 
     #[test]
@@ -1569,6 +1955,52 @@ mod tests {
         );
         assert!(tracker_url(&player(DataAvailability::Hidden)).is_none());
         assert!(tracker_url(&player(DataAvailability::Available("Tú".into()))).is_none());
+
+        let historical = CompletedRosterPlayer {
+            side: crate::providers::match_detail::CompletedPlayerSide::Enemy,
+            slot: 1,
+            is_self: false,
+            name: "Ñorte uno#LAS".into(),
+            riot_id: Some("Ñorte uno#LAS".into()),
+            agent: "Omen".into(),
+            rank: None,
+            stats: Default::default(),
+            rounds_played: 20,
+            premade: None,
+        };
+        assert_eq!(
+            history_tracker_url(&historical).as_deref(),
+            Some("https://tracker.gg/valorant/profile/riot/%C3%91orte%20uno%23LAS/overview")
+        );
+    }
+
+    #[test]
+    fn historical_player_navigation_follows_the_visible_team_order() {
+        let player = |side, slot| CompletedRosterPlayer {
+            side,
+            slot,
+            is_self: false,
+            name: format!("Jugador {slot}"),
+            riot_id: None,
+            agent: "Sova".into(),
+            rank: None,
+            stats: Default::default(),
+            rounds_played: 20,
+            premade: None,
+        };
+        let roster = vec![
+            player(CompletedPlayerSide::Ally, 1),
+            player(CompletedPlayerSide::Enemy, 1),
+            player(CompletedPlayerSide::Enemy, 2),
+            player(CompletedPlayerSide::Ally, 2),
+            player(CompletedPlayerSide::Ally, 3),
+        ];
+
+        let order = completed_roster_display_order(&roster);
+        assert_eq!(order, vec![0, 3, 4, 1, 2]);
+        assert_eq!(adjacent_display_index(&order, 0, true), 3);
+        assert_eq!(adjacent_display_index(&order, 3, true), 4);
+        assert_eq!(adjacent_display_index(&order, 0, false), 2);
     }
 
     #[test]

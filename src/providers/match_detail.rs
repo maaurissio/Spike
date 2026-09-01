@@ -7,6 +7,7 @@
 use std::{collections::HashMap, time::Duration};
 
 use reqwest::{StatusCode, blocking::Client};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
@@ -67,6 +68,32 @@ pub(crate) struct OwnMatchTotals {
     pub agent: String,
     pub own_score: Option<u32>,
     pub opponent_score: Option<u32>,
+    pub roster: Vec<CompletedRosterPlayer>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) enum CompletedPlayerSide {
+    Ally,
+    Enemy,
+    Participant,
+}
+
+/// Fila final del marcador, normalizada antes de abandonar el proveedor.
+/// No contiene PUUID, MatchID ni PartyID.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct CompletedRosterPlayer {
+    pub side: CompletedPlayerSide,
+    pub slot: u8,
+    pub is_self: bool,
+    pub name: String,
+    /// Riot ID público resuelto para construir enlaces; nunca es un PUUID.
+    pub riot_id: Option<String>,
+    pub agent: String,
+    pub rank: Option<String>,
+    pub stats: PlayerMatchStats,
+    pub rounds_played: u32,
+    /// Índice visual estable (1..=5); `None` significa jugador solo/sin dato.
+    pub premade: Option<u8>,
 }
 
 /// Consulta de solo lectura a `pd.{shard}.a.pvp.net` para una partida concluida.
@@ -153,15 +180,66 @@ impl MatchDetailSource {
             .send()
             .map_err(|_| ProviderError::Network("no se pudo conectar a PD".into()))?;
         match response.status() {
-            status if status.is_success() => response
-                .json::<Value>()
-                .map_err(|_| parse_error("JSON inválido en match-details"))
-                .and_then(|payload| parse_own_match_totals(&payload, &request.own_puuid)),
+            status if status.is_success() => {
+                let payload = response
+                    .json::<Value>()
+                    .map_err(|_| parse_error("JSON inválido en match-details"))?;
+                let subjects = scoreboard_subjects(&payload);
+                let names = self.fetch_names(request, &subjects).unwrap_or_default();
+                let mut totals = parse_own_match_totals(&payload, &request.own_puuid)?;
+                for (player, subject) in totals.roster.iter_mut().zip(subjects) {
+                    if let Some(riot_id) = names.get(&subject) {
+                        player.riot_id = Some(riot_id.clone());
+                        if !player.is_self {
+                            player.name = riot_id.clone();
+                        }
+                    }
+                }
+                Ok(totals)
+            }
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(ProviderError::Unauthorized(
                 "PD rechazó las credenciales de sesión".into(),
             )),
             status => Err(ProviderError::Unavailable(format!(
                 "PD respondió HTTP {status} en match-details"
+            ))),
+        }
+    }
+
+    fn fetch_names(
+        &self,
+        request: &MatchDetailRequest,
+        subjects: &[String],
+    ) -> Result<HashMap<String, String>, ProviderError> {
+        if subjects.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let base = self
+            .base_url
+            .clone()
+            .unwrap_or_else(|| format!("https://pd.{}.a.pvp.net", request.shard));
+        let response = self
+            .client
+            .put(format!("{base}/name-service/v2/players"))
+            .header("X-Riot-ClientPlatform", CLIENT_PLATFORM)
+            .header("X-Riot-ClientVersion", &request.client_version)
+            .header("X-Riot-Entitlements-JWT", &request.entitlement_token)
+            .bearer_auth(&request.access_token)
+            .json(subjects)
+            .send()
+            .map_err(|_| {
+                ProviderError::Network("no se pudo resolver el roster histórico".into())
+            })?;
+        match response.status() {
+            status if status.is_success() => response
+                .json::<Value>()
+                .map(|payload| crate::providers::roster::visible_names(&payload))
+                .map_err(|_| parse_error("JSON inválido en Name Service")),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(ProviderError::Unauthorized(
+                "Name Service rechazó la sesión".into(),
+            )),
+            status => Err(ProviderError::Unavailable(format!(
+                "Name Service respondió HTTP {status}"
             ))),
         }
     }
@@ -326,6 +404,7 @@ fn parse_own_match_totals(
         })
         .unwrap_or(crate::models::MatchOutcome::Unknown);
     let combat = own_combat_totals(payload, own_puuid);
+    let roster = completed_roster(payload, own_puuid, own_team_id);
     Ok(OwnMatchTotals {
         stats: crate::models::PlayerMatch {
             outcome,
@@ -351,7 +430,139 @@ fn parse_own_match_totals(
             .and_then(|team| team.get("roundsWon"))
             .and_then(Value::as_u64)
             .and_then(|value| u32::try_from(value).ok()),
+        roster,
     })
+}
+
+fn completed_roster(
+    payload: &Value,
+    own_puuid: &str,
+    own_team_id: Option<&str>,
+) -> Vec<CompletedRosterPlayer> {
+    let Some(players) = payload.get("players").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut party_counts = HashMap::<String, usize>::new();
+    for player in players {
+        if let Some(party) = completed_party_id(player) {
+            *party_counts.entry(party.to_owned()).or_default() += 1;
+        }
+    }
+    let mut party_indexes = HashMap::<String, u8>::new();
+    let mut next_party = 1_u8;
+    let mut ally_slot = 0_u8;
+    let mut enemy_slot = 0_u8;
+    let mut participant_slot = 0_u8;
+
+    players
+        .iter()
+        .filter_map(|player| {
+            let subject = player.get("subject").and_then(Value::as_str)?;
+            let stats = player.get("stats").and_then(Value::as_object)?;
+            let team = player.get("teamId").and_then(Value::as_str);
+            let side = match own_team_id {
+                Some(own) if team == Some(own) => {
+                    ally_slot = ally_slot.saturating_add(1);
+                    CompletedPlayerSide::Ally
+                }
+                Some(_) if team.is_some() => {
+                    enemy_slot = enemy_slot.saturating_add(1);
+                    CompletedPlayerSide::Enemy
+                }
+                _ => {
+                    participant_slot = participant_slot.saturating_add(1);
+                    CompletedPlayerSide::Participant
+                }
+            };
+            let slot = match side {
+                CompletedPlayerSide::Ally => ally_slot,
+                CompletedPlayerSide::Enemy => enemy_slot,
+                CompletedPlayerSide::Participant => participant_slot,
+            };
+            let is_self = subject == own_puuid;
+            let game_name = player
+                .get("gameName")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty());
+            let tag = player
+                .get("tagLine")
+                .and_then(Value::as_str)
+                .filter(|tag| !tag.is_empty());
+            let name = if is_self {
+                "Tú".into()
+            } else if let Some(game_name) = game_name {
+                tag.map_or_else(|| game_name.into(), |tag| format!("{game_name}#{tag}"))
+            } else {
+                format!("Jugador {slot}")
+            };
+            let combat = own_combat_totals(payload, subject);
+            let rounds_played = optional_u32(stats, "roundsPlayed")
+                .ok()
+                .flatten()
+                .unwrap_or(0);
+            let premade = completed_party_id(player)
+                .filter(|party| party_counts.get(*party).copied().unwrap_or(0) > 1)
+                .map(|party| {
+                    *party_indexes.entry(party.to_owned()).or_insert_with(|| {
+                        let index = next_party;
+                        next_party = next_party.saturating_add(1);
+                        index
+                    })
+                });
+            Some(CompletedRosterPlayer {
+                side,
+                slot,
+                is_self,
+                name,
+                riot_id: game_name.map(|game_name| {
+                    tag.map_or_else(|| game_name.into(), |tag| format!("{game_name}#{tag}"))
+                }),
+                agent: player
+                    .get("characterId")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(crate::providers::live_match::agent_label)
+                    .unwrap_or_else(|| "—".into()),
+                rank: player
+                    .get("competitiveTier")
+                    .or_else(|| player.get("CompetitiveTier"))
+                    .and_then(Value::as_u64)
+                    .and_then(crate::providers::roster::competitive_tier_label),
+                stats: PlayerMatchStats {
+                    kills: required_u32(stats, "kills").ok()?,
+                    deaths: required_u32(stats, "deaths").ok()?,
+                    assists: required_u32(stats, "assists").ok()?,
+                    combat_score: optional_u32(stats, "score").ok().flatten(),
+                    damage: combat.damage,
+                    headshots: combat.headshots,
+                    bodyshots: combat.bodyshots,
+                    legshots: combat.legshots,
+                },
+                rounds_played,
+                premade,
+            })
+        })
+        .collect()
+}
+
+fn scoreboard_subjects(payload: &Value) -> Vec<String> {
+    payload
+        .get("players")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|player| player.get("stats").and_then(Value::as_object).is_some())
+        .filter_map(|player| player.get("subject").and_then(Value::as_str))
+        .filter(|subject| !subject.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn completed_party_id(player: &Value) -> Option<&str> {
+    ["partyId", "partyID", "PartyID"]
+        .iter()
+        .find_map(|field| player.get(*field).and_then(Value::as_str))
+        .filter(|value| !value.is_empty())
 }
 
 #[derive(Default)]
@@ -726,13 +937,15 @@ mod tests {
     }
 
     #[test]
-    fn parses_own_totals_without_retaining_roster_or_match_id() {
+    fn parses_safe_scoreboard_without_retaining_match_or_party_ids() {
         let totals = parse_own_match_totals(
             &serde_json::json!({
                 "matchInfo": {"matchId": "private", "mapId": "/Game/Maps/Ascent/Ascent", "gameMode": "Competitive", "isCompleted": true},
                 "players": [
-                    {"subject": "other", "teamId": "Red", "stats": {"kills": 30, "deaths": 10, "assists": 2, "roundsPlayed": 20, "score": 5000}},
-                    {"subject": "me", "teamId": "Blue", "characterId": "8e253930-4c05-31dd-1b6c-968525494517", "stats": {"kills": 20, "deaths": 15, "assists": 5, "roundsPlayed": 20, "score": 4000}}
+                    {"subject": "other", "gameName":"Rival", "tagLine":"LAS", "partyId":"enemy-party", "teamId": "Red", "competitiveTier":21, "stats": {"kills": 30, "deaths": 10, "assists": 2, "roundsPlayed": 20, "score": 5000}},
+                    {"subject": "other-two", "partyId":"enemy-party", "teamId": "Red", "stats": {"kills": 10, "deaths": 20, "assists": 4, "roundsPlayed": 20, "score": 2000}},
+                    {"subject": "me", "partyId":"own-party", "teamId": "Blue", "characterId": "8e253930-4c05-31dd-1b6c-968525494517", "stats": {"kills": 20, "deaths": 15, "assists": 5, "roundsPlayed": 20, "score": 4000}},
+                    {"subject": "ally", "partyId":"own-party", "teamId": "Blue", "stats": {"kills": 15, "deaths": 15, "assists": 8, "roundsPlayed": 20, "score": 3000}}
                 ],
                 "teams": [{"teamId": "Blue", "won": true, "roundsWon": 13}, {"teamId": "Red", "won": false, "roundsWon": 9}]
             }),
@@ -745,6 +958,16 @@ mod tests {
         assert_eq!(totals.stats.stats.assists, 5);
         assert_eq!(totals.map, "Ascent");
         assert_eq!(totals.agent, "Omen");
+        assert_eq!(totals.roster.len(), 4);
+        assert_eq!(totals.roster[0].name, "Rival#LAS");
+        assert_eq!(totals.roster[0].riot_id.as_deref(), Some("Rival#LAS"));
+        assert_eq!(totals.roster[0].rank.as_deref(), Some("Ascendente 1"));
+        assert_eq!(totals.roster[0].premade, totals.roster[1].premade);
+        assert_eq!(totals.roster[2].premade, totals.roster[3].premade);
+        assert_ne!(totals.roster[0].premade, totals.roster[2].premade);
+        assert_eq!(totals.roster[2].name, "Tú");
+        let debug = format!("{:?}", totals.roster);
+        assert!(!debug.contains("enemy-party") && !debug.contains("own-party"));
         assert_eq!(
             (totals.own_score, totals.opponent_score),
             (Some(13), Some(9))

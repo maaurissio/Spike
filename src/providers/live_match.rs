@@ -54,6 +54,64 @@ impl LiveMatchSource {
         request: &LiveMatchRequest,
         lookup: impl FnOnce(&[String]) -> HashMap<String, String>,
     ) -> Result<LiveMatchContext, ProviderError> {
+        let payload = self.fetch_payload(request)?;
+        let players = roster_players(&payload, &request.own_puuid);
+        let subjects = roster_subjects(&players);
+        let mut party_ids = request.party_ids.clone();
+        party_ids.extend(lookup(&subjects));
+        let names = self
+            .fetch_visible_names(request, &players, &party_ids)
+            .unwrap_or_default();
+        let stats_request = RosterStatsRequest {
+            shard: request.shard.clone(),
+            client_version: request.client_version.clone(),
+            access_token: request.access_token.clone(),
+            entitlement_token: request.entitlement_token.clone(),
+        };
+        let queue = request.queue.clone();
+        let enrichment = self.stats.fetch(&stats_request, &subjects);
+        let observed_counts = party_ids
+            .values()
+            .fold(HashMap::new(), |mut counts, party| {
+                *counts.entry(party.clone()).or_insert(0_usize) += 1;
+                counts
+            });
+        for (subject, inferred_party) in enrichment.inferred_parties {
+            let observed_group = party_ids
+                .get(&subject)
+                .and_then(|party| observed_counts.get(party))
+                .is_some_and(|count| *count > 1);
+            if !observed_group {
+                party_ids.insert(subject, inferred_party);
+            }
+        }
+        parse_live_match_with_names_and_stats(
+            &payload,
+            &request.own_puuid,
+            &names,
+            &enrichment.stats,
+            queue.as_deref(),
+            request.phase,
+            &party_ids,
+        )
+    }
+
+    /// Reconsulta únicamente la relación jugador/grupo. Presence puede tardar
+    /// varios segundos en publicar los grupos enemigos después de formar el roster.
+    pub(crate) fn fetch_party_update(
+        &self,
+        request: &LiveMatchRequest,
+        lookup: impl FnOnce(&[String]) -> HashMap<String, String>,
+    ) -> Result<LivePartyUpdate, ProviderError> {
+        let payload = self.fetch_payload(request)?;
+        let players = roster_players(&payload, &request.own_puuid);
+        let subjects = roster_subjects(&players);
+        let mut party_ids = request.party_ids.clone();
+        party_ids.extend(lookup(&subjects));
+        Ok(party_update(&players, &party_ids))
+    }
+
+    fn fetch_payload(&self, request: &LiveMatchRequest) -> Result<Value, ProviderError> {
         let endpoint = if matches!(request.phase, GamePhase::PreGame | GamePhase::AgentSelect) {
             "pregame"
         } else {
@@ -73,35 +131,9 @@ impl LiveMatchSource {
             .send()
             .map_err(|_| ProviderError::Network("no se pudo conectar a GLZ".into()))?;
         match response.status() {
-            status if status.is_success() => {
-                let payload = response
-                    .json::<Value>()
-                    .map_err(|_| ProviderError::Parse("JSON inválido en partida actual".into()))?;
-                let players = roster_players(&payload, &request.own_puuid);
-                let subjects = roster_subjects(&players);
-                let mut party_ids = request.party_ids.clone();
-                party_ids.extend(lookup(&subjects));
-                let names = self
-                    .fetch_visible_names(request, &players, &party_ids)
-                    .unwrap_or_default();
-                let stats_request = RosterStatsRequest {
-                    shard: request.shard.clone(),
-                    client_version: request.client_version.clone(),
-                    access_token: request.access_token.clone(),
-                    entitlement_token: request.entitlement_token.clone(),
-                };
-                let queue = request.queue.clone();
-                let stats = self.stats.fetch(&stats_request, &subjects);
-                parse_live_match_with_names_and_stats(
-                    &payload,
-                    &request.own_puuid,
-                    &names,
-                    &stats,
-                    queue.as_deref(),
-                    request.phase,
-                    &party_ids,
-                )
-            }
+            status if status.is_success() => response
+                .json::<Value>()
+                .map_err(|_| ProviderError::Parse("JSON inválido en partida actual".into())),
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
                 Err(ProviderError::Unauthorized("GLZ rechazó la sesión".into()))
             }
@@ -178,6 +210,13 @@ pub(crate) struct LiveMatchContext {
     pub map: String,
     pub agent: Option<String>,
     pub roster: Option<RosterSnapshot>,
+}
+
+/// Resultado seguro de una actualización de grupos. No expone PUUID ni PartyID.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LivePartyUpdate {
+    pub premades: Vec<DataAvailability<String>>,
+    pub complete: bool,
 }
 
 #[cfg(test)]
@@ -453,6 +492,31 @@ fn normalized_premades(
         result.insert(subject.to_owned(), label);
     }
     result
+}
+
+fn party_update(players: &[Value], party_ids: &HashMap<String, String>) -> LivePartyUpdate {
+    let premades = normalized_premades(players, party_ids);
+    let subjects = roster_subjects(players);
+    LivePartyUpdate {
+        premades: players
+            .iter()
+            .map(|player| {
+                let subject = player
+                    .get("Subject")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                premades
+                    .get(subject)
+                    .cloned()
+                    .map(DataAvailability::Available)
+                    .unwrap_or(DataAvailability::NotAvailable)
+            })
+            .collect(),
+        complete: !subjects.is_empty()
+            && subjects
+                .iter()
+                .all(|subject| party_ids.contains_key(subject)),
+    }
 }
 
 fn display_mode(mode: &str, queue: Option<&str>) -> String {
@@ -841,6 +905,45 @@ mod tests {
                 player.premade == DataAvailability::Available("Grupo A".to_owned())
             })
         );
+    }
+
+    #[test]
+    fn progressive_party_update_recovers_enemy_premades() {
+        let players = (1..=10)
+            .map(|slot| serde_json::json!({"Subject": format!("player-{slot}")}))
+            .collect::<Vec<_>>();
+        let partial = HashMap::from([
+            ("player-1".into(), "own".into()),
+            ("player-2".into(), "own".into()),
+        ]);
+        assert!(!party_update(&players, &partial).complete);
+
+        let complete = HashMap::from([
+            ("player-1".into(), "own".into()),
+            ("player-2".into(), "own".into()),
+            ("player-3".into(), "solo-3".into()),
+            ("player-4".into(), "solo-4".into()),
+            ("player-5".into(), "solo-5".into()),
+            ("player-6".into(), "enemy-a".into()),
+            ("player-7".into(), "enemy-a".into()),
+            ("player-8".into(), "enemy-a".into()),
+            ("player-9".into(), "enemy-b".into()),
+            ("player-10".into(), "enemy-b".into()),
+        ]);
+        let update = party_update(&players, &complete);
+
+        assert!(update.complete);
+        assert_eq!(
+            update.premades[5],
+            DataAvailability::Available("Grupo B".into())
+        );
+        assert_eq!(update.premades[6], update.premades[5]);
+        assert_eq!(update.premades[7], update.premades[5]);
+        assert_eq!(
+            update.premades[8],
+            DataAvailability::Available("Grupo C".into())
+        );
+        assert_eq!(update.premades[9], update.premades[8]);
     }
 
     #[test]

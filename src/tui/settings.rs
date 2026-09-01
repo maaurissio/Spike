@@ -11,8 +11,6 @@ pub(super) struct Settings {
 }
 
 impl Settings {
-    const OPTION_COUNT: usize = 4;
-
     pub fn new(config: &Config) -> Self {
         Self {
             active: config.clone(),
@@ -24,11 +22,21 @@ impl Settings {
     }
 
     pub fn select(&mut self) {
-        self.selected = (self.selected + 1) % Self::OPTION_COUNT;
+        self.selected = match self.selected {
+            0 => 3,
+            3 => 1,
+            1 => 2,
+            _ => 0,
+        };
     }
 
     pub fn previous(&mut self) {
-        self.selected = (self.selected + Self::OPTION_COUNT - 1) % Self::OPTION_COUNT;
+        self.selected = match self.selected {
+            0 => 2,
+            2 => 1,
+            1 => 3,
+            _ => 0,
+        };
     }
 
     pub fn cycle_theme(&mut self) {
@@ -178,12 +186,14 @@ mod tests {
     fn palette_button_is_a_fourth_non_mutating_option() {
         let config = Config::default();
         let mut settings = Settings::new(&config);
-        settings.previous();
+        settings.select();
         assert_eq!(settings.selected, 3);
         settings.toggle();
         settings.adjust(true);
         assert_eq!(settings.draft, config);
         settings.select();
-        assert_eq!(settings.selected, 0);
+        assert_eq!(settings.selected, 1);
+        settings.previous();
+        assert_eq!(settings.selected, 3);
     }
 }

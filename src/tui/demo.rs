@@ -9,6 +9,10 @@ pub(super) struct Player {
     pub hs: &'static str,
     pub adr: &'static str,
     pub hidden: bool,
+    pub match_kda: (u32, u32, u32),
+    pub match_acs: u32,
+    pub match_hs: u32,
+    pub premade: Option<u8>,
 }
 
 #[derive(Clone, Copy)]
@@ -126,20 +130,51 @@ impl Default for Demo {
                 "129",
             ),
         ];
+        let match_stats = [
+            (18, 17, 6, 235, 29),
+            (17, 17, 3, 211, 17),
+            (21, 17, 5, 259, 34),
+            (9, 18, 7, 131, 19),
+            (21, 20, 11, 245, 28),
+            (20, 19, 2, 238, 16),
+            (30, 20, 8, 384, 20),
+            (8, 18, 3, 100, 11),
+            (18, 14, 8, 220, 34),
+            (13, 15, 5, 172, 19),
+        ];
+        let premades = [
+            Some(1),
+            None,
+            Some(1),
+            Some(2),
+            Some(2),
+            Some(3),
+            Some(4),
+            Some(3),
+            Some(4),
+            Some(3),
+        ];
         Self {
             players: rows
                 .into_iter()
                 .enumerate()
-                .map(|(i, (name, agent, rank, kd, wr, form, hs, adr))| Player {
-                    name,
-                    agent,
-                    rank,
-                    kd,
-                    wr,
-                    form,
-                    hs,
-                    adr,
-                    hidden: i == 6,
+                .map(|(i, (name, agent, rank, kd, wr, form, hs, adr))| {
+                    let (kills, deaths, assists, acs, match_hs) = match_stats[i];
+                    Player {
+                        name,
+                        agent,
+                        rank,
+                        kd,
+                        wr,
+                        form,
+                        hs,
+                        adr,
+                        hidden: i == 6,
+                        match_kda: (kills, deaths, assists),
+                        match_acs: acs,
+                        match_hs,
+                        premade: premades[i],
+                    }
                 })
                 .collect(),
             rounds: vec![

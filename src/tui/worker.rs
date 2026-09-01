@@ -1,5 +1,6 @@
 //! Un único trabajador limita la concurrencia de red; la TUI nunca espera una respuesta.
 use std::{
+    collections::HashMap,
     fs, io,
     sync::{
         Arc,
@@ -16,7 +17,7 @@ use crate::{
         GameStateSource, HistorySource, LiveMatchSource, LocalClientSource, MatchDetailSource,
         PlayerProfileSource, ProcessGameStateSource, StateInfo,
         capabilities::GamePhase,
-        live_match::LiveMatchContext,
+        live_match::{LiveMatchContext, LivePartyUpdate},
         profile::{CompetitiveProfile, CompetitiveUpdate, OwnProfile},
         resolve_with_fallback,
     },
@@ -26,6 +27,7 @@ use crate::{
 pub(super) enum Request {
     Observe { log: bool },
     Context { phase: GamePhase, generation: u64 },
+    Parties { phase: GamePhase, generation: u64 },
     Profile { epoch: u64 },
     History { epoch: u64 },
     Save(Config),
@@ -49,6 +51,10 @@ pub(super) enum Reply {
         generation: u64,
         percent: u16,
         label: &'static str,
+    },
+    Parties {
+        generation: u64,
+        data: Result<LivePartyUpdate, ()>,
     },
     Profile {
         epoch: u64,
@@ -85,6 +91,10 @@ impl Worker {
                 log_failed: false,
             },
             Request::Context { generation, .. } => Reply::Context {
+                generation,
+                data: Err(()),
+            },
+            Request::Parties { generation, .. } => Reply::Parties {
                 generation,
                 data: Err(()),
             },
@@ -289,6 +299,10 @@ impl Sources {
                 generation,
                 data: self.context(phase, generation, stop, progress),
             },
+            Request::Parties { phase, generation } => Reply::Parties {
+                generation,
+                data: self.parties(phase),
+            },
             Request::Profile { epoch } => Reply::Profile {
                 epoch,
                 data: self.profile(stop),
@@ -365,6 +379,21 @@ impl Sources {
         }
     }
 
+    fn parties(&self, phase: GamePhase) -> Result<LivePartyUpdate, ()> {
+        if self.simulation
+            || !matches!(
+                phase,
+                GamePhase::PreGame | GamePhase::AgentSelect | GamePhase::InMatch
+            )
+        {
+            return Err(());
+        }
+        let request = self.local.live_match_request(phase).map_err(|_| ())?;
+        self.live
+            .fetch_party_update(&request, |subjects| self.local.live_party_ids(subjects))
+            .map_err(|_| ())
+    }
+
     fn profile(
         &self,
         stop: &AtomicBool,
@@ -407,6 +436,14 @@ impl Sources {
             .fetch_own_competitive_updates(&request.profile_request(), 20)
             .unwrap_or_default();
         let matches = self.history.fetch_own_matches(&request).map_err(|_| ())?;
+        let cached_details = load_cached_history()
+            .into_iter()
+            .flat_map(|cached| cached.items)
+            .filter_map(|item| {
+                item.details
+                    .map(|details| ((item.entry.queue, item.entry.started_at_ms), details))
+            })
+            .collect::<HashMap<_, _>>();
         let mut indexed = Vec::with_capacity(matches.len());
         let mut matches = matches.into_iter().enumerate();
         loop {
@@ -418,15 +455,20 @@ impl Sources {
                 batch
                     .into_iter()
                     .map(|(index, item)| {
-                        let detail_request = request.match_detail_request(item.match_id);
+                        let cached = cached_details
+                            .get(&(item.entry.queue.clone(), item.entry.started_at_ms))
+                            .cloned();
+                        let detail_request = cached
+                            .is_none()
+                            .then(|| request.match_detail_request(item.match_id));
                         let rr_change = updates.get(index).map(|update| update.rr_earned);
                         let rr_after = updates
                             .get(index)
                             .and_then(|update| update.ranked_rating_after);
                         scope.spawn(move || {
-                            let details =
+                            let details = cached.or_else(|| {
                                 self.details
-                                    .fetch_own_totals(&detail_request)
+                                    .fetch_own_totals(detail_request.as_ref()?)
                                     .ok()
                                     .map(|totals| super::HistoryDetails {
                                         map: totals.map,
@@ -436,7 +478,9 @@ impl Sources {
                                         stats: totals.stats.stats,
                                         own_score: totals.own_score,
                                         opponent_score: totals.opponent_score,
-                                    });
+                                        roster: totals.roster,
+                                    })
+                            });
                             (
                                 index,
                                 super::HistoryItem {
@@ -515,7 +559,7 @@ fn save_cached_history(items: &[super::HistoryItem]) -> Result<(), ()> {
     let parent = path.parent().ok_or(())?;
     fs::create_dir_all(parent).map_err(|_| ())?;
     let cached = super::CachedHistory {
-        schema: 1,
+        schema: 3,
         saved_at_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| ())?
@@ -533,7 +577,7 @@ fn save_cached_history(items: &[super::HistoryItem]) -> Result<(), ()> {
 pub(super) fn load_cached_history() -> Option<super::CachedHistory> {
     let bytes = fs::read(history_cache_path()?).ok()?;
     let mut cached: super::CachedHistory = serde_json::from_slice(&bytes).ok()?;
-    if cached.schema != 1 || cached.saved_at_ms == 0 {
+    if cached.schema != 3 || cached.saved_at_ms == 0 {
         return None;
     }
     cached.items.truncate(20);
@@ -548,7 +592,7 @@ mod tests {
     #[test]
     fn persisted_history_schema_contains_no_session_identifiers_or_tokens() {
         let cached = super::super::CachedHistory {
-            schema: 1,
+            schema: 3,
             saved_at_ms: 1,
             items: vec![super::super::HistoryItem {
                 entry: crate::providers::history::HistoryEntry {

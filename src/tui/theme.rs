@@ -523,20 +523,39 @@ impl Palette {
         self.base.fg(color).add_modifier(Modifier::BOLD)
     }
 
-    /// Cada premade conserva un color estable. La tabla usa este color en el
-    /// punto previo al nombre y el detalle mantiene la etiqueta textual.
+    /// Cada premade conserva un color pastel estable en su punto. Las
+    /// etiquetas Grupo A/B son internas y nunca se muestran al jugador.
     pub fn premade_style(&self, label: &str) -> Style {
+        let index = match label.strip_prefix("Grupo ").unwrap_or(label) {
+            "A" => 1,
+            "B" => 2,
+            "C" => 3,
+            "D" => 4,
+            "E" => 5,
+            _ => 0,
+        };
+        self.premade_index_style(index)
+    }
+
+    pub fn premade_index_style(&self, index: u8) -> Style {
         if self.theme == Theme::Mono {
             return self.base;
         }
-        match label.strip_prefix("Grupo ").unwrap_or(label) {
-            "A" => self.focus,
-            "B" => self.pending,
-            "C" => self.rank,
-            "D" => self.good,
-            _ => self.dim,
-        }
-        .add_modifier(Modifier::BOLD)
+        let light = self.theme == Theme::Light;
+        let color = match index {
+            1 if light => Color::Rgb(91, 127, 189),
+            1 => Color::Rgb(137, 180, 250),
+            2 if light => Color::Rgb(179, 92, 154),
+            2 => Color::Rgb(245, 194, 231),
+            3 if light => Color::Rgb(95, 143, 104),
+            3 => Color::Rgb(166, 227, 161),
+            4 if light => Color::Rgb(168, 120, 50),
+            4 => Color::Rgb(249, 226, 175),
+            5 if light => Color::Rgb(128, 101, 168),
+            5 => Color::Rgb(203, 166, 247),
+            _ => return self.dim,
+        };
+        self.base.fg(color).add_modifier(Modifier::BOLD)
     }
 }
 

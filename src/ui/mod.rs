@@ -333,6 +333,7 @@ mod tests {
                 agent: "Sova".into(),
                 own_score: Some(13),
                 opponent_score: Some(9),
+                roster: vec![],
             },
         };
 
@@ -382,6 +383,7 @@ mod tests {
                 agent: "Sova".into(),
                 own_score: None,
                 opponent_score: None,
+                roster: vec![],
             },
         };
 

@@ -6,6 +6,9 @@
 
 - Detección completa de premades del roster en vivo, incluyendo grupos aliados, enemigos y five-stacks.
 - Espera dirigida por los jugadores de la partida para evitar que presencias ajenas oculten grupos reales.
+- Actualización progresiva y liviana de premades mientras Riot termina de publicar los grupos enemigos.
+- Marcador completo de aliados y enemigos al abrir una partida del historial, con agente, rango, K/D/A, ACS y HS%.
+- Riot ID y acceso a Tracker.gg para cada jugador disponible en el marcador histórico.
 
 ### Cambiado
 
@@ -13,12 +16,21 @@
 - `F5` guarda los ajustes pendientes antes de relanzar Spike, por lo que conserva el último tema seleccionado.
 - El encabezado de actividad en Logs usa el color configurable de títulos.
 - Ascendente usa el color `#8ec07c` en los temas Noche y Claro.
+- Los premades se identifican únicamente mediante puntos de colores pastel consistentes en la partida en vivo y sus detalles.
+- La caché del historial conserva hasta veinte marcadores normalizados y reutiliza los detalles ya descargados.
+- Cuando Riot oculta los PartyID enemigos en vivo, Spike infiere premades comparando la partida Ranked más reciente de los jugadores, igual que los trackers abiertos actuales.
+- La postpartida muestra el mismo marcador completo de jugadores y estadísticas que queda guardado en Historial.
+- La demo reproduce el marcador completo actual, los premades, veinte partidas y la misma transición entre Historial y postpartida.
 
 ### Corregido
 
 - El identificador de una partida terminada ya no retrasa ni contamina la carga de la siguiente partida.
 - Los amigos y otras presencias ajenas al roster ya no adelantan incorrectamente la detección de premades.
+- Las presencias antiguas marcadas como inválidas ya no producen grupos incorrectos.
 - La información de un five-stack se normaliza como un único grupo de cinco jugadores.
+- La selección de jugadores sigue el orden visual de aliados y enemigos sin saltos en Historial, postpartida y partida en vivo.
+- El tema seleccionado se guarda automáticamente y los ajustes pendientes terminan de guardarse antes de salir con `q` o `Ctrl+C`.
+- Ajustes ya no repite el bloque de privacidad y permite alcanzar **Paleta editable** con ↑/↓ para abrirla con Enter.
 
 ## [0.2.1] - 2026-08-31
 
