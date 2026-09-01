@@ -48,6 +48,19 @@ fn main() {
     };
     match command {
         Command::Dashboard { demo } => {
+            if !demo {
+                match terminal_profile::bootstrap_dashboard() {
+                    Ok(terminal_profile::DashboardBootstrap::Continue) => {}
+                    Ok(terminal_profile::DashboardBootstrap::Relaunched) => return,
+                    Err(error) => {
+                        eprintln!("No se pudo preparar Spike: {error}");
+                        eprintln!(
+                            "Comprueba tu conexión a Internet y vuelve a ejecutar el archivo."
+                        );
+                        std::process::exit(1);
+                    }
+                }
+            }
             let (config, config_warning) = if demo {
                 (Config::default(), None)
             } else {

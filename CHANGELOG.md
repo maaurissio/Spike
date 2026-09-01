@@ -1,9 +1,12 @@
 # Changelog
 
-## [0.3.0] - 2026-08-31
+## [0.3.0] - 2026-09-01
 
 ### Añadido
 
+- Preparación automática del primer arranque: Spike instala Windows Terminal, Fira Mono y su perfil Gruvbox antes de abrir el dashboard.
+- Fira Mono se distribuye dentro del ejecutable bajo la SIL Open Font License 1.1, sin depender de una descarga adicional.
+- Instalación alternativa desde el paquete estable oficial de Microsoft cuando WinGet no está disponible.
 - Detección completa de premades del roster en vivo, incluyendo grupos aliados, enemigos y five-stacks.
 - Espera dirigida por los jugadores de la partida para evitar que presencias ajenas oculten grupos reales.
 - Actualización progresiva y liviana de premades mientras Riot termina de publicar los grupos enemigos.
@@ -12,6 +15,7 @@
 
 ### Cambiado
 
+- Abrir `spike.exe` sin argumentos ahora repara los requisitos faltantes y se relanza automáticamente en el perfil **SPIKE** de Windows Terminal.
 - La observación del estado de VALORANT ahora funciona en un trabajador independiente y continúa mientras se cargan perfiles, historial o estadísticas.
 - `F5` guarda los ajustes pendientes antes de relanzar Spike, por lo que conserva el último tema seleccionado.
 - El encabezado de actividad en Logs usa el color configurable de títulos.

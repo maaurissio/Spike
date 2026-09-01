@@ -1,8 +1,10 @@
 use std::{
-    env, fs, io,
+    env, fs,
+    io::{self, Read},
     path::{Path, PathBuf},
-    process::Command,
-    time::SystemTime,
+    process::{Command, Stdio},
+    thread,
+    time::{Duration, SystemTime},
 };
 
 use serde_json::{Value, json};
@@ -10,7 +12,19 @@ use serde_json::{Value, json};
 const PROFILE_NAME: &str = "SPIKE";
 const SCHEME_NAME: &str = "SPIKE Gruvbox Dark";
 const FONT_NAME: &str = "Fira Mono";
+const FONT_REGISTRY_NAME: &str = "Fira Mono Regular (TrueType)";
 const PROFILE_GUID: &str = "{fae68b8f-fb8c-4e21-aec6-0d6fb610f080}";
+const TERMINAL_PACKAGE_ID: &str = "Microsoft.WindowsTerminal";
+const TERMINAL_RELEASES_API: &str =
+    "https://api.github.com/repos/microsoft/terminal/releases/latest";
+const MAX_TERMINAL_DOWNLOAD_BYTES: u64 = 150 * 1024 * 1024;
+const FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/FiraMono-Regular.ttf");
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DashboardBootstrap {
+    Continue,
+    Relaunched,
+}
 
 #[derive(Debug)]
 struct InstallationPaths {
@@ -71,6 +85,10 @@ fn terminal_executable() -> Option<PathBuf> {
         }
     }
 
+    if let Some(path) = terminal_from_appx_package() {
+        return Some(path);
+    }
+
     let windows_apps = env::var_os("ProgramFiles")
         .map(PathBuf::from)?
         .join("WindowsApps");
@@ -91,6 +109,244 @@ fn terminal_executable() -> Option<PathBuf> {
         .collect::<Vec<_>>();
     candidates.sort();
     candidates.pop()
+}
+
+fn terminal_from_appx_package() -> Option<PathBuf> {
+    let output = Command::new("powershell.exe")
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "(Get-AppxPackage -Name Microsoft.WindowsTerminal | Select-Object -First 1 -ExpandProperty InstallLocation)",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let location = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if location.is_empty() {
+        return None;
+    }
+    ["wt.exe", "WindowsTerminal.exe"]
+        .into_iter()
+        .map(|name| PathBuf::from(&location).join(name))
+        .find(|path| path.is_file())
+}
+
+fn executable_on_path(name: &str) -> Option<PathBuf> {
+    let output = Command::new("where.exe").arg(name).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .next()
+}
+
+fn wait_for_terminal() -> Option<PathBuf> {
+    for _ in 0..20 {
+        if let Some(terminal) = terminal_executable() {
+            return Some(terminal);
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    None
+}
+
+fn install_terminal_with_winget(winget: &Path) -> io::Result<()> {
+    println!("Windows Terminal no está instalado. Instalando con WinGet...");
+    let status = Command::new(winget)
+        .args([
+            "install",
+            "--id",
+            TERMINAL_PACKAGE_ID,
+            "--exact",
+            "--source",
+            "winget",
+            "--silent",
+            "--disable-interactivity",
+            "--accept-source-agreements",
+            "--accept-package-agreements",
+        ])
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "WinGet no pudo instalar Windows Terminal (código {})",
+            status.code().unwrap_or(-1)
+        )))
+    }
+}
+
+fn terminal_release_asset() -> io::Result<(String, String)> {
+    let response = reqwest::blocking::Client::new()
+        .get(TERMINAL_RELEASES_API)
+        .header(
+            reqwest::header::USER_AGENT,
+            format!("Spike/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .map_err(|error| io::Error::other(format!("no se pudo consultar GitHub: {error}")))?;
+    let release: Value = response
+        .json()
+        .map_err(|error| io::Error::other(format!("respuesta de GitHub inválida: {error}")))?;
+    select_terminal_release_asset(&release)
+        .ok_or_else(|| io::Error::other("la versión estable no incluye un paquete msixbundle"))
+}
+
+fn select_terminal_release_asset(release: &Value) -> Option<(String, String)> {
+    release["assets"].as_array().and_then(|assets| {
+        assets.iter().find_map(|asset| {
+            let name = asset["name"].as_str()?;
+            let url = asset["browser_download_url"].as_str()?;
+            (name.starts_with("Microsoft.WindowsTerminal_")
+                && name.ends_with("_8wekyb3d8bbwe.msixbundle"))
+            .then(|| (name.to_owned(), url.to_owned()))
+        })
+    })
+}
+
+fn install_terminal_from_official_release() -> io::Result<()> {
+    println!("WinGet no está disponible. Descargando Windows Terminal desde Microsoft...");
+    let (name, url) = terminal_release_asset()?;
+    let package = env::temp_dir().join(format!("spike-{}-{name}", std::process::id()));
+    let result = (|| {
+        let response = reqwest::blocking::Client::new()
+            .get(url)
+            .header(
+                reqwest::header::USER_AGENT,
+                format!("Spike/{}", env!("CARGO_PKG_VERSION")),
+            )
+            .send()
+            .and_then(reqwest::blocking::Response::error_for_status)
+            .map_err(|error| {
+                io::Error::other(format!("no se pudo descargar Windows Terminal: {error}"))
+            })?;
+        if response
+            .content_length()
+            .is_some_and(|size| size > MAX_TERMINAL_DOWNLOAD_BYTES)
+        {
+            return Err(io::Error::other(
+                "el paquete de Windows Terminal supera el límite permitido",
+            ));
+        }
+        let mut source = response.take(MAX_TERMINAL_DOWNLOAD_BYTES + 1);
+        let mut destination = fs::File::create(&package)?;
+        let copied = io::copy(&mut source, &mut destination)?;
+        if copied > MAX_TERMINAL_DOWNLOAD_BYTES {
+            return Err(io::Error::other(
+                "el paquete de Windows Terminal supera el límite permitido",
+            ));
+        }
+
+        let escaped = package.to_string_lossy().replace('\'', "''");
+        let script = format!("Add-AppxPackage -LiteralPath '{escaped}'");
+        let status = Command::new("powershell.exe")
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &script,
+            ])
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!(
+                "Windows no pudo instalar el paquete oficial (código {})",
+                status.code().unwrap_or(-1)
+            )))
+        }
+    })();
+    let _ = fs::remove_file(package);
+    result
+}
+
+fn ensure_windows_terminal() -> io::Result<()> {
+    if terminal_executable().is_some() {
+        return Ok(());
+    }
+    if let Some(winget) = executable_on_path("winget.exe") {
+        if let Err(error) = install_terminal_with_winget(&winget) {
+            eprintln!("WinGet no completó la instalación ({error}). Probando descarga oficial...");
+            install_terminal_from_official_release()?;
+        }
+    } else {
+        install_terminal_from_official_release()?;
+    }
+    wait_for_terminal().map(|_| ()).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "Windows Terminal se instaló, pero wt.exe todavía no está disponible; inicia sesión de nuevo y ejecuta Spike",
+        )
+    })
+}
+
+fn font_registered(path: &Path) -> bool {
+    let Ok(output) = Command::new("reg.exe")
+        .args([
+            "query",
+            r"HKCU\Software\Microsoft\Windows NT\CurrentVersion\Fonts",
+        ])
+        .output()
+    else {
+        return false;
+    };
+    output.status.success()
+        && String::from_utf8_lossy(&output.stdout)
+            .to_ascii_lowercase()
+            .contains(&path.to_string_lossy().to_ascii_lowercase())
+}
+
+fn font_ready(path: &Path) -> bool {
+    path.is_file() && fs::read(path).is_ok_and(|bytes| bytes == FONT_BYTES) && font_registered(path)
+}
+
+fn install_font(path: &Path) -> io::Result<()> {
+    if font_ready(path) {
+        return Ok(());
+    }
+    if !path.is_file() || !fs::read(path).is_ok_and(|bytes| bytes == FONT_BYTES) {
+        println!("Instalando {FONT_NAME} para el usuario actual...");
+        let parent = path
+            .parent()
+            .ok_or_else(|| io::Error::other("ruta de fuente inválida"))?;
+        fs::create_dir_all(parent)?;
+        fs::write(path, FONT_BYTES)?;
+    }
+    let status = Command::new("reg.exe")
+        .args([
+            "add",
+            r"HKCU\Software\Microsoft\Windows NT\CurrentVersion\Fonts",
+            "/v",
+            FONT_REGISTRY_NAME,
+            "/t",
+            "REG_SZ",
+            "/d",
+            &path.to_string_lossy(),
+            "/f",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "Windows no pudo registrar {FONT_NAME} (código {})",
+            status.code().unwrap_or(-1)
+        )))
+    }
 }
 
 fn profile(executable: &str) -> Value {
@@ -249,21 +505,11 @@ fn settings_profile_installed(path: &Path) -> bool {
 }
 
 pub fn install() -> io::Result<String> {
-    if terminal_executable().is_none() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "Windows Terminal no está instalado o wt.exe no está disponible",
-        ));
-    }
+    ensure_windows_terminal()?;
     let paths = paths()?;
-    if !paths.font.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "Fira Mono no está instalada para este usuario",
-        ));
-    }
+    install_font(&paths.font)?;
     let current = env::current_exe()?;
-    if current != paths.executable {
+    if !same_executable(&current, &paths.executable) {
         let parent = paths
             .executable
             .parent()
@@ -286,10 +532,43 @@ pub fn status() -> io::Result<String> {
     Ok(format!(
         "Windows Terminal: {}\nFira Mono: {}\nPerfil SPIKE: {}\nEjecutable instalado: {}",
         available(terminal_executable().is_some()),
-        available(paths.font.is_file()),
-        available(paths.fragment.is_file() && settings_profile_installed(&paths.settings)),
+        available(font_ready(&paths.font)),
+        available(paths.fragment.is_file() || settings_profile_installed(&paths.settings)),
         available(paths.executable.is_file())
     ))
+}
+
+fn same_executable(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+/// Prepara silenciosamente el entorno del dashboard en ejecuciones posteriores.
+/// En el primer arranque instala los requisitos, crea el perfil y relanza Spike
+/// dentro de Windows Terminal. El proceso relanzado continúa hacia la TUI.
+pub fn bootstrap_dashboard() -> io::Result<DashboardBootstrap> {
+    let paths = paths()?;
+    let current = env::current_exe()?;
+    let already_in_profile = env::var_os("WT_SESSION").is_some()
+        && paths.executable.is_file()
+        && same_executable(&current, &paths.executable);
+
+    if already_in_profile {
+        // Repara recursos eliminados sin abrir una segunda pestaña.
+        ensure_windows_terminal()?;
+        install_font(&paths.font)?;
+        if !paths.fragment.is_file() {
+            write_fragment(&paths.fragment, &paths.executable)?;
+            refresh_terminal_settings();
+        }
+        return Ok(DashboardBootstrap::Continue);
+    }
+
+    install()?;
+    launch()?;
+    Ok(DashboardBootstrap::Relaunched)
 }
 
 pub fn launch() -> io::Result<String> {
@@ -347,5 +626,30 @@ mod tests {
         assert_eq!(profile["scrollbarState"], "hidden");
         assert_eq!(fragment["schemes"][0]["background"], "#282828");
         assert_eq!(fragment["schemes"][0]["brightYellow"], "#FABD2F");
+        assert!(FONT_BYTES.starts_with(&[0, 1, 0, 0]));
+    }
+
+    #[test]
+    fn selects_only_the_stable_terminal_bundle() {
+        let release = json!({
+            "assets": [
+                {
+                    "name": "Microsoft.WindowsTerminal_1.0_8wekyb3d8bbwe.msixbundle_Windows10_PreinstallKit.zip",
+                    "browser_download_url": "https://example.invalid/preinstall.zip"
+                },
+                {
+                    "name": "Microsoft.WindowsTerminal_1.0_8wekyb3d8bbwe.msixbundle",
+                    "browser_download_url": "https://github.com/microsoft/terminal/releases/download/v1.0/terminal.msixbundle"
+                }
+            ]
+        });
+        assert_eq!(
+            select_terminal_release_asset(&release),
+            Some((
+                "Microsoft.WindowsTerminal_1.0_8wekyb3d8bbwe.msixbundle".into(),
+                "https://github.com/microsoft/terminal/releases/download/v1.0/terminal.msixbundle"
+                    .into()
+            ))
+        );
     }
 }

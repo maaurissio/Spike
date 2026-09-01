@@ -61,21 +61,19 @@ Por ahora Spike se ejecuta desde el código fuente en Windows.
 - Windows 10 u 11.
 - [Rust](https://www.rust-lang.org/tools/install) estable con Cargo.
 - VALORANT y Riot Client para consultar datos locales reales.
-- [Windows Terminal](https://apps.microsoft.com/detail/9n0dx20hk701) instalado.
-- [Fira Mono](https://fonts.google.com/specimen/Fira+Mono) instalada para el usuario actual.
+- Conexión a Internet durante el primer arranque si falta Windows Terminal.
 
 > [!IMPORTANT]
-> **Windows Terminal y Fira Mono son requisitos obligatorios de Spike.** La interfaz está diseñada, probada y distribuida únicamente con ese perfil. No se admite ni documenta la ejecución en la consola clásica de Windows ni con otra fuente.
+> **Windows Terminal y Fira Mono son requisitos obligatorios de Spike, pero el ejecutable los prepara automáticamente.** La interfaz está diseñada, probada y distribuida únicamente con ese perfil. No se admite ni documenta la ejecución en la consola clásica de Windows ni con otra fuente.
 
 ```powershell
 git clone https://github.com/maaurissio/Spike.git
 Set-Location Spike
 cargo build --release
-.\target\release\spike.exe terminal install
-.\target\release\spike.exe terminal launch
+.\target\release\spike.exe
 ```
 
-`terminal install` verifica ambos requisitos, instala el perfil aislado **SPIKE**, aplica Gruvbox y copia el ejecutable a `%LOCALAPPDATA%\Spike`. Si falta Windows Terminal o Fira Mono, se detiene con un error claro: instálalos antes de continuar.
+En el primer arranque, Spike detecta el entorno y realiza por sí solo lo necesario: instala Windows Terminal mediante WinGet —o desde el paquete estable oficial de Microsoft si WinGet no está disponible—, instala Fira Mono para el usuario actual, crea el perfil aislado **SPIKE**, aplica Gruvbox y copia el ejecutable a `%LOCALAPPDATA%\Spike`. Después se relanza dentro de ese perfil. Los siguientes arranques reutilizan la instalación existente.
 
 Para comprobar que el entorno quedó correcto:
 
@@ -110,6 +108,8 @@ La instalación crea un perfil separado llamado **SPIKE** sin modificar los dem�
 .\target\release\spike.exe terminal install
 .\target\release\spike.exe terminal launch
 ```
+
+Estos comandos siguen disponibles para reparar o relanzar el perfil manualmente, aunque no son necesarios durante el uso normal.
 
 Para comprobarlo o quitarlo:
 
