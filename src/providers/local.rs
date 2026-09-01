@@ -5,7 +5,7 @@
 //! observar metadatos de eventos; sus payloads se descartan.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::TcpStream,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -227,10 +227,18 @@ impl LocalClientSource {
     fn set_event_phase(&self, phase: GamePhase, match_id: Option<String>) {
         if let Ok(mut current) = self.event_phase.lock() {
             let previous_match_id = current.as_ref().and_then(|event| event.match_id.clone());
+            // El identificador anterior solo pertenece al resumen postpartida.
+            // Conservarlo en Lobby/PreGame podía hacer que la siguiente carga
+            // consultara durante unos segundos la partida que ya terminó.
+            let match_id = if phase == GamePhase::PostMatch {
+                match_id.or(previous_match_id)
+            } else {
+                match_id
+            };
             *current = Some(EventPhase {
                 phase,
                 observed_at: Instant::now(),
-                match_id: match_id.or(previous_match_id),
+                match_id,
             });
         }
     }
@@ -533,22 +541,10 @@ impl LocalClientSource {
         )?;
         let mut queue = self.current_queue(&session, &tokens).ok().flatten();
         let mut party_ids = HashMap::new();
-        // Presence puede tardar unos instantes en incorporar a todos los
-        // participantes después de entrar a Agent Select/Current Game. Las
-        // consultas son locales, acotadas y se combinan sin persistir PartyID.
-        let expected_presences = if phase == GamePhase::InMatch { 10 } else { 5 };
-        for attempt in 0..5 {
-            if let Ok(payload) = self.json_from(&lockfile, PRESENCES_ENDPOINT) {
-                party_ids.extend(presence_party_ids(&payload));
-                if queue.is_none() {
-                    queue = presence_queue(&payload, &session.own_puuid);
-                }
-            }
-            if party_ids.len() >= expected_presences && queue.is_some() {
-                break;
-            }
-            if attempt < 4 {
-                thread::sleep(Duration::from_millis(200));
+        if let Ok(payload) = self.json_from(&lockfile, PRESENCES_ENDPOINT) {
+            party_ids.extend(presence_party_ids(&payload));
+            if queue.is_none() {
+                queue = presence_queue(&payload, &session.own_puuid);
             }
         }
         Ok(LiveMatchRequest {
@@ -563,6 +559,36 @@ impl LocalClientSource {
             phase,
             party_ids,
         })
+    }
+
+    /// Espera únicamente las presencias del roster real. Contar todas las
+    /// presencias del cliente incluía amigos ajenos a la partida y terminaba la
+    /// espera antes de recibir los grupos aliados y enemigos.
+    pub(crate) fn live_party_ids(&self, subjects: &[String]) -> HashMap<String, String> {
+        let expected = subjects
+            .iter()
+            .filter(|subject| !subject.is_empty())
+            .cloned()
+            .collect::<HashSet<_>>();
+        if expected.is_empty() {
+            return HashMap::new();
+        }
+        let Ok(lockfile) = self.read_lockfile() else {
+            return HashMap::new();
+        };
+        let mut parties = HashMap::new();
+        for attempt in 0..10 {
+            if let Ok(payload) = self.json_from(&lockfile, PRESENCES_ENDPOINT) {
+                parties.extend(relevant_party_ids(&payload, &expected));
+            }
+            if expected.iter().all(|subject| parties.contains_key(subject)) {
+                break;
+            }
+            if attempt < 9 {
+                thread::sleep(Duration::from_millis(250));
+            }
+        }
+        parties
     }
 
     /// Construye una solicitud acotada para el historial del jugador autenticado.
@@ -922,6 +948,13 @@ fn presence_party_ids(payload: &Value) -> HashMap<String, String> {
             })?;
             Some((subject.to_owned(), party.to_owned()))
         })
+        .collect()
+}
+
+fn relevant_party_ids(payload: &Value, expected: &HashSet<String>) -> HashMap<String, String> {
+    presence_party_ids(payload)
+        .into_iter()
+        .filter(|(subject, _)| expected.contains(subject))
         .collect()
 }
 
@@ -1303,6 +1336,19 @@ mod tests {
     }
 
     #[test]
+    fn clears_previous_match_id_before_the_next_match() {
+        let source = LocalClientSource::with_lockfile_path(Some(PathBuf::from("unused")));
+        source.set_event_phase(GamePhase::InMatch, Some("match-1".into()));
+        source.set_event_phase(GamePhase::PostMatch, None);
+        source.set_event_phase(GamePhase::Lobby, None);
+        source.set_event_phase(GamePhase::PreGame, None);
+
+        assert_eq!(source.event_match_id(), None);
+        source.set_event_phase(GamePhase::AgentSelect, Some("match-2".into()));
+        assert_eq!(source.event_match_id().as_deref(), Some("match-2"));
+    }
+
+    #[test]
     fn active_probe_recovers_a_match_when_websocket_started_late() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1505,6 +1551,25 @@ mod tests {
             Some("party-b")
         );
         assert!(!parties.contains_key("missing"));
+    }
+
+    #[test]
+    fn ignores_unrelated_presences_when_waiting_for_match_parties() {
+        let expected = HashSet::from(["ally".to_owned(), "enemy".to_owned()]);
+        let payload = serde_json::json!({
+            "presences": [
+                {"puuid":"friend-1", "private":{"partyId":"outside-a"}},
+                {"puuid":"friend-2", "private":{"partyId":"outside-b"}},
+                {"puuid":"ally", "private":{"partyId":"match-a"}}
+            ]
+        });
+
+        let parties = relevant_party_ids(&payload, &expected);
+
+        assert_eq!(parties.len(), 1);
+        assert_eq!(parties.get("ally").map(String::as_str), Some("match-a"));
+        assert!(!parties.contains_key("friend-1"));
+        assert!(!expected.iter().all(|subject| parties.contains_key(subject)));
     }
 
     #[test]

@@ -307,7 +307,9 @@ fn fetch_live_match_once(
 ) -> Option<LiveMatchContext> {
     local
         .live_match_request(phase)
-        .and_then(|request| source.fetch(&request))
+        .and_then(|request| {
+            source.fetch_with_party_lookup(&request, |subjects| local.live_party_ids(subjects))
+        })
         .ok()
 }
 

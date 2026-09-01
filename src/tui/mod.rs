@@ -705,6 +705,15 @@ impl App {
                         "No se pudo guardar la configuración"
                     },
                 );
+                if self.restart_requested {
+                    if succeeded {
+                        self.should_quit = true;
+                    } else {
+                        // No relanzar con un tema distinto al que el usuario
+                        // acaba de elegir si el guardado falló.
+                        self.restart_requested = false;
+                    }
+                }
             }
         }
         self.dirty = true;
@@ -779,6 +788,32 @@ impl App {
         }
         match key.code {
             KeyCode::F(5) => {
+                if self.settings.saving {
+                    // El Reply::Saved completará el relanzamiento sin perder
+                    // el tema que ya está en proceso de guardado.
+                    self.restart_requested = true;
+                    return;
+                }
+                if let Some(config) = self.settings.to_save() {
+                    let result = crate::config::save(&config).map(|_| config).map_err(|_| ());
+                    let succeeded = result.is_ok();
+                    self.settings.saved(result);
+                    self.push_log(
+                        if succeeded {
+                            LogLevel::Success
+                        } else {
+                            LogLevel::Warning
+                        },
+                        if succeeded {
+                            "Configuración guardada antes de reiniciar"
+                        } else {
+                            "No se pudo guardar; reinicio cancelado"
+                        },
+                    );
+                    if !succeeded {
+                        return;
+                    }
+                }
                 self.restart_requested = true;
                 self.should_quit = true;
             }
@@ -1473,6 +1508,23 @@ mod tests {
         app.key(KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE), &worker);
         assert!(app.should_quit);
         assert!(app.restart_requested);
+    }
+
+    #[test]
+    fn f5_waits_for_an_in_flight_theme_save_before_restarting() {
+        let worker = Worker::demo().unwrap();
+        let mut app = App::new(&Config::default());
+        app.settings.draft.theme = crate::config::Theme::Light;
+        app.settings.saving = true;
+
+        app.key(KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE), &worker);
+        assert!(app.restart_requested);
+        assert!(!app.should_quit);
+
+        let saved = app.settings.draft.clone();
+        app.apply(Reply::Saved(Ok(saved)));
+        assert!(app.should_quit);
+        assert_eq!(app.settings.active.theme, crate::config::Theme::Light);
     }
 
     #[test]

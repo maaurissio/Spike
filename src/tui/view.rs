@@ -1914,7 +1914,7 @@ fn render_activity(frame: &mut ratatui::Frame<'_>, area: Rect, palette: Palette,
                 .border_style(palette.border)
                 .title(Line::styled(
                     " ACTIVIDAD · MÁS RECIENTE PRIMERO ",
-                    palette.focus,
+                    palette.title,
                 )),
         ),
         area,

@@ -70,6 +70,7 @@ pub(super) enum Reply {
 
 pub(super) struct Worker {
     requests: SyncSender<Request>,
+    observations: Option<SyncSender<Request>>,
     replies: Receiver<Reply>,
     stop: Arc<AtomicBool>,
 }
@@ -99,12 +100,18 @@ impl Worker {
     }
 
     pub fn start() -> io::Result<Self> {
-        let mut sources = None;
-        Self::spawn_with_progress(move |request, stop, progress| {
-            sources
-                .get_or_insert_with(Sources::new)
-                .handle(request, stop, progress)
-        })
+        let local = LocalClientSource::new();
+        local.start_event_listener();
+        let mut data_sources = Some(Sources::with_local(local.clone()));
+        let mut observer = ObserverSources::new(local);
+        Self::spawn_split(
+            move |request, stop, progress| {
+                data_sources
+                    .get_or_insert_with(Sources::new)
+                    .handle(request, stop, progress)
+            },
+            move |request, stop| observer.handle(request, stop),
+        )
     }
 
     pub(super) fn spawn(
@@ -138,6 +145,57 @@ impl Worker {
             })?;
         Ok(Self {
             requests,
+            observations: None,
+            replies,
+            stop,
+        })
+    }
+
+    fn spawn_split(
+        mut handle_data: impl FnMut(Request, &AtomicBool, &mut dyn FnMut(Reply)) -> Reply
+        + Send
+        + 'static,
+        mut handle_observation: impl FnMut(Request, &AtomicBool) -> Reply + Send + 'static,
+    ) -> io::Result<Self> {
+        let (requests, incoming) = mpsc::sync_channel(4);
+        let (observations, observed) = mpsc::sync_channel(1);
+        let (outgoing, replies) = mpsc::sync_channel(16);
+        let stop = Arc::new(AtomicBool::new(false));
+        let data_stopped = Arc::clone(&stop);
+        let data_outgoing = outgoing.clone();
+        thread::Builder::new()
+            .name("spike-tui-data".into())
+            .spawn(move || {
+                while let Ok(request) = incoming.recv() {
+                    if data_stopped.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let mut progress = |reply| {
+                        let _ = data_outgoing.send(reply);
+                    };
+                    let reply = handle_data(request, &data_stopped, &mut progress);
+                    if data_stopped.load(Ordering::Acquire) || data_outgoing.send(reply).is_err() {
+                        break;
+                    }
+                }
+            })?;
+        let observe_stopped = Arc::clone(&stop);
+        thread::Builder::new()
+            .name("spike-tui-observer".into())
+            .spawn(move || {
+                while let Ok(request) = observed.recv() {
+                    if observe_stopped.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let reply = handle_observation(request, &observe_stopped);
+                    if observe_stopped.load(Ordering::Acquire) || outgoing.send(reply).is_err() {
+                        break;
+                    }
+                }
+            })?;
+        Ok(Self {
+            requests,
+            observations: Some(observations),
             replies,
             stop,
         })
@@ -145,6 +203,11 @@ impl Worker {
 
     /// Nunca bloquea la lectura de teclas, incluso si se llena la cola.
     pub fn submit(&self, request: Request) -> bool {
+        if matches!(request, Request::Observe { .. })
+            && let Some(observations) = &self.observations
+        {
+            return observations.try_send(request).is_ok();
+        }
         self.requests.try_send(request).is_ok()
     }
 
@@ -179,6 +242,11 @@ impl Sources {
         if !simulation {
             local.start_event_listener();
         }
+        Self::with_local(local)
+    }
+
+    fn with_local(local: LocalClientSource) -> Self {
+        let simulation = std::env::var_os("SPIKE_STATE").is_some();
         Self {
             local,
             simulation,
@@ -263,7 +331,12 @@ impl Sources {
                     percent: 45,
                     label: "Partida detectada",
                 });
-                let context = self.live.fetch(&request).map_err(|_| ())?;
+                let context = self
+                    .live
+                    .fetch_with_party_lookup(&request, |subjects| {
+                        self.local.live_party_ids(subjects)
+                    })
+                    .map_err(|_| ())?;
                 progress(Reply::ContextProgress {
                     generation,
                     percent: 90,
@@ -392,6 +465,47 @@ impl Sources {
     }
 }
 
+struct ObserverSources {
+    local: LocalClientSource,
+    process: ProcessGameStateSource,
+    watcher: Watcher,
+    simulation: bool,
+}
+
+impl ObserverSources {
+    fn new(local: LocalClientSource) -> Self {
+        Self {
+            local,
+            process: ProcessGameStateSource::new(),
+            watcher: Watcher::default(),
+            simulation: std::env::var_os("SPIKE_STATE").is_some(),
+        }
+    }
+
+    fn handle(&mut self, request: Request, _stop: &AtomicBool) -> Reply {
+        let Request::Observe { log } = request else {
+            unreachable!("el observador solo recibe consultas de estado")
+        };
+        let state = if self.simulation {
+            self.process.fetch()
+        } else {
+            resolve_with_fallback(&self.local, &self.process)
+        };
+        let mut log_failed = false;
+        if let Ok(info) = &state
+            && let Some(transition) = self.watcher.observe(info)
+            && log
+            && !self.simulation
+        {
+            log_failed = log_transition(&transition).is_err();
+        }
+        Reply::Observed {
+            state: state.map_err(|_| ()),
+            log_failed,
+        }
+    }
+}
+
 fn history_cache_path() -> Option<std::path::PathBuf> {
     config::config_path().map(|path| path.with_file_name("history-cache.json"))
 }
@@ -481,5 +595,37 @@ mod tests {
         ended_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         // El manejador se destruye sin ejecutar las cuatro consultas pendientes.
         assert!(started_rx.recv_timeout(Duration::from_secs(2)).is_err());
+    }
+
+    #[test]
+    fn observation_is_not_blocked_by_slow_data_loading() {
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker = Worker::spawn_split(
+            move |_, _, _| {
+                started_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                Reply::History {
+                    epoch: 0,
+                    data: Ok(vec![]),
+                }
+            },
+            move |_, _| Reply::Observed {
+                state: Err(()),
+                log_failed: false,
+            },
+        )
+        .unwrap();
+
+        assert!(worker.submit(Request::History { epoch: 0 }));
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(worker.submit(Request::Observe { log: false }));
+        assert!(matches!(
+            worker.replies.recv_timeout(Duration::from_secs(2)),
+            Ok(Reply::Observed { .. })
+        ));
+
+        drop(worker);
+        release_tx.send(()).unwrap();
     }
 }

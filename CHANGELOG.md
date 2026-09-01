@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.3.0] - 2026-08-31
+
+### Añadido
+
+- Detección completa de premades del roster en vivo, incluyendo grupos aliados, enemigos y five-stacks.
+- Espera dirigida por los jugadores de la partida para evitar que presencias ajenas oculten grupos reales.
+
+### Cambiado
+
+- La observación del estado de VALORANT ahora funciona en un trabajador independiente y continúa mientras se cargan perfiles, historial o estadísticas.
+- `F5` guarda los ajustes pendientes antes de relanzar Spike, por lo que conserva el último tema seleccionado.
+- El encabezado de actividad en Logs usa el color configurable de títulos.
+- Ascendente usa el color `#8ec07c` en los temas Noche y Claro.
+
+### Corregido
+
+- El identificador de una partida terminada ya no retrasa ni contamina la carga de la siguiente partida.
+- Los amigos y otras presencias ajenas al roster ya no adelantan incorrectamente la detección de premades.
+- La información de un five-stack se normaliza como un único grupo de cinco jugadores.
+
 ## [0.2.1] - 2026-08-31
 
 ### Añadido
@@ -46,6 +66,7 @@
 - Operación de solo lectura: no se lee memoria del juego, no se inyecta código ni se automatizan controles.
 - No se guardan credenciales de sesión; se respetan datos ausentes e identidades ocultas.
 
+[0.3.0]: https://github.com/maaurissio/Spike/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/maaurissio/Spike/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/maaurissio/Spike/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/maaurissio/Spike/releases/tag/v0.1.0

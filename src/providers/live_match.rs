@@ -49,9 +49,10 @@ impl LiveMatchSource {
         }
     }
 
-    pub(crate) fn fetch(
+    pub(crate) fn fetch_with_party_lookup(
         &self,
         request: &LiveMatchRequest,
+        lookup: impl FnOnce(&[String]) -> HashMap<String, String>,
     ) -> Result<LiveMatchContext, ProviderError> {
         let endpoint = if matches!(request.phase, GamePhase::PreGame | GamePhase::AgentSelect) {
             "pregame"
@@ -77,10 +78,12 @@ impl LiveMatchSource {
                     .json::<Value>()
                     .map_err(|_| ProviderError::Parse("JSON inválido en partida actual".into()))?;
                 let players = roster_players(&payload, &request.own_puuid);
-                let names = self
-                    .fetch_visible_names(request, &players)
-                    .unwrap_or_default();
                 let subjects = roster_subjects(&players);
+                let mut party_ids = request.party_ids.clone();
+                party_ids.extend(lookup(&subjects));
+                let names = self
+                    .fetch_visible_names(request, &players, &party_ids)
+                    .unwrap_or_default();
                 let stats_request = RosterStatsRequest {
                     shard: request.shard.clone(),
                     client_version: request.client_version.clone(),
@@ -96,7 +99,7 @@ impl LiveMatchSource {
                     &stats,
                     queue.as_deref(),
                     request.phase,
-                    &request.party_ids,
+                    &party_ids,
                 )
             }
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
@@ -115,6 +118,7 @@ impl LiveMatchSource {
         &self,
         request: &LiveMatchRequest,
         players: &[Value],
+        party_ids: &HashMap<String, String>,
     ) -> Result<HashMap<String, String>, ProviderError> {
         let subjects = players
             .iter()
@@ -129,7 +133,7 @@ impl LiveMatchSource {
                     .unwrap_or(false);
                 !hidden
                     || subject == request.own_puuid.as_str()
-                    || same_own_party(&request.party_ids, &request.own_puuid, subject)
+                    || same_own_party(party_ids, &request.own_puuid, subject)
             })
             .filter_map(|player| player.get("Subject").and_then(Value::as_str))
             .filter(|subject| !subject.is_empty())
@@ -807,6 +811,39 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_a_full_five_stack_as_one_premade() {
+        let players = (1..=5)
+            .map(|slot| {
+                serde_json::json!({
+                    "Subject": format!("ally-{slot}"),
+                    "TeamID": "Blue",
+                    "PlayerIdentity": {"AccountLevel": 100 + slot}
+                })
+            })
+            .collect::<Vec<_>>();
+        let parties = (1..=5)
+            .map(|slot| (format!("ally-{slot}"), "five-stack".to_owned()))
+            .collect::<HashMap<_, _>>();
+
+        let roster = normalize_roster(
+            &players,
+            "ally-1",
+            &HashMap::new(),
+            &HashMap::new(),
+            true,
+            &parties,
+        )
+        .unwrap();
+
+        assert_eq!(roster.allies().count(), 5);
+        assert!(
+            roster.players.iter().all(|player| {
+                player.premade == DataAvailability::Available("Grupo A".to_owned())
+            })
+        );
+    }
+
+    #[test]
     fn resolves_internal_map_names_to_public_labels() {
         assert_eq!(asset_label("/Game/Maps/Juliett/Juliett"), "Sunset");
         assert_eq!(asset_label("/Game/Maps/Triad/Triad"), "Haven");
@@ -910,7 +947,7 @@ mod tests {
             {"Subject":"hidden-enemy", "PlayerIdentity":{"Incognito":true}}
         ]);
         let names = source
-            .fetch_visible_names(&request, players.as_array().unwrap())
+            .fetch_visible_names(&request, players.as_array().unwrap(), &request.party_ids)
             .unwrap();
 
         assert_eq!(names.get("visible").map(String::as_str), Some("Nombre#LAS"));

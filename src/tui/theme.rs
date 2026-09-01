@@ -503,13 +503,8 @@ impl Palette {
             value if value.starts_with("diamante") || value.starts_with("dia") => {
                 Color::Rgb(131, 165, 152)
             }
-            value
-                if (value.starts_with("ascendente") || value.starts_with("asc")) && light_theme =>
-            {
-                Color::Rgb(121, 116, 14)
-            }
             value if value.starts_with("ascendente") || value.starts_with("asc") => {
-                Color::Rgb(184, 187, 38)
+                Color::Rgb(142, 192, 124)
             }
             value if (value.starts_with("inmortal") || value.starts_with("inm")) && light_theme => {
                 Color::Rgb(143, 63, 113)
@@ -555,7 +550,7 @@ mod tests {
 
         assert_eq!(
             palette.rank_style("Ascendente 2").fg,
-            Some(Color::Rgb(184, 187, 38))
+            Some(Color::Rgb(142, 192, 124))
         );
         assert_eq!(
             palette.rank_style("Diamante 2").fg,
@@ -568,6 +563,10 @@ mod tests {
         assert_eq!(
             palette.rank_style("ASC2").fg,
             palette.rank_style("Ascendente 2").fg
+        );
+        assert_eq!(
+            Palette::new(Theme::Light).rank_style("Ascendente 2").fg,
+            Some(Color::Rgb(142, 192, 124))
         );
     }
 
