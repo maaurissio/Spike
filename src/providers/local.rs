@@ -934,12 +934,12 @@ fn presence_party_ids(payload: &Value) -> HashMap<String, String> {
                 return None;
             }
             let party = [
-                "/partyId",
-                "/partyID",
-                "/PartyID",
                 "/partyPresenceData/partyId",
                 "/partyPresenceData/partyID",
                 "/partyPresenceData/PartyID",
+                "/partyId",
+                "/partyID",
+                "/PartyID",
             ]
             .iter()
             .find_map(|path| decoded.pointer(path).and_then(Value::as_str))
@@ -1539,6 +1539,7 @@ mod tests {
                 {"puuid":"two", "private":"{\"partyId\":\"party-a\"}"},
                 {"puuid":"enemy-one", "private":{"partyPresenceData":{"partyId":"party-b","partySize":2}}},
                 {"puuid":"enemy-two", "private":"{\"partyPresenceData\":{\"partyId\":\"party-b\"}}"},
+                {"puuid":"conflict", "private":{"partyId":"whole-team","partyPresenceData":{"partyId":"real-trio"}}},
                 {"puuid":"stale", "private":{"isValid":false,"partyId":"party-stale"}},
                 {"puuid":"missing", "private":"not-json"}
             ]
@@ -1553,6 +1554,10 @@ mod tests {
         assert_eq!(
             parties.get("enemy-two").map(String::as_str),
             Some("party-b")
+        );
+        assert_eq!(
+            parties.get("conflict").map(String::as_str),
+            Some("real-trio")
         );
         assert!(!parties.contains_key("missing"));
         assert!(!parties.contains_key("stale"));

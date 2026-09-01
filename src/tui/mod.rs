@@ -705,7 +705,10 @@ impl App {
                                 &premade,
                                 DataAvailability::Available(label) if label.starts_with("Grupo ")
                             );
-                            if refreshed_group || !inferred_group {
+                            // Una respuesta completa de Presence es autoritativa,
+                            // incluso cuando confirma que el jugador está Solo.
+                            // Si aún es parcial, solo sustituye grupos confirmados.
+                            if complete || refreshed_group || !inferred_group {
                                 player.premade = premade;
                             }
                         }

@@ -22,7 +22,7 @@
 - Ascendente usa el color `#8ec07c` en los temas Noche y Claro.
 - Los premades se identifican únicamente mediante puntos de colores pastel consistentes en la partida en vivo y sus detalles.
 - La caché del historial conserva hasta veinte marcadores normalizados y reutiliza los detalles ya descargados.
-- Cuando Riot oculta los PartyID enemigos en vivo, Spike infiere premades comparando la partida Ranked más reciente de los jugadores, igual que los trackers abiertos actuales.
+- Cuando Riot oculta los PartyID enemigos en vivo, Spike contrasta el último resultado Ranked terminado y exige que los jugadores compartieran el mismo PartyID real antes de mostrarlos como premade.
 - La postpartida muestra el mismo marcador completo de jugadores y estadísticas que queda guardado en Historial.
 - La demo reproduce el marcador completo actual, los premades, veinte partidas y la misma transición entre Historial y postpartida.
 
@@ -31,6 +31,9 @@
 - El identificador de una partida terminada ya no retrasa ni contamina la carga de la siguiente partida.
 - Los amigos y otras presencias ajenas al roster ya no adelantan incorrectamente la detección de premades.
 - Las presencias antiguas marcadas como inválidas ya no producen grupos incorrectos.
+- La partida activa se excluye de la inferencia de premades para que sus diez participantes no se confundan con compañeros de cola.
+- La estructura anidada actual de Presence tiene prioridad sobre los campos planos antiguos, evitando mezclar el premade propio con otro grupo del equipo.
+- Una actualización completa de Presence reemplaza correctamente las estimaciones provisionales, incluso cuando confirma que un jugador está solo.
 - La información de un five-stack se normaliza como un único grupo de cinco jugadores.
 - La selección de jugadores sigue el orden visual de aliados y enemigos sin saltos en Historial, postpartida y partida en vivo.
 - El tema seleccionado se guarda automáticamente y los ajustes pendientes terminan de guardarse antes de salir con `q` o `Ctrl+C`.
