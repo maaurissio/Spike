@@ -26,6 +26,13 @@ pub enum DashboardBootstrap {
     Relaunched,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BootstrapPlan {
+    Continue,
+    RepairAndContinue,
+    InstallAndRelaunch,
+}
+
 #[derive(Debug)]
 struct InstallationPaths {
     fragment: PathBuf,
@@ -273,7 +280,7 @@ fn install_terminal_from_official_release() -> io::Result<()> {
 }
 
 fn ensure_windows_terminal() -> io::Result<()> {
-    if terminal_executable().is_some() {
+    if env::var_os("WT_SESSION").is_some() || terminal_executable().is_some() {
         return Ok(());
     }
     if let Some(winget) = executable_on_path("winget.exe") {
@@ -545,30 +552,50 @@ fn same_executable(left: &Path, right: &Path) -> bool {
     }
 }
 
-/// Prepara silenciosamente el entorno del dashboard en ejecuciones posteriores.
-/// En el primer arranque instala los requisitos, crea el perfil y relanza Spike
-/// dentro de Windows Terminal. El proceso relanzado continúa hacia la TUI.
+fn bootstrap_plan(
+    running_in_terminal: bool,
+    dependencies_ready: bool,
+    installation_ready: bool,
+) -> BootstrapPlan {
+    if dependencies_ready {
+        if installation_ready {
+            BootstrapPlan::Continue
+        } else {
+            BootstrapPlan::RepairAndContinue
+        }
+    } else if running_in_terminal {
+        BootstrapPlan::RepairAndContinue
+    } else {
+        BootstrapPlan::InstallAndRelaunch
+    }
+}
+
+/// Comprueba los requisitos antes de tocar el proceso actual. Si Windows
+/// Terminal y Fira Mono ya existen, Spike continúa directamente y solo repara
+/// silenciosamente su copia o perfil cuando hace falta. El relanzamiento queda
+/// reservado al primer arranque desde una consola que no tiene los requisitos.
 pub fn bootstrap_dashboard() -> io::Result<DashboardBootstrap> {
     let paths = paths()?;
     let current = env::current_exe()?;
-    let already_in_profile = env::var_os("WT_SESSION").is_some()
-        && paths.executable.is_file()
-        && same_executable(&current, &paths.executable);
+    let running_in_terminal = env::var_os("WT_SESSION").is_some();
+    let terminal_ready = running_in_terminal || terminal_executable().is_some();
+    let dependencies_ready = terminal_ready && font_ready(&paths.font);
+    let installation_ready = paths.executable.is_file()
+        && same_executable(&current, &paths.executable)
+        && paths.fragment.is_file();
 
-    if already_in_profile {
-        // Repara recursos eliminados sin abrir una segunda pestaña.
-        ensure_windows_terminal()?;
-        install_font(&paths.font)?;
-        if !paths.fragment.is_file() {
-            write_fragment(&paths.fragment, &paths.executable)?;
-            refresh_terminal_settings();
+    match bootstrap_plan(running_in_terminal, dependencies_ready, installation_ready) {
+        BootstrapPlan::Continue => Ok(DashboardBootstrap::Continue),
+        BootstrapPlan::RepairAndContinue => {
+            install()?;
+            Ok(DashboardBootstrap::Continue)
         }
-        return Ok(DashboardBootstrap::Continue);
+        BootstrapPlan::InstallAndRelaunch => {
+            install()?;
+            launch()?;
+            Ok(DashboardBootstrap::Relaunched)
+        }
     }
-
-    install()?;
-    launch()?;
-    Ok(DashboardBootstrap::Relaunched)
 }
 
 pub fn launch() -> io::Result<String> {
@@ -650,6 +677,27 @@ mod tests {
                 "https://github.com/microsoft/terminal/releases/download/v1.0/terminal.msixbundle"
                     .into()
             ))
+        );
+    }
+
+    #[test]
+    fn dashboard_continues_without_relaunch_when_requirements_exist() {
+        assert_eq!(bootstrap_plan(false, true, true), BootstrapPlan::Continue);
+        assert_eq!(
+            bootstrap_plan(false, true, false),
+            BootstrapPlan::RepairAndContinue
+        );
+    }
+
+    #[test]
+    fn dashboard_relaunches_only_when_requirements_are_missing_outside_terminal() {
+        assert_eq!(
+            bootstrap_plan(false, false, false),
+            BootstrapPlan::InstallAndRelaunch
+        );
+        assert_eq!(
+            bootstrap_plan(true, false, false),
+            BootstrapPlan::RepairAndContinue
         );
     }
 }

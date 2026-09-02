@@ -1363,12 +1363,39 @@ fn completed_roster_display_order(roster: &[CompletedRosterPlayer]) -> Vec<usize
     ]
     .into_iter()
     .flat_map(|side| {
-        roster
+        let mut indexes = roster
             .iter()
             .enumerate()
             .filter_map(move |(index, player)| (player.side == side).then_some(index))
+            .collect::<Vec<_>>();
+        indexes.sort_by(|left, right| {
+            completed_acs_cmp(&roster[*left], &roster[*right])
+                .then_with(|| roster[*left].slot.cmp(&roster[*right].slot))
+        });
+        indexes
     })
     .collect()
+}
+
+fn completed_acs_cmp(
+    left: &CompletedRosterPlayer,
+    right: &CompletedRosterPlayer,
+) -> std::cmp::Ordering {
+    let scored = |player: &CompletedRosterPlayer| {
+        player
+            .stats
+            .combat_score
+            .zip((player.rounds_played > 0).then_some(player.rounds_played))
+    };
+    match (scored(left), scored(right)) {
+        (Some((left_score, left_rounds)), Some((right_score, right_rounds))) => {
+            (u64::from(right_score) * u64::from(left_rounds))
+                .cmp(&(u64::from(left_score) * u64::from(right_rounds)))
+        }
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
 }
 
 fn live_roster_display_order(roster: &[RosterPlayer]) -> Vec<usize> {
@@ -1991,19 +2018,24 @@ mod tests {
             rounds_played: 20,
             premade: None,
         };
-        let roster = vec![
+        let mut roster = vec![
             player(CompletedPlayerSide::Ally, 1),
             player(CompletedPlayerSide::Enemy, 1),
             player(CompletedPlayerSide::Enemy, 2),
             player(CompletedPlayerSide::Ally, 2),
             player(CompletedPlayerSide::Ally, 3),
         ];
+        roster[0].stats.combat_score = Some(2_000);
+        roster[1].stats.combat_score = Some(2_000);
+        roster[2].stats.combat_score = Some(6_000);
+        roster[3].stats.combat_score = Some(6_000);
+        roster[4].stats.combat_score = Some(4_000);
 
         let order = completed_roster_display_order(&roster);
-        assert_eq!(order, vec![0, 3, 4, 1, 2]);
-        assert_eq!(adjacent_display_index(&order, 0, true), 3);
+        assert_eq!(order, vec![3, 4, 0, 2, 1]);
         assert_eq!(adjacent_display_index(&order, 3, true), 4);
-        assert_eq!(adjacent_display_index(&order, 0, false), 2);
+        assert_eq!(adjacent_display_index(&order, 4, true), 0);
+        assert_eq!(adjacent_display_index(&order, 3, false), 1);
     }
 
     #[test]

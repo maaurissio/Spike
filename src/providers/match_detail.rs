@@ -190,9 +190,7 @@ impl MatchDetailSource {
                 for (player, subject) in totals.roster.iter_mut().zip(subjects) {
                     if let Some(riot_id) = names.get(&subject) {
                         player.riot_id = Some(riot_id.clone());
-                        if !player.is_self {
-                            player.name = riot_id.clone();
-                        }
+                        player.name = riot_id.clone();
                     }
                 }
                 Ok(totals)
@@ -488,10 +486,10 @@ fn completed_roster(
                 .get("tagLine")
                 .and_then(Value::as_str)
                 .filter(|tag| !tag.is_empty());
-            let name = if is_self {
-                "Tú".into()
-            } else if let Some(game_name) = game_name {
+            let name = if let Some(game_name) = game_name {
                 tag.map_or_else(|| game_name.into(), |tag| format!("{game_name}#{tag}"))
+            } else if is_self {
+                "Tú".into()
             } else {
                 format!("Jugador {slot}")
             };
@@ -962,10 +960,18 @@ mod tests {
         assert_eq!(totals.roster[0].name, "Rival#LAS");
         assert_eq!(totals.roster[0].riot_id.as_deref(), Some("Rival#LAS"));
         assert_eq!(totals.roster[0].rank.as_deref(), Some("Ascendente 1"));
+        assert_eq!(totals.roster[2].name, "Tú");
         assert_eq!(totals.roster[0].premade, totals.roster[1].premade);
         assert_eq!(totals.roster[2].premade, totals.roster[3].premade);
         assert_ne!(totals.roster[0].premade, totals.roster[2].premade);
-        assert_eq!(totals.roster[2].name, "Tú");
+        assert_eq!(
+            totals
+                .roster
+                .iter()
+                .map(|player| player.stats.combat_score)
+                .collect::<Vec<_>>(),
+            [Some(5000), Some(2000), Some(4000), Some(3000)]
+        );
         let debug = format!("{:?}", totals.roster);
         assert!(!debug.contains("enemy-party") && !debug.contains("own-party"));
         assert_eq!(

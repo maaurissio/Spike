@@ -554,12 +554,14 @@ fn history_cache_path() -> Option<std::path::PathBuf> {
     config::config_path().map(|path| path.with_file_name("history-cache.json"))
 }
 
+const HISTORY_CACHE_SCHEMA: u8 = 4;
+
 fn save_cached_history(items: &[super::HistoryItem]) -> Result<(), ()> {
     let path = history_cache_path().ok_or(())?;
     let parent = path.parent().ok_or(())?;
     fs::create_dir_all(parent).map_err(|_| ())?;
     let cached = super::CachedHistory {
-        schema: 3,
+        schema: HISTORY_CACHE_SCHEMA,
         saved_at_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| ())?
@@ -577,7 +579,7 @@ fn save_cached_history(items: &[super::HistoryItem]) -> Result<(), ()> {
 pub(super) fn load_cached_history() -> Option<super::CachedHistory> {
     let bytes = fs::read(history_cache_path()?).ok()?;
     let mut cached: super::CachedHistory = serde_json::from_slice(&bytes).ok()?;
-    if cached.schema != 3 || cached.saved_at_ms == 0 {
+    if cached.schema != HISTORY_CACHE_SCHEMA || cached.saved_at_ms == 0 {
         return None;
     }
     cached.items.truncate(20);
@@ -592,7 +594,7 @@ mod tests {
     #[test]
     fn persisted_history_schema_contains_no_session_identifiers_or_tokens() {
         let cached = super::super::CachedHistory {
-            schema: 3,
+            schema: HISTORY_CACHE_SCHEMA,
             saved_at_ms: 1,
             items: vec![super::super::HistoryItem {
                 entry: crate::providers::history::HistoryEntry {

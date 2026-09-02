@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.1] - 2026-09-01
+
+### Cambiado
+
+- Si Windows Terminal y Fira Mono ya están disponibles, Spike abre el dashboard directamente en el proceso actual y repara silenciosamente su copia o perfil cuando hace falta.
+- Cuando Riot oculta los PartyID enemigos en vivo, Spike contrasta el último resultado Ranked terminado y exige que los jugadores compartieran el mismo PartyID real antes de mostrarlos como premade.
+- Los jugadores de cada equipo en Historial y postpartida se ordenan por ACS descendente.
+- La paleta personalizada de desarrollo pasa a ser la paleta oficial predeterminada para los temas Noche y Claro; las instalaciones que aún usaban los colores oficiales anteriores se migran automáticamente sin sobrescribir paletas personalizadas.
+
+### Corregido
+
+- El arranque ya no cierra una primera ejecución para abrir correctamente solo después de intentarlo por segunda vez.
+- La partida activa se excluye de la inferencia de premades para que sus diez participantes no se confundan con compañeros de cola.
+- La estructura anidada actual de Presence tiene prioridad sobre los campos planos antiguos, evitando mezclar el premade propio con otro grupo del equipo.
+- Una actualización completa de Presence reemplaza correctamente las estimaciones provisionales, incluso cuando confirma que un jugador está solo.
+- El orden por ACS ya no cruza nombres, agentes, estadísticas ni premades: ahora se aplica únicamente al orden visual del marcador.
+- El jugador propio muestra su Riot ID real en Historial y postpartida en lugar de sustituirlo por `Tú`.
+
 ## [0.3.0] - 2026-09-01
 
 ### Añadido
@@ -22,7 +40,6 @@
 - Ascendente usa el color `#8ec07c` en los temas Noche y Claro.
 - Los premades se identifican únicamente mediante puntos de colores pastel consistentes en la partida en vivo y sus detalles.
 - La caché del historial conserva hasta veinte marcadores normalizados y reutiliza los detalles ya descargados.
-- Cuando Riot oculta los PartyID enemigos en vivo, Spike contrasta el último resultado Ranked terminado y exige que los jugadores compartieran el mismo PartyID real antes de mostrarlos como premade.
 - La postpartida muestra el mismo marcador completo de jugadores y estadísticas que queda guardado en Historial.
 - La demo reproduce el marcador completo actual, los premades, veinte partidas y la misma transición entre Historial y postpartida.
 
@@ -31,9 +48,6 @@
 - El identificador de una partida terminada ya no retrasa ni contamina la carga de la siguiente partida.
 - Los amigos y otras presencias ajenas al roster ya no adelantan incorrectamente la detección de premades.
 - Las presencias antiguas marcadas como inválidas ya no producen grupos incorrectos.
-- La partida activa se excluye de la inferencia de premades para que sus diez participantes no se confundan con compañeros de cola.
-- La estructura anidada actual de Presence tiene prioridad sobre los campos planos antiguos, evitando mezclar el premade propio con otro grupo del equipo.
-- Una actualización completa de Presence reemplaza correctamente las estimaciones provisionales, incluso cuando confirma que un jugador está solo.
 - La información de un five-stack se normaliza como un único grupo de cinco jugadores.
 - La selección de jugadores sigue el orden visual de aliados y enemigos sin saltos en Historial, postpartida y partida en vivo.
 - El tema seleccionado se guarda automáticamente y los ajustes pendientes terminan de guardarse antes de salir con `q` o `Ctrl+C`.
@@ -85,6 +99,7 @@
 - Operación de solo lectura: no se lee memoria del juego, no se inyecta código ni se automatizan controles.
 - No se guardan credenciales de sesión; se respetan datos ausentes e identidades ocultas.
 
+[0.3.1]: https://github.com/maaurissio/Spike/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/maaurissio/Spike/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/maaurissio/Spike/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/maaurissio/Spike/compare/v0.1.0...v0.2.0
