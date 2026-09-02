@@ -6,48 +6,48 @@ use ratatui::style::{Color, Modifier, Style};
 const PALETTE_TEMPLATE: &str = r##"[dark]
 background = "#282828"
 body = "#ebdbb2"
-title = "#8ec07c"
+title = "#fabd2f"
 muted = "#928374"
 border = "#7c6f64"
-primary = "#8ec07c"
-win = "#b8bb26"
+primary = "#a89985"
+win = "#8ec07c"
 loss = "#fb4934"
 rank = "#d3869b"
 warning = "#fabd2f"
 selection = "#504945"
-logo_primary = "#fabd2f"
+logo_primary = "#7c6f64"
 logo_secondary = "#ebdbb2"
 logo_fade = "#928374"
-cpu = "#b8bb26"
-ram = "#d3869b"
+cpu = "#fb4934"
+ram = "#458588"
 chart_win = "#8ec07c"
 chart_loss = "#fb4934"
-log_info = "#83a598"
-log_success = "#b8bb26"
-log_warning = "#fe8019"
+log_info = "#f9f5d7"
+log_success = "#8ec07c"
+log_warning = "#fb4934"
 
 [light]
 background = "#fbf1c7"
 body = "#3c3836"
-title = "#427b58"
+title = "#7c6f64"
 muted = "#7c6f64"
 border = "#a89984"
-primary = "#427b58"
-win = "#79740e"
+primary = "#7c6f64"
+win = "#427b58"
 loss = "#9d0006"
 rank = "#8f3f71"
 warning = "#b57614"
 selection = "#d5c4a1"
-logo_primary = "#b57614"
-logo_secondary = "#3c3836"
+logo_primary = "#bdae93"
+logo_secondary = "#504945"
 logo_fade = "#7c6f64"
-cpu = "#79740e"
-ram = "#8f3f71"
+cpu = "#fb4934"
+ram = "#282828"
 chart_win = "#427b58"
 chart_loss = "#9d0006"
-log_info = "#076678"
-log_success = "#79740e"
-log_warning = "#af3a03"
+log_info = "#282828"
+log_success = "#427b58"
+log_warning = "#9d0006"
 "##;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -80,25 +80,25 @@ impl PaletteColors {
         Self {
             background: Color::Rgb(40, 40, 40),
             body: Color::Rgb(235, 219, 178),
-            title: Color::Rgb(142, 192, 124),
+            title: Color::Rgb(250, 189, 47),
             muted: Color::Rgb(146, 131, 116),
             border: Color::Rgb(124, 111, 100),
-            primary: Color::Rgb(142, 192, 124),
-            win: Color::Rgb(184, 187, 38),
+            primary: Color::Rgb(168, 153, 133),
+            win: Color::Rgb(142, 192, 124),
             loss: Color::Rgb(251, 73, 52),
             rank: Color::Rgb(211, 134, 155),
             warning: Color::Rgb(250, 189, 47),
             selection: Color::Rgb(80, 73, 69),
-            logo_primary: Color::Rgb(250, 189, 47),
+            logo_primary: Color::Rgb(124, 111, 100),
             logo_secondary: Color::Rgb(235, 219, 178),
             logo_fade: Color::Rgb(146, 131, 116),
-            cpu: Color::Rgb(184, 187, 38),
-            ram: Color::Rgb(211, 134, 155),
+            cpu: Color::Rgb(251, 73, 52),
+            ram: Color::Rgb(69, 133, 136),
             chart_win: Color::Rgb(142, 192, 124),
             chart_loss: Color::Rgb(251, 73, 52),
-            log_info: Color::Rgb(131, 165, 152),
-            log_success: Color::Rgb(184, 187, 38),
-            log_warning: Color::Rgb(254, 128, 25),
+            log_info: Color::Rgb(249, 245, 215),
+            log_success: Color::Rgb(142, 192, 124),
+            log_warning: Color::Rgb(251, 73, 52),
         }
     }
 
@@ -106,25 +106,25 @@ impl PaletteColors {
         Self {
             background: Color::Rgb(251, 241, 199),
             body: Color::Rgb(60, 56, 54),
-            title: Color::Rgb(66, 123, 88),
+            title: Color::Rgb(124, 111, 100),
             muted: Color::Rgb(124, 111, 100),
             border: Color::Rgb(168, 153, 132),
-            primary: Color::Rgb(66, 123, 88),
-            win: Color::Rgb(121, 116, 14),
+            primary: Color::Rgb(124, 111, 100),
+            win: Color::Rgb(66, 123, 88),
             loss: Color::Rgb(157, 0, 6),
             rank: Color::Rgb(143, 63, 113),
             warning: Color::Rgb(181, 118, 20),
             selection: Color::Rgb(213, 196, 161),
-            logo_primary: Color::Rgb(181, 118, 20),
-            logo_secondary: Color::Rgb(60, 56, 54),
+            logo_primary: Color::Rgb(189, 174, 147),
+            logo_secondary: Color::Rgb(80, 73, 69),
             logo_fade: Color::Rgb(124, 111, 100),
-            cpu: Color::Rgb(121, 116, 14),
-            ram: Color::Rgb(143, 63, 113),
+            cpu: Color::Rgb(251, 73, 52),
+            ram: Color::Rgb(40, 40, 40),
             chart_win: Color::Rgb(66, 123, 88),
             chart_loss: Color::Rgb(157, 0, 6),
-            log_info: Color::Rgb(7, 102, 120),
-            log_success: Color::Rgb(121, 116, 14),
-            log_warning: Color::Rgb(175, 58, 3),
+            log_info: Color::Rgb(40, 40, 40),
+            log_success: Color::Rgb(66, 123, 88),
+            log_warning: Color::Rgb(157, 0, 6),
         }
     }
 }
@@ -141,6 +141,38 @@ impl Default for EditablePalette {
             dark: PaletteColors::dark(),
             light: PaletteColors::light(),
         }
+    }
+}
+
+fn previous_official_palette() -> EditablePalette {
+    let mut palette = EditablePalette::default();
+    palette.dark.title = Color::Rgb(142, 192, 124);
+    palette.dark.primary = Color::Rgb(142, 192, 124);
+    palette.dark.win = Color::Rgb(184, 187, 38);
+    palette.dark.logo_primary = Color::Rgb(250, 189, 47);
+    palette.dark.cpu = Color::Rgb(184, 187, 38);
+    palette.dark.ram = Color::Rgb(211, 134, 155);
+    palette.dark.log_info = Color::Rgb(131, 165, 152);
+    palette.dark.log_success = Color::Rgb(184, 187, 38);
+    palette.dark.log_warning = Color::Rgb(254, 128, 25);
+    palette.light.title = Color::Rgb(66, 123, 88);
+    palette.light.primary = Color::Rgb(66, 123, 88);
+    palette.light.win = Color::Rgb(121, 116, 14);
+    palette.light.logo_primary = Color::Rgb(181, 118, 20);
+    palette.light.logo_secondary = Color::Rgb(60, 56, 54);
+    palette.light.cpu = Color::Rgb(121, 116, 14);
+    palette.light.ram = Color::Rgb(143, 63, 113);
+    palette.light.log_info = Color::Rgb(7, 102, 120);
+    palette.light.log_success = Color::Rgb(121, 116, 14);
+    palette.light.log_warning = Color::Rgb(175, 58, 3);
+    palette
+}
+
+fn migrate_official_palette(palette: EditablePalette) -> EditablePalette {
+    if palette == previous_official_palette() {
+        EditablePalette::default()
+    } else {
+        palette
     }
 }
 
@@ -161,8 +193,9 @@ pub(super) fn load_or_create_palette() -> Result<EditablePalette, String> {
     }
     let contents = fs::read_to_string(&path)
         .map_err(|error| format!("no se pudo leer {}: {error}", path.display()))?;
-    let palette =
-        parse_palette(&contents).map_err(|error| format!("{}: {error}", path.display()))?;
+    let palette = migrate_official_palette(
+        parse_palette(&contents).map_err(|error| format!("{}: {error}", path.display()))?,
+    );
     let normalized = encode_palette(&palette);
     if contents != normalized {
         fs::write(&path, &normalized)
@@ -591,15 +624,32 @@ mod tests {
 
     #[test]
     fn dark_and_light_use_the_official_gruvbox_base_colors() {
-        let dark = Palette::new(Theme::Dark);
+        let official = EditablePalette::default();
+        let dark = Palette::with_custom(Theme::Dark, Some(&official));
         assert_eq!(dark.base.bg, Some(Color::Rgb(40, 40, 40)));
         assert_eq!(dark.base.fg, Some(Color::Rgb(235, 219, 178)));
-        assert_eq!(dark.good.fg, Some(Color::Rgb(184, 187, 38)));
+        assert_eq!(dark.title.fg, Some(Color::Rgb(250, 189, 47)));
+        assert_eq!(dark.good.fg, Some(Color::Rgb(142, 192, 124)));
 
-        let light = Palette::new(Theme::Light);
+        let light = Palette::with_custom(Theme::Light, Some(&official));
         assert_eq!(light.base.bg, Some(Color::Rgb(251, 241, 199)));
         assert_eq!(light.base.fg, Some(Color::Rgb(60, 56, 54)));
+        assert_eq!(light.title.fg, Some(Color::Rgb(124, 111, 100)));
         assert_eq!(light.bad.fg, Some(Color::Rgb(157, 0, 6)));
+    }
+
+    #[test]
+    fn new_official_palette_matches_the_distributed_template_and_migrates_old_defaults() {
+        let official = EditablePalette::default();
+        assert_eq!(parse_palette(PALETTE_TEMPLATE).unwrap(), official);
+        assert_eq!(
+            migrate_official_palette(previous_official_palette()),
+            official
+        );
+
+        let mut custom = previous_official_palette();
+        custom.dark.background = Color::Rgb(1, 2, 3);
+        assert_eq!(migrate_official_palette(custom), custom);
     }
 
     #[test]

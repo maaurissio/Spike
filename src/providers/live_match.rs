@@ -69,9 +69,12 @@ impl LiveMatchSource {
             entitlement_token: request.entitlement_token.clone(),
         };
         let queue = request.queue.clone();
-        let enrichment = self.stats.fetch(&stats_request, &subjects);
-        let observed_counts = party_ids
-            .values()
+        let enrichment =
+            self.stats
+                .fetch(&stats_request, &subjects, Some(request.match_id.as_str()));
+        let observed_counts = subjects
+            .iter()
+            .filter_map(|subject| party_ids.get(subject))
             .fold(HashMap::new(), |mut counts, party| {
                 *counts.entry(party.clone()).or_insert(0_usize) += 1;
                 counts
@@ -905,6 +908,40 @@ mod tests {
                 player.premade == DataAvailability::Available("Grupo A".to_owned())
             })
         );
+    }
+
+    #[test]
+    fn keeps_a_duo_and_trio_as_two_distinct_groups() {
+        let players = (1..=5)
+            .map(|slot| {
+                serde_json::json!({
+                    "Subject": format!("ally-{slot}"),
+                    "TeamID": "Blue"
+                })
+            })
+            .collect::<Vec<_>>();
+        let parties = HashMap::from([
+            ("ally-1".into(), "duo".into()),
+            ("ally-2".into(), "duo".into()),
+            ("ally-3".into(), "trio".into()),
+            ("ally-4".into(), "trio".into()),
+            ("ally-5".into(), "trio".into()),
+        ]);
+
+        let roster = normalize_roster(
+            &players,
+            "ally-1",
+            &HashMap::new(),
+            &HashMap::new(),
+            true,
+            &parties,
+        )
+        .unwrap();
+
+        assert_eq!(roster.players[0].premade, roster.players[1].premade);
+        assert_eq!(roster.players[2].premade, roster.players[3].premade);
+        assert_eq!(roster.players[3].premade, roster.players[4].premade);
+        assert_ne!(roster.players[0].premade, roster.players[2].premade);
     }
 
     #[test]

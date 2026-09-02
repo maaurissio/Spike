@@ -84,6 +84,7 @@ impl RosterStatsSource {
         &self,
         request: &RosterStatsRequest,
         subjects: &[String],
+        excluded_match_id: Option<&str>,
     ) -> RosterEnrichment {
         let subjects = unique_subjects(subjects);
         let mut histories = HashMap::<String, Vec<String>>::new();
@@ -106,13 +107,13 @@ impl RosterStatsSource {
                     .collect::<Vec<_>>()
             });
             for (subject, history) in fetched {
-                if let Ok(match_ids) = history {
+                if let Ok(mut match_ids) = history {
+                    exclude_match(&mut match_ids, excluded_match_id);
                     histories.insert(subject, match_ids);
                 }
             }
         }
 
-        let inferred_parties = inferred_parties(&histories);
         let match_ids = unique_match_ids(&histories);
         let mut details = HashMap::<String, Value>::new();
         for chunk in match_ids.chunks(MAX_CONCURRENCY) {
@@ -138,6 +139,8 @@ impl RosterStatsSource {
                 }
             }
         }
+
+        let inferred_parties = inferred_parties(&histories, &details);
 
         let stats = histories
             .into_iter()
@@ -207,14 +210,25 @@ impl RosterStatsSource {
 }
 
 /// Durante una partida Riot no publica de forma fiable el PartyID enemigo.
-/// Dos jugadores cuyo encuentro competitivo más reciente es el mismo se
-/// consideran compañeros de cola. El identificador real se descarta aquí.
-fn inferred_parties(histories: &HashMap<String, Vec<String>>) -> HashMap<String, String> {
-    let mut by_latest = HashMap::<&str, Vec<&str>>::new();
+/// El último encuentro terminado sí contiene el PartyID autoritativo: solo se
+/// conserva un grupo si al menos dos integrantes del roster compartían ese
+/// PartyID. Coincidir meramente en una partida anterior no basta.
+fn inferred_parties(
+    histories: &HashMap<String, Vec<String>>,
+    details: &HashMap<String, Value>,
+) -> HashMap<String, String> {
+    let mut by_latest = HashMap::<(&str, &str), Vec<&str>>::new();
     for (subject, matches) in histories {
-        if let Some(latest) = matches.first() {
-            by_latest.entry(latest).or_default().push(subject);
-        }
+        let Some(latest) = matches.first() else {
+            continue;
+        };
+        let Some(party) = details
+            .get(latest)
+            .and_then(|payload| completed_party_id(payload, subject))
+        else {
+            continue;
+        };
+        by_latest.entry((latest, party)).or_default().push(subject);
     }
     let mut groups = by_latest
         .into_values()
@@ -229,6 +243,24 @@ fn inferred_parties(histories: &HashMap<String, Vec<String>>) -> HashMap<String,
         }
     }
     result
+}
+
+fn completed_party_id<'a>(payload: &'a Value, subject: &str) -> Option<&'a str> {
+    let player = payload
+        .get("players")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|player| player.get("subject").and_then(Value::as_str) == Some(subject))?;
+    ["partyId", "partyID", "PartyID"]
+        .iter()
+        .find_map(|key| player.get(*key).and_then(Value::as_str))
+        .filter(|party| safe_identifier(party))
+}
+
+fn exclude_match(matches: &mut Vec<String>, excluded_match_id: Option<&str>) {
+    if let Some(excluded) = excluded_match_id {
+        matches.retain(|match_id| !match_id.eq_ignore_ascii_case(excluded));
+    }
 }
 
 impl Default for RosterStatsSource {
@@ -610,22 +642,90 @@ mod tests {
     }
 
     #[test]
-    fn infers_live_parties_from_the_latest_shared_match_only() {
+    fn infers_live_parties_from_authoritative_party_ids_in_latest_match() {
         let histories = HashMap::from([
             ("ally-a".into(), vec!["shared-a".into(), "older-1".into()]),
             ("ally-b".into(), vec!["shared-a".into(), "older-2".into()]),
+            ("same-match-solo".into(), vec!["shared-a".into()]),
             ("enemy-a".into(), vec!["shared-b".into()]),
             ("enemy-b".into(), vec!["shared-b".into(), "older-3".into()]),
             ("solo".into(), vec!["unique".into()]),
         ]);
+        let details = HashMap::from([
+            (
+                "shared-a".into(),
+                serde_json::json!({"players":[
+                    {"subject":"ally-a","partyId":"party-a"},
+                    {"subject":"ally-b","partyId":"party-a"},
+                    {"subject":"same-match-solo","partyId":"solo-a"}
+                ]}),
+            ),
+            (
+                "shared-b".into(),
+                serde_json::json!({"players":[
+                    {"subject":"enemy-a","partyId":"party-b"},
+                    {"subject":"enemy-b","partyId":"party-b"}
+                ]}),
+            ),
+            (
+                "unique".into(),
+                serde_json::json!({"players":[
+                    {"subject":"solo","partyId":"solo-c"}
+                ]}),
+            ),
+        ]);
 
-        let inferred = inferred_parties(&histories);
+        let inferred = inferred_parties(&histories, &details);
 
         assert_eq!(inferred["ally-a"], inferred["ally-b"]);
         assert_eq!(inferred["enemy-a"], inferred["enemy-b"]);
         assert_ne!(inferred["ally-a"], inferred["enemy-a"]);
         assert!(!inferred.contains_key("solo"));
+        assert!(!inferred.contains_key("same-match-solo"));
         assert!(inferred.values().all(|group| !group.contains("shared")));
+    }
+
+    #[test]
+    fn current_live_match_is_excluded_before_party_inference() {
+        let mut histories = HashMap::from([
+            ("me".into(), vec!["current".into(), "real-party".into()]),
+            ("friend".into(), vec!["current".into(), "real-party".into()]),
+            ("ally-3".into(), vec!["current".into(), "unique-3".into()]),
+            ("ally-4".into(), vec!["current".into(), "unique-4".into()]),
+            ("ally-5".into(), vec!["current".into(), "unique-5".into()]),
+        ]);
+        for matches in histories.values_mut() {
+            exclude_match(matches, Some("current"));
+        }
+        let details = HashMap::from([
+            (
+                "real-party".into(),
+                serde_json::json!({"players":[
+                    {"subject":"me","partyId":"duo"},
+                    {"subject":"friend","partyId":"duo"}
+                ]}),
+            ),
+            (
+                "unique-3".into(),
+                serde_json::json!({"players":[{"subject":"ally-3","partyId":"solo-3"}]}),
+            ),
+            (
+                "unique-4".into(),
+                serde_json::json!({"players":[{"subject":"ally-4","partyId":"solo-4"}]}),
+            ),
+            (
+                "unique-5".into(),
+                serde_json::json!({"players":[{"subject":"ally-5","partyId":"solo-5"}]}),
+            ),
+        ]);
+
+        let inferred = inferred_parties(&histories, &details);
+
+        assert_eq!(inferred.len(), 2);
+        assert_eq!(inferred["me"], inferred["friend"]);
+        assert!(!inferred.contains_key("ally-3"));
+        assert!(!inferred.contains_key("ally-4"));
+        assert!(!inferred.contains_key("ally-5"));
     }
 
     #[test]
@@ -644,21 +744,22 @@ mod tests {
                     assert!(path.contains("queue=competitive"));
                     serde_json::json!({
                         "Subject":"hidden",
-                        "History":[{"MatchID":"shared"}]
+                        "History":[{"MatchID":"current"},{"MatchID":"shared"}]
                     })
                 } else if path.contains("/history/visible") {
                     assert!(path.contains("queue=competitive"));
                     serde_json::json!({
                         "Subject":"visible",
-                        "History":[{"MatchID":"shared"}]
+                        "History":[{"MatchID":"current"},{"MatchID":"shared"}]
                     })
                 } else {
                     assert!(path.contains("/matches/shared"));
+                    assert!(!path.contains("/matches/current"));
                     serde_json::json!({
                         "matchInfo":{"completionState":"Completed"},
                         "players":[
-                            {"subject":"hidden","teamId":"Blue","stats":{"kills":4,"deaths":2,"assists":1}},
-                            {"subject":"visible","teamId":"Red","stats":{"kills":2,"deaths":4,"assists":0}}
+                            {"subject":"hidden","partyId":"party-a","teamId":"Blue","stats":{"kills":4,"deaths":2,"assists":1}},
+                            {"subject":"visible","partyId":"party-a","teamId":"Blue","stats":{"kills":2,"deaths":4,"assists":0}}
                         ],
                         "teams":[
                             {"teamId":"Blue","won":true},
@@ -682,11 +783,15 @@ mod tests {
             entitlement_token: "entitlement".into(),
         };
 
-        let enrichment = source.fetch(&request, &["visible".into(), "hidden".into()]);
+        let enrichment = source.fetch(
+            &request,
+            &["visible".into(), "hidden".into()],
+            Some("current"),
+        );
 
         assert_eq!(enrichment.stats.len(), 2);
         assert_eq!(enrichment.stats["hidden"].kd_hundredths(), Some(200));
-        assert_eq!(enrichment.stats["visible"].win_rate_tenths(), Some(0));
+        assert_eq!(enrichment.stats["visible"].win_rate_tenths(), Some(1000));
         assert_eq!(
             enrichment.inferred_parties["hidden"],
             enrichment.inferred_parties["visible"]

@@ -1416,11 +1416,16 @@ fn historical_roster(
     side: CompletedPlayerSide,
     title: &str,
 ) {
-    let players = roster
-        .iter()
-        .enumerate()
-        .filter(|(_, player)| player.side == side);
-    if players.clone().next().is_none() {
+    let players = super::completed_roster_display_order(roster)
+        .into_iter()
+        .filter_map(|index| {
+            roster
+                .get(index)
+                .filter(|player| player.side == side)
+                .map(|player| (index, player))
+        })
+        .collect::<Vec<_>>();
+    if players.is_empty() {
         return;
     }
     let wide = s.width >= 82;
