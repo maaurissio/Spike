@@ -54,7 +54,7 @@ cargo run -- dashboard --demo
 
 ## Instalación
 
-Descarga `Spike-v0.3.1-Windows-x86_64.exe` desde la página de [Releases](https://github.com/maaurissio/Spike/releases/latest) y ejecútalo. No necesitas instalar Rust ni compilar el proyecto.
+Descarga `Spike-v0.3.1.exe` desde la página de [Releases](https://github.com/maaurissio/Spike/releases/latest) y ejecútalo. No necesitas instalar Rust ni compilar el proyecto.
 
 ### Requisitos
 
