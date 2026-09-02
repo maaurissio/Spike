@@ -5,7 +5,7 @@
 Spike es una aplicación de terminal para VALORANT creada con Rust, Ratatui y Crossterm. Reúne el contexto disponible de la partida, progreso competitivo, historial Ranked y métricas locales en una interfaz rápida y navegable con teclado, creada para consumir el menor rendimiento posible.
 
 > [!NOTE]
-> Spike está en desarrollo constante, sin versión estable oficial aún.
+> La versión más reciente es [Spike v0.3.1](https://github.com/maaurissio/Spike/releases/tag/v0.3.1), disponible como ejecutable para Windows.
 
 ---------
 
@@ -54,17 +54,22 @@ cargo run -- dashboard --demo
 
 ## Instalación
 
-Por ahora Spike se ejecuta desde el código fuente en Windows.
+Descarga `Spike-v0.3.1-Windows-x86_64.exe` desde la página de [Releases](https://github.com/maaurissio/Spike/releases/latest) y ejecútalo. No necesitas instalar Rust ni compilar el proyecto.
 
 ### Requisitos
 
 - Windows 10 u 11.
-- [Rust](https://www.rust-lang.org/tools/install) estable con Cargo.
 - VALORANT y Riot Client para consultar datos locales reales.
-- Conexión a Internet durante el primer arranque si falta Windows Terminal.
+- Conexión a Internet para preparar el entorno en el primer arranque y consultar los datos disponibles de VALORANT.
 
 > [!IMPORTANT]
 > **Windows Terminal y Fira Mono son requisitos obligatorios de Spike, pero el ejecutable los prepara automáticamente.** La interfaz está diseñada, probada y distribuida únicamente con ese perfil. No se admite ni documenta la ejecución en la consola clásica de Windows ni con otra fuente.
+
+En el primer arranque, Spike detecta el entorno y realiza por sí solo lo necesario: instala Windows Terminal mediante WinGet —o desde el paquete estable oficial de Microsoft si WinGet no está disponible—, instala Fira Mono para el usuario actual, crea el perfil aislado **SPIKE**, aplica Gruvbox y copia el ejecutable a `%LOCALAPPDATA%\Spike`. Después se relanza dentro de ese perfil. Los siguientes arranques reutilizan la instalación existente.
+
+### Compilar desde el código fuente
+
+Para colaborar con el desarrollo necesitas [Rust](https://www.rust-lang.org/tools/install) estable con Cargo:
 
 ```powershell
 git clone https://github.com/maaurissio/Spike.git
@@ -73,16 +78,14 @@ cargo build --release
 .\target\release\spike.exe
 ```
 
-En el primer arranque, Spike detecta el entorno y realiza por sí solo lo necesario: instala Windows Terminal mediante WinGet —o desde el paquete estable oficial de Microsoft si WinGet no está disponible—, instala Fira Mono para el usuario actual, crea el perfil aislado **SPIKE**, aplica Gruvbox y copia el ejecutable a `%LOCALAPPDATA%\Spike`. Después se relanza dentro de ese perfil. Los siguientes arranques reutilizan la instalación existente.
-
 Para comprobar que el entorno quedó correcto:
 
 ```powershell
 .\target\release\spike.exe terminal status
 ```
 
-> [!WARNING]
-> Aún no hay instalador ni binarios oficiales para usuarios finales. Compila el proyecto solo si quieres probar la versión de desarrollo.
+> [!TIP]
+> Para una instalación normal usa el ejecutable publicado. La compilación manual está pensada para desarrollo y contribuciones.
 
 ---------
 
