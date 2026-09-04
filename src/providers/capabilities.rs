@@ -151,6 +151,8 @@ pub struct StateInfo {
     pub source: &'static str,
     pub client_found: bool,
     pub game_found: bool,
+    /// Revisión opaca del contexto activo; nunca contiene MatchID.
+    pub(crate) context_revision: Option<u64>,
 }
 
 impl StateInfo {
@@ -169,7 +171,13 @@ impl StateInfo {
             source,
             client_found,
             game_found,
+            context_revision: None,
         }
+    }
+
+    pub(crate) fn with_context_revision(mut self, revision: u64) -> Self {
+        self.context_revision = Some(revision);
+        self
     }
 
     pub fn unknown(source: &'static str) -> Self {

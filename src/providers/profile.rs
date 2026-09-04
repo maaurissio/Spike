@@ -43,6 +43,8 @@ pub(crate) struct OwnProfile {
 pub(crate) struct CompetitiveProfile {
     pub tier: u32,
     pub ranked_rating: u32,
+    pub peak_tier: u32,
+    pub peak_ranked_rating: u32,
     pub wins: u32,
     pub games: u32,
 }
@@ -63,6 +65,8 @@ impl CompetitiveProfile {
         (update.tier_after >= 3).then_some(Self {
             tier: update.tier_after,
             ranked_rating,
+            peak_tier: update.tier_after,
+            peak_ranked_rating: ranked_rating,
             wins: 0,
             games: 0,
         })
@@ -254,21 +258,34 @@ fn parse_own_competitive(
         .and_then(|update| update.get("SeasonID"))
         .and_then(Value::as_str)
         .filter(|season| !season.is_empty());
-    let seasonal = season_id.and_then(|season_id| {
-        payload
-            .get("QueueSkills")
-            .and_then(Value::as_object)
-            .and_then(|queues| queues.get("competitive"))
-            .and_then(Value::as_object)
-            .and_then(|queue| queue.get("SeasonalInfoBySeasonID"))
-            .and_then(Value::as_object)
-            .and_then(|seasons| seasons.get(season_id))
-            .and_then(Value::as_object)
-    });
+    let seasons = payload
+        .get("QueueSkills")
+        .and_then(Value::as_object)
+        .and_then(|queues| queues.get("competitive"))
+        .and_then(Value::as_object)
+        .and_then(|queue| queue.get("SeasonalInfoBySeasonID"))
+        .and_then(Value::as_object);
+    let peak = seasons
+        .into_iter()
+        .flat_map(|seasons| seasons.values())
+        .filter_map(Value::as_object)
+        .filter_map(|season| {
+            let tier = optional_u32(season, "CompetitiveTier").filter(|tier| *tier >= 3)?;
+            Some((tier, optional_u32(season, "RankedRating").unwrap_or(0)))
+        })
+        .max();
+    let seasonal = season_id
+        .and_then(|season_id| seasons?.get(season_id))
+        .and_then(Value::as_object);
     if let Some(seasonal) = seasonal {
+        let tier = required_u32(seasonal, "CompetitiveTier")?;
+        let ranked_rating = required_u32(seasonal, "RankedRating")?;
+        let (peak_tier, peak_ranked_rating) = peak.unwrap_or((tier, ranked_rating));
         return Ok(Some(CompetitiveProfile {
-            tier: required_u32(seasonal, "CompetitiveTier")?,
-            ranked_rating: required_u32(seasonal, "RankedRating")?,
+            tier,
+            ranked_rating,
+            peak_tier,
+            peak_ranked_rating,
             wins: optional_u32(seasonal, "NumberOfWins").unwrap_or(0),
             games: optional_u32(seasonal, "NumberOfGames").unwrap_or(0),
         }));
@@ -285,6 +302,8 @@ fn parse_own_competitive(
     Ok(Some(CompetitiveProfile {
         tier,
         ranked_rating,
+        peak_tier: peak.map_or(tier, |value| value.0),
+        peak_ranked_rating: peak.map_or(ranked_rating, |value| value.1),
         wins: 0,
         games: 0,
     }))
@@ -411,7 +430,7 @@ mod tests {
                 "QueueSkills": {
                     "competitive": {
                         "SeasonalInfoBySeasonID": {
-                            "season-old": {"CompetitiveTier": 3, "RankedRating": 0, "NumberOfWins": 1, "NumberOfGames": 2},
+                            "season-old": {"CompetitiveTier": 21, "RankedRating": 80, "NumberOfWins": 1, "NumberOfGames": 2},
                             "season-current": {"CompetitiveTier": 18, "RankedRating": 50, "NumberOfWins": 20, "NumberOfGames": 35}
                         }
                     }
@@ -424,6 +443,8 @@ mod tests {
 
         assert_eq!(competitive.tier, 18);
         assert_eq!(competitive.ranked_rating, 50);
+        assert_eq!(competitive.peak_tier, 21);
+        assert_eq!(competitive.peak_ranked_rating, 80);
         assert_eq!(competitive.wins, 20);
         assert_eq!(competitive.games, 35);
     }

@@ -25,11 +25,31 @@ use crate::{
 };
 
 pub(super) enum Request {
-    Observe { log: bool },
-    Context { phase: GamePhase, generation: u64 },
-    Parties { phase: GamePhase, generation: u64 },
-    Profile { epoch: u64 },
-    History { epoch: u64 },
+    Observe {
+        log: bool,
+    },
+    Context {
+        phase: GamePhase,
+        generation: u64,
+    },
+    EnrichContext {
+        phase: GamePhase,
+        generation: u64,
+    },
+    Parties {
+        phase: GamePhase,
+        generation: u64,
+    },
+    Profile {
+        epoch: u64,
+    },
+    History {
+        epoch: u64,
+    },
+    HistoryPeaks {
+        epoch: u64,
+        entry: crate::providers::history::HistoryEntry,
+    },
     Save(Config),
 }
 
@@ -71,11 +91,26 @@ pub(super) enum Reply {
         epoch: u64,
         data: Result<Vec<super::HistoryItem>, ()>,
     },
+    EnrichedContext {
+        generation: u64,
+        data: Result<LiveMatchContext, ()>,
+    },
+    NamedContext {
+        generation: u64,
+        data: Result<LiveMatchContext, ()>,
+    },
+    HistoryPeaks {
+        epoch: u64,
+        entry: crate::providers::history::HistoryEntry,
+        data: Result<Vec<Option<String>>, ()>,
+    },
     Saved(Result<Config, ()>),
 }
 
 pub(super) struct Worker {
     requests: SyncSender<Request>,
+    contexts: Option<SyncSender<Request>>,
+    enrichments: Option<SyncSender<Request>>,
     observations: Option<SyncSender<Request>>,
     replies: Receiver<Reply>,
     stop: Arc<AtomicBool>,
@@ -106,6 +141,15 @@ impl Worker {
                 epoch,
                 data: Err(()),
             },
+            Request::EnrichContext { generation, .. } => Reply::EnrichedContext {
+                generation,
+                data: Err(()),
+            },
+            Request::HistoryPeaks { epoch, entry } => Reply::HistoryPeaks {
+                epoch,
+                entry,
+                data: Err(()),
+            },
         })
     }
 
@@ -113,10 +157,22 @@ impl Worker {
         let local = LocalClientSource::new();
         local.start_event_listener();
         let mut data_sources = Some(Sources::with_local(local.clone()));
+        let mut context_sources = Some(Sources::with_local(local.clone()));
+        let mut enrichment_sources = Some(Sources::with_local(local.clone()));
         let mut observer = ObserverSources::new(local);
-        Self::spawn_split(
+        Self::spawn_prioritized(
             move |request, stop, progress| {
                 data_sources
+                    .get_or_insert_with(Sources::new)
+                    .handle(request, stop, progress)
+            },
+            move |request, stop, progress| {
+                context_sources
+                    .get_or_insert_with(Sources::new)
+                    .handle(request, stop, progress)
+            },
+            move |request, stop, progress| {
+                enrichment_sources
                     .get_or_insert_with(Sources::new)
                     .handle(request, stop, progress)
             },
@@ -155,12 +211,15 @@ impl Worker {
             })?;
         Ok(Self {
             requests,
+            contexts: None,
+            enrichments: None,
             observations: None,
             replies,
             stop,
         })
     }
 
+    #[cfg(test)]
     fn spawn_split(
         mut handle_data: impl FnMut(Request, &AtomicBool, &mut dyn FnMut(Reply)) -> Reply
         + Send
@@ -205,6 +264,111 @@ impl Worker {
             })?;
         Ok(Self {
             requests,
+            contexts: None,
+            enrichments: None,
+            observations: Some(observations),
+            replies,
+            stop,
+        })
+    }
+
+    fn spawn_prioritized(
+        mut handle_data: impl FnMut(Request, &AtomicBool, &mut dyn FnMut(Reply)) -> Reply
+        + Send
+        + 'static,
+        mut handle_context: impl FnMut(Request, &AtomicBool, &mut dyn FnMut(Reply)) -> Reply
+        + Send
+        + 'static,
+        mut handle_enrichment: impl FnMut(Request, &AtomicBool, &mut dyn FnMut(Reply)) -> Reply
+        + Send
+        + 'static,
+        mut handle_observation: impl FnMut(Request, &AtomicBool) -> Reply + Send + 'static,
+    ) -> io::Result<Self> {
+        let (requests, incoming) = mpsc::sync_channel(4);
+        let (contexts, context_incoming) = mpsc::sync_channel(2);
+        let (enrichments, enrichment_incoming) = mpsc::sync_channel(2);
+        let (observations, observed) = mpsc::sync_channel(1);
+        let (outgoing, replies) = mpsc::sync_channel(24);
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let data_stop = Arc::clone(&stop);
+        let data_out = outgoing.clone();
+        thread::Builder::new()
+            .name("spike-tui-data".into())
+            .spawn(move || {
+                while let Ok(request) = incoming.recv() {
+                    if data_stop.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let mut progress = |reply| {
+                        let _ = data_out.send(reply);
+                    };
+                    let reply = handle_data(request, &data_stop, &mut progress);
+                    if data_stop.load(Ordering::Acquire) || data_out.send(reply).is_err() {
+                        break;
+                    }
+                }
+            })?;
+
+        let context_stop = Arc::clone(&stop);
+        let context_out = outgoing.clone();
+        thread::Builder::new()
+            .name("spike-tui-context".into())
+            .spawn(move || {
+                while let Ok(request) = context_incoming.recv() {
+                    if context_stop.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let mut progress = |reply| {
+                        let _ = context_out.send(reply);
+                    };
+                    let reply = handle_context(request, &context_stop, &mut progress);
+                    if context_stop.load(Ordering::Acquire) || context_out.send(reply).is_err() {
+                        break;
+                    }
+                }
+            })?;
+
+        let enrichment_stop = Arc::clone(&stop);
+        let enrichment_out = outgoing.clone();
+        thread::Builder::new()
+            .name("spike-tui-enrichment".into())
+            .spawn(move || {
+                while let Ok(request) = enrichment_incoming.recv() {
+                    if enrichment_stop.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let mut progress = |reply| {
+                        let _ = enrichment_out.send(reply);
+                    };
+                    let reply = handle_enrichment(request, &enrichment_stop, &mut progress);
+                    if enrichment_stop.load(Ordering::Acquire)
+                        || enrichment_out.send(reply).is_err()
+                    {
+                        break;
+                    }
+                }
+            })?;
+
+        let observe_stop = Arc::clone(&stop);
+        thread::Builder::new()
+            .name("spike-tui-observer".into())
+            .spawn(move || {
+                while let Ok(request) = observed.recv() {
+                    if observe_stop.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let reply = handle_observation(request, &observe_stop);
+                    if observe_stop.load(Ordering::Acquire) || outgoing.send(reply).is_err() {
+                        break;
+                    }
+                }
+            })?;
+
+        Ok(Self {
+            requests,
+            contexts: Some(contexts),
+            enrichments: Some(enrichments),
             observations: Some(observations),
             replies,
             stop,
@@ -217,6 +381,16 @@ impl Worker {
             && let Some(observations) = &self.observations
         {
             return observations.try_send(request).is_ok();
+        }
+        if matches!(request, Request::Context { .. })
+            && let Some(contexts) = &self.contexts
+        {
+            return contexts.try_send(request).is_ok();
+        }
+        if matches!(request, Request::EnrichContext { .. })
+            && let Some(enrichments) = &self.enrichments
+        {
+            return enrichments.try_send(request).is_ok();
         }
         self.requests.try_send(request).is_ok()
     }
@@ -299,6 +473,10 @@ impl Sources {
                 generation,
                 data: self.context(phase, generation, stop, progress),
             },
+            Request::EnrichContext { phase, generation } => Reply::EnrichedContext {
+                generation,
+                data: self.enrich_context(phase, generation, progress),
+            },
             Request::Parties { phase, generation } => Reply::Parties {
                 generation,
                 data: self.parties(phase),
@@ -314,6 +492,11 @@ impl Sources {
                 } else {
                     self.history(stop)
                 },
+            },
+            Request::HistoryPeaks { epoch, entry } => Reply::HistoryPeaks {
+                epoch,
+                data: self.history_peaks(&entry),
+                entry,
             },
             Request::Save(config) => {
                 let result = config::save(&config).map(|_| config).map_err(|_| ());
@@ -339,18 +522,13 @@ impl Sources {
         });
         match phase {
             GamePhase::PreGame | GamePhase::AgentSelect | GamePhase::InMatch => {
-                let request = self.local.live_match_request(phase).map_err(|_| ())?;
+                let request = self.local.live_match_request_basic(phase).map_err(|_| ())?;
                 progress(Reply::ContextProgress {
                     generation,
                     percent: 45,
                     label: "Partida detectada",
                 });
-                let context = self
-                    .live
-                    .fetch_with_party_lookup(&request, |subjects| {
-                        self.local.live_party_ids(subjects)
-                    })
-                    .map_err(|_| ())?;
+                let context = self.live.fetch_basic(&request).map_err(|_| ())?;
                 progress(Reply::ContextProgress {
                     generation,
                     percent: 90,
@@ -465,6 +643,9 @@ impl Sources {
                         let rr_after = updates
                             .get(index)
                             .and_then(|update| update.ranked_rating_after);
+                        let tier_after = updates.get(index).map(|update| update.tier_after);
+                        let performance_bonus =
+                            updates.get(index).map(|update| update.performance_bonus);
                         scope.spawn(move || {
                             let details = cached.or_else(|| {
                                 self.details
@@ -488,6 +669,8 @@ impl Sources {
                                     details,
                                     rr_change,
                                     rr_after,
+                                    tier_after,
+                                    performance_bonus,
                                 },
                             )
                         })
@@ -506,6 +689,51 @@ impl Sources {
             .collect::<Vec<_>>();
         let _ = save_cached_history(&items);
         Ok(items)
+    }
+
+    fn enrich_context(
+        &self,
+        phase: GamePhase,
+        generation: u64,
+        progress: &mut dyn FnMut(Reply),
+    ) -> Result<LiveMatchContext, ()> {
+        if self.simulation
+            || !matches!(
+                phase,
+                GamePhase::PreGame | GamePhase::AgentSelect | GamePhase::InMatch
+            )
+        {
+            return Err(());
+        }
+        let request = self.local.live_match_request(phase).map_err(|_| ())?;
+        if let Ok(context) = self.live.fetch_named(&request) {
+            progress(Reply::NamedContext {
+                generation,
+                data: Ok(context),
+            });
+        }
+        self.live
+            // Presence se actualiza en su propio carril. Esperarla aquí retrasaba
+            // nombres, estadísticas y PEAK varios segundos antes de empezar.
+            .fetch_with_party_lookup(&request, |_| HashMap::new())
+            .map_err(|_| ())
+    }
+
+    fn history_peaks(
+        &self,
+        entry: &crate::providers::history::HistoryEntry,
+    ) -> Result<Vec<Option<String>>, ()> {
+        let request = self.local.history_request(20).map_err(|_| ())?;
+        let item = self
+            .history
+            .fetch_own_matches(&request)
+            .map_err(|_| ())?
+            .into_iter()
+            .find(|item| &item.entry == entry)
+            .ok_or(())?;
+        self.details
+            .fetch_roster_peaks(&request.match_detail_request(item.match_id))
+            .map_err(|_| ())
     }
 }
 
@@ -554,9 +782,9 @@ fn history_cache_path() -> Option<std::path::PathBuf> {
     config::config_path().map(|path| path.with_file_name("history-cache.json"))
 }
 
-const HISTORY_CACHE_SCHEMA: u8 = 4;
+const HISTORY_CACHE_SCHEMA: u8 = 5;
 
-fn save_cached_history(items: &[super::HistoryItem]) -> Result<(), ()> {
+pub(super) fn save_cached_history(items: &[super::HistoryItem]) -> Result<(), ()> {
     let path = history_cache_path().ok_or(())?;
     let parent = path.parent().ok_or(())?;
     fs::create_dir_all(parent).map_err(|_| ())?;
@@ -579,9 +807,10 @@ fn save_cached_history(items: &[super::HistoryItem]) -> Result<(), ()> {
 pub(super) fn load_cached_history() -> Option<super::CachedHistory> {
     let bytes = fs::read(history_cache_path()?).ok()?;
     let mut cached: super::CachedHistory = serde_json::from_slice(&bytes).ok()?;
-    if cached.schema != HISTORY_CACHE_SCHEMA || cached.saved_at_ms == 0 {
+    if !matches!(cached.schema, 4 | HISTORY_CACHE_SCHEMA) || cached.saved_at_ms == 0 {
         return None;
     }
+    cached.schema = HISTORY_CACHE_SCHEMA;
     cached.items.truncate(20);
     Some(cached)
 }
@@ -604,6 +833,8 @@ mod tests {
                 details: None,
                 rr_change: Some(18),
                 rr_after: Some(64),
+                tier_after: Some(18),
+                performance_bonus: Some(2),
             }],
         };
 
@@ -669,6 +900,58 @@ mod tests {
         assert!(matches!(
             worker.replies.recv_timeout(Duration::from_secs(2)),
             Ok(Reply::Observed { .. })
+        ));
+
+        drop(worker);
+        release_tx.send(()).unwrap();
+    }
+
+    #[test]
+    fn live_enrichment_has_an_independent_lane() {
+        let (data_started_tx, data_started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (enrichment_started_tx, enrichment_started_rx) = mpsc::channel();
+        let worker = Worker::spawn_prioritized(
+            move |_, _, _| {
+                data_started_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                Reply::Profile {
+                    epoch: 0,
+                    data: Err(()),
+                }
+            },
+            move |_, _, _| Reply::Context {
+                generation: 0,
+                data: Err(()),
+            },
+            move |_, _, _| {
+                enrichment_started_tx.send(()).unwrap();
+                Reply::EnrichedContext {
+                    generation: 7,
+                    data: Err(()),
+                }
+            },
+            move |_, _| Reply::Observed {
+                state: Err(()),
+                log_failed: false,
+            },
+        )
+        .unwrap();
+
+        assert!(worker.submit(Request::Profile { epoch: 0 }));
+        data_started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        assert!(worker.submit(Request::EnrichContext {
+            phase: GamePhase::InMatch,
+            generation: 7,
+        }));
+        enrichment_started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        assert!(matches!(
+            worker.replies.recv_timeout(Duration::from_secs(2)),
+            Ok(Reply::EnrichedContext { generation: 7, .. })
         ));
 
         drop(worker);

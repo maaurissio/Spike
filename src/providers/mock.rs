@@ -93,6 +93,7 @@ impl GameStateSource for MockGameStateSource {
                     source: self.name,
                     client_found,
                     game_found,
+                    context_revision: None,
                 })
             }
             Err(e) => Err(e),

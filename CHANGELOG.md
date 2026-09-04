@@ -1,5 +1,23 @@
 # Changelog
 
+## [Sin publicar]
+
+### Añadido
+
+- `MI PERFIL` incorpora un resumen de progresión de RR y un análisis desplazable con hasta veinte partidas, agregados por agente y mapa, y totales de combate.
+- Los rosters en vivo, selección de agente, postpartida, historial y demo muestran el PEAK competitivo conservado por Riot.
+
+### Cambiado
+
+- La partida activa carga primero el contexto, el roster básico y los nombres visibles; estadísticas, grupos y PEAK se completan después en carriles independientes con estado de carga visible.
+- La caché segura de historial migra al esquema 5 con rango posterior y bonus de rendimiento, sin guardar MatchID, PUUID ni tokens.
+
+### Corregido
+
+- Una revisión opaca de partida invalida inmediatamente la postpartida anterior y evita que respuestas tardías sobrescriban la partida actual.
+- El enriquecimiento pesado del roster ya no bloquea el perfil, los nombres ni la detección de la siguiente partida.
+- Los enriquecimientos fallidos usan reintentos limitados y las consultas individuales de PEAK pueden reintentarse manualmente con `r` sin entrar en un bucle.
+
 ## [0.3.1] - 2026-09-01
 
 ### Cambiado

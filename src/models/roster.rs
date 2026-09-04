@@ -104,6 +104,8 @@ pub(crate) struct RosterPlayer {
     pub identity: DataAvailability<String>,
     pub agent: DataAvailability<String>,
     pub rank: DataAvailability<String>,
+    /// Mayor rango competitivo conservado por Riot entre sus temporadas.
+    pub peak_rank: DataAvailability<String>,
     pub level: DataAvailability<u32>,
     /// Etiqueta normalizada (`Grupo A`, `Grupo B`, `Solo`), nunca PartyID.
     pub premade: DataAvailability<String>,
@@ -249,6 +251,7 @@ mod tests {
             },
             agent: DataAvailability::NotAvailable,
             rank: DataAvailability::ApprovalRequired,
+            peak_rank: DataAvailability::ApprovalRequired,
             level: DataAvailability::NotAvailable,
             premade: DataAvailability::NotAvailable,
             stats: DataAvailability::ApprovalRequired,

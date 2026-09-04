@@ -448,6 +448,8 @@ mod tests {
             Some(&crate::providers::profile::CompetitiveProfile {
                 tier: 18,
                 ranked_rating: 50,
+                peak_tier: 20,
+                peak_ranked_rating: 80,
                 wins: 20,
                 games: 35,
             }),

@@ -4,7 +4,7 @@
 //! una fuente futura a los modelos internos y rechaza respuestas incompletas.
 #![allow(dead_code)] // Se conecta cuando MatchDetailSource obtenga respuestas post-partida.
 
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, thread, time::Duration};
 
 use reqwest::{StatusCode, blocking::Client};
 use serde::{Deserialize, Serialize};
@@ -90,6 +90,8 @@ pub(crate) struct CompletedRosterPlayer {
     pub riot_id: Option<String>,
     pub agent: String,
     pub rank: Option<String>,
+    #[serde(default)]
+    pub peak_rank: Option<String>,
     pub stats: PlayerMatchStats,
     pub rounds_played: u32,
     /// Índice visual estable (1..=5); `None` significa jugador solo/sin dato.
@@ -202,6 +204,93 @@ impl MatchDetailSource {
                 "PD respondió HTTP {status} en match-details"
             ))),
         }
+    }
+
+    /// Resuelve etiquetas PEAK y descarta los identificadores antes de
+    /// retornar. El orden coincide con el roster normalizado del detalle.
+    pub(crate) fn fetch_roster_peaks(
+        &self,
+        request: &MatchDetailRequest,
+    ) -> Result<Vec<Option<String>>, ProviderError> {
+        let base = self
+            .base_url
+            .clone()
+            .unwrap_or_else(|| format!("https://pd.{}.a.pvp.net", request.shard));
+        let payload = self
+            .client
+            .get(format!(
+                "{base}/match-details/v1/matches/{}",
+                request.match_id
+            ))
+            .header("X-Riot-ClientPlatform", CLIENT_PLATFORM)
+            .header("X-Riot-ClientVersion", &request.client_version)
+            .header("X-Riot-Entitlements-JWT", &request.entitlement_token)
+            .bearer_auth(&request.access_token)
+            .send()
+            .map_err(|_| ProviderError::Network("no se pudo consultar roster para PEAK".into()))?
+            .json::<Value>()
+            .map_err(|_| parse_error("JSON inválido en roster para PEAK"))?;
+        let subjects = scoreboard_subjects(&payload);
+        let mut peaks = HashMap::new();
+        for chunk in subjects.chunks(6) {
+            let values = thread::scope(|scope| {
+                chunk
+                    .iter()
+                    .cloned()
+                    .map(|subject| {
+                        let base = base.clone();
+                        scope.spawn(move || {
+                            let peak = self.fetch_peak(request, &base, &subject).ok().flatten();
+                            (subject, peak)
+                        })
+                    })
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .filter_map(|handle| handle.join().ok())
+                    .collect::<Vec<_>>()
+            });
+            peaks.extend(values);
+        }
+        Ok(subjects
+            .iter()
+            .map(|subject| peaks.get(subject).cloned().flatten())
+            .collect())
+    }
+
+    fn fetch_peak(
+        &self,
+        request: &MatchDetailRequest,
+        base: &str,
+        subject: &str,
+    ) -> Result<Option<String>, ProviderError> {
+        let payload = self
+            .client
+            .get(format!("{base}/mmr/v1/players/{subject}"))
+            .header("X-Riot-ClientPlatform", CLIENT_PLATFORM)
+            .header("X-Riot-ClientVersion", &request.client_version)
+            .header("X-Riot-Entitlements-JWT", &request.entitlement_token)
+            .bearer_auth(&request.access_token)
+            .send()
+            .map_err(|_| ProviderError::Network("no se pudo consultar PEAK".into()))?
+            .json::<Value>()
+            .map_err(|_| parse_error("JSON inválido en PEAK"))?;
+        Ok(payload
+            .pointer("/QueueSkills/competitive/SeasonalInfoBySeasonID")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flat_map(|seasons| seasons.values())
+            .filter_map(|season| {
+                let tier = season.get("CompetitiveTier")?.as_u64()?;
+                (tier >= 3).then_some((
+                    tier,
+                    season
+                        .get("RankedRating")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                ))
+            })
+            .max()
+            .and_then(|(tier, _)| crate::providers::roster::competitive_tier_label(tier)))
     }
 
     fn fetch_names(
@@ -526,6 +615,7 @@ fn completed_roster(
                     .or_else(|| player.get("CompetitiveTier"))
                     .and_then(Value::as_u64)
                     .and_then(crate::providers::roster::competitive_tier_label),
+                peak_rank: None,
                 stats: PlayerMatchStats {
                     kills: required_u32(stats, "kills").ok()?,
                     deaths: required_u32(stats, "deaths").ok()?,

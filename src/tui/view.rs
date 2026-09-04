@@ -246,29 +246,30 @@ fn duration_clock(duration: std::time::Duration) -> String {
 fn profile_summary(s: &mut Screen, app: &App) {
     if app.demo.is_some() {
         let rank = "DIAMANTE 2";
-        s.row(Line::from(vec![
-            Span::styled(rank, s.palette.rank_style(rank)),
-            Span::styled(" · Nivel 142", s.palette.base),
-        ]));
+        s.row(Line::styled(rank, s.palette.rank_style(rank)));
         s.row(rr_progress_line(64, &s.palette, rank));
+        s.text("PEAK ASC3 · Nivel 142 · 20 competitivas");
     } else {
         match (&app.own_profile, &app.competitive) {
             (Some(profile), Some(rank)) => {
                 let rank_label = title_text(&crate::ui::competitive_tier_label(rank.tier));
-                s.row(Line::from(vec![
-                    Span::styled(rank_label.clone(), s.palette.rank_style(&rank_label)),
-                    Span::styled(format!(" · Nivel {}", profile.level), s.palette.base),
-                ]));
+                s.row(Line::styled(
+                    rank_label.clone(),
+                    s.palette.rank_style(&rank_label),
+                ));
                 let progress = rr_progress_line(rank.ranked_rating, &s.palette, &rank_label);
                 s.row(progress);
-                if rank.games > 0 {
-                    s.text(format!(
-                        "{} XP · {} victorias / {} competitivas",
-                        profile.xp, rank.wins, rank.games
-                    ));
-                } else {
-                    s.text(format!("{} XP", profile.xp));
-                }
+                let peak = title_text(&crate::ui::competitive_tier_label(rank.peak_tier));
+                let games = app.history.as_ref().map_or(0, Vec::len);
+                s.row(Line::from(vec![
+                    Span::raw("PEAK "),
+                    Span::styled(peak.clone(), s.palette.rank_style(&peak)),
+                    Span::raw(format!(" · Nivel {} · {games} competitivas", profile.level)),
+                ]));
+                s.text(format!(
+                    "{} XP · {} victorias del acto",
+                    profile.xp, rank.wins
+                ));
             }
             (Some(profile), None) => {
                 s.text(format!("Nivel {} · {} XP", profile.level, profile.xp));
@@ -331,112 +332,505 @@ fn phase_style(s: &Screen, app: &App) -> Style {
 fn profile(s: &mut Screen, app: &App) {
     s.section("MI PERFIL", s.palette.focus);
     profile_summary(s, app);
-    s.section("ÚLTIMAS 5 RANKED", s.palette.focus);
-    if app.demo.is_some() {
-        s.text("Competitivo / últimas 20 partidas\nK/D 1.18 · WR 55% · HS 26%\n11 victorias / 9 derrotas");
-        s.section("POR AGENTE", s.palette.focus);
-        s.text("AGENTE     PJ    K/D    WR\nSova       12    1.24   58%\nOmen        5    1.08   40%\nKilljoy     3    1.11   67%");
-    } else if let Some(summary) = history_summary(app) {
-        s.text(summary);
-        profile_agents(s, app);
-    } else if app.history_pending {
-        s.text("Calculando tu rendimiento reciente…");
+    let metrics = profile_metrics(app);
+    if app.profile_detail {
+        profile_analysis(s, app, &metrics);
     } else {
-        s.text("No hay detalles recientes disponibles.");
-    }
-    s.section("CAMBIOS DE RR", s.palette.focus);
-    if let Some(demo) = &app.demo {
-        for m in &demo.matches {
-            s.row(Line::styled(
-                format!(
-                    "{}   {}   {:+} RR",
-                    m.map,
-                    if m.won { "V" } else { "D" },
-                    m.rr
-                ),
-                if m.won { s.palette.good } else { s.palette.bad },
-            ));
-        }
-    } else if app.profile_pending {
-        s.text("Cargando cambios competitivos…");
-    } else if app.competitive_updates.is_empty() {
-        s.text("No hay cambios competitivos recientes.");
-    } else {
-        for update in &app.competitive_updates {
-            s.row(Line::styled(
-                format!(
-                    "{:+} RR · {}{}",
-                    update.rr_earned,
-                    crate::ui::competitive_tier_label(update.tier_after),
-                    if update.performance_bonus > 0 {
-                        format!(" · +{} rendimiento", update.performance_bonus)
-                    } else {
-                        String::new()
-                    }
-                ),
-                if update.rr_earned >= 0 {
-                    s.palette.good
-                } else {
-                    s.palette.bad
-                },
-            ));
-        }
+        profile_overview(s, app, &metrics);
     }
 }
 
 #[derive(Default)]
-struct AgentSummary {
+struct ProfileMetrics {
+    games: usize,
+    wins: usize,
+    losses: usize,
+    draws: usize,
+    kills: u32,
+    deaths: u32,
+    assists: u32,
+    rounds: u32,
+    score: u32,
+    score_games: u32,
+    damage: u32,
+    damage_games: u32,
+    headshots: u32,
+    bodyshots: u32,
+    legshots: u32,
+    shots_games: u32,
+    rr_net: i32,
+    rr_values: Vec<i32>,
+    rating_values: Vec<i32>,
+    outcomes: Vec<MatchOutcome>,
+}
+
+fn profile_metrics(app: &App) -> ProfileMetrics {
+    let mut result = ProfileMetrics::default();
+    if let Some(demo) = &app.demo {
+        result.games = demo.matches.len();
+        let mut rating = 1_850_i32;
+        for item in &demo.matches {
+            let outcome = if item.won {
+                MatchOutcome::Win
+            } else {
+                MatchOutcome::Loss
+            };
+            result.outcomes.push(outcome);
+            result.wins += usize::from(item.won);
+            result.losses += usize::from(!item.won);
+            result.kills += item.kills;
+            result.deaths += item.deaths;
+            result.assists += item.assists;
+            result.rounds += 20;
+            result.score += item.acs.saturating_mul(20);
+            result.score_games += 1;
+            result.rr_net += item.rr;
+            result.rr_values.push(item.rr);
+            rating += item.rr;
+            result.rating_values.push(rating);
+        }
+        return result;
+    }
+    let Some(history) = &app.history else {
+        return result;
+    };
+    result.games = history.len();
+    for item in history {
+        if let Some(rr) = item.rr_change {
+            result.rr_net += rr;
+            result.rr_values.push(rr);
+        }
+        if let (Some(tier), Some(rr)) = (item.tier_after, item.rr_after) {
+            result.rating_values.push((tier as i32) * 100 + rr as i32);
+        }
+        let Some(details) = &item.details else {
+            continue;
+        };
+        result.outcomes.push(details.outcome);
+        match details.outcome {
+            MatchOutcome::Win => result.wins += 1,
+            MatchOutcome::Loss => result.losses += 1,
+            MatchOutcome::Draw => result.draws += 1,
+            MatchOutcome::Unknown => {}
+        }
+        result.kills = result.kills.saturating_add(details.stats.kills);
+        result.deaths = result.deaths.saturating_add(details.stats.deaths);
+        result.assists = result.assists.saturating_add(details.stats.assists);
+        result.rounds = result.rounds.saturating_add(details.rounds_played);
+        if let Some(score) = details.stats.combat_score {
+            result.score = result.score.saturating_add(score);
+            result.score_games += 1;
+        }
+        if let Some(damage) = details.stats.damage {
+            result.damage = result.damage.saturating_add(damage);
+            result.damage_games += 1;
+        }
+        if let (Some(head), Some(body), Some(leg)) = (
+            details.stats.headshots,
+            details.stats.bodyshots,
+            details.stats.legshots,
+        ) {
+            result.headshots = result.headshots.saturating_add(head);
+            result.bodyshots = result.bodyshots.saturating_add(body);
+            result.legshots = result.legshots.saturating_add(leg);
+            result.shots_games += 1;
+        }
+    }
+    result
+}
+
+fn profile_overview(s: &mut Screen, app: &App, metrics: &ProfileMetrics) {
+    s.section("PROGRESIÓN RECIENTE", s.palette.focus);
+    if metrics.games == 0 {
+        s.text(if app.history_pending {
+            "Cargando tus competitivas recientes…"
+        } else {
+            "No hay competitivas recientes disponibles."
+        });
+    } else {
+        let current = app
+            .competitive
+            .as_ref()
+            .map(|rank| compact_rank_label(&crate::ui::competitive_tier_label(rank.tier)));
+        let oldest = app
+            .history
+            .as_ref()
+            .and_then(|items| items.iter().rev().find_map(|item| item.tier_after))
+            .map(|tier| compact_rank_label(&crate::ui::competitive_tier_label(tier)));
+        s.text(format!(
+            "Inicio {} → Actual {} · Saldo {:+} RR",
+            oldest.as_deref().unwrap_or("—"),
+            current.as_deref().unwrap_or("—"),
+            metrics.rr_net
+        ));
+        s.row(outcome_line(&metrics.outcomes, &s.palette));
+        if !metrics.rating_values.is_empty() {
+            s.text(format!(
+                "{}  tendencia de rango",
+                sparkline(&metrics.rating_values)
+            ));
+        }
+        s.text(format!(
+            "{} V / {} D{}",
+            metrics.wins,
+            metrics.losses,
+            if metrics.draws > 0 {
+                format!(" / {} E", metrics.draws)
+            } else {
+                String::new()
+            }
+        ));
+    }
+    s.section("RENDIMIENTO", s.palette.focus);
+    render_profile_totals(s, metrics);
+    s.row(Line::styled("[Enter] análisis completo", s.palette.focus));
+}
+
+fn profile_analysis(s: &mut Screen, app: &App, metrics: &ProfileMetrics) {
+    s.section("PROGRESIÓN DE RANGO", s.palette.focus);
+    let best = metrics.rr_values.iter().max().copied();
+    let worst = metrics.rr_values.iter().min().copied();
+    s.text(format!(
+        "Saldo {:+} RR · Mejor {} · Peor {} · Racha {}",
+        metrics.rr_net,
+        best.map_or_else(|| "—".into(), |value| format!("{value:+}")),
+        worst.map_or_else(|| "—".into(), |value| format!("{value:+}")),
+        streak_text(&metrics.outcomes)
+    ));
+    if !metrics.rating_values.is_empty() {
+        s.text(format!(
+            "{}  últimas {}",
+            sparkline(&metrics.rating_values),
+            metrics.rating_values.len()
+        ));
+    }
+    s.text(format!(
+        "{} victorias · {} derrotas · {} empates",
+        metrics.wins, metrics.losses, metrics.draws
+    ));
+    profile_recent_matches(s, app);
+    s.section("TOTALES DE COMBATE", s.palette.focus);
+    render_profile_totals(s, metrics);
+    profile_breakdowns(s, app);
+}
+
+fn outcome_line(outcomes: &[MatchOutcome], palette: &Palette) -> Line<'static> {
+    let mut spans = Vec::new();
+    for outcome in outcomes.iter().take(20) {
+        spans.push(Span::styled(
+            format!("{} ", outcome_short(*outcome)),
+            match outcome {
+                MatchOutcome::Win => palette.good,
+                MatchOutcome::Loss => palette.bad,
+                MatchOutcome::Draw => palette.pending,
+                MatchOutcome::Unknown => palette.dim,
+            },
+        ));
+    }
+    Line::from(spans)
+}
+
+fn sparkline(values: &[i32]) -> String {
+    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let min = values.iter().min().copied().unwrap_or(0);
+    let max = values.iter().max().copied().unwrap_or(min);
+    values
+        .iter()
+        .rev()
+        .map(|value| {
+            let index = if max == min {
+                3
+            } else {
+                ((*value - min) as usize * (BARS.len() - 1)) / (max - min) as usize
+            };
+            BARS[index]
+        })
+        .collect()
+}
+
+fn streak_text(outcomes: &[MatchOutcome]) -> String {
+    let Some(first) = outcomes.first().copied() else {
+        return "—".into();
+    };
+    let count = outcomes.iter().take_while(|value| **value == first).count();
+    format!("{} {count}", outcome_short(first))
+}
+
+fn render_profile_totals(s: &mut Screen, metrics: &ProfileMetrics) {
+    let decided = metrics.wins + metrics.losses;
+    let wr = (decided > 0).then(|| metrics.wins as f64 * 100.0 / decided as f64);
+    let hits = metrics.headshots + metrics.bodyshots + metrics.legshots;
+    let hs = (metrics.shots_games > 0 && hits > 0)
+        .then(|| metrics.headshots as f64 * 100.0 / hits as f64);
+    let per_round = |value: u32| (metrics.rounds > 0).then(|| value as f64 / metrics.rounds as f64);
+    let average = |value: u32, available: u32| {
+        (available > 0 && metrics.rounds > 0).then(|| value as f64 / metrics.rounds as f64)
+    };
+    s.text(format!(
+        "K/D {} · KDA {} · WR {} · HS {}",
+        kd_text(metrics.kills, metrics.deaths),
+        kd_text(
+            metrics.kills.saturating_add(metrics.assists),
+            metrics.deaths
+        ),
+        wr.map_or_else(|| "—".into(), |value| format!("{value:.0}%")),
+        hs.map_or_else(|| "—".into(), |value| format!("{value:.1}%"))
+    ));
+    s.text(format!(
+        "ACS {} · ADR {} · K/R {} · D/R {}",
+        average(metrics.score, metrics.score_games)
+            .map_or_else(|| "—".into(), |value| format!("{value:.0}")),
+        average(metrics.damage, metrics.damage_games)
+            .map_or_else(|| "—".into(), |value| format!("{value:.0}")),
+        per_round(metrics.kills).map_or_else(|| "—".into(), |value| format!("{value:.2}")),
+        per_round(metrics.deaths).map_or_else(|| "—".into(), |value| format!("{value:.2}"))
+    ));
+}
+
+fn profile_recent_matches(s: &mut Screen, app: &App) {
+    s.section("PARTIDAS RECIENTES", s.palette.focus);
+    if let Some(demo) = &app.demo {
+        s.row(Line::styled(
+            "RES  MAPA       AGENTE     MARCADOR  K/D/A        ACS   RR",
+            s.palette.dim,
+        ));
+        for item in &demo.matches {
+            let result = if item.won { "V" } else { "D" };
+            s.row(Line::from(vec![
+                Span::styled(
+                    cell(result, 5),
+                    if item.won {
+                        s.palette.good
+                    } else {
+                        s.palette.bad
+                    },
+                ),
+                Span::raw(cell(item.map, 11)),
+                Span::styled(cell(item.agent, 11), s.palette.dim),
+                Span::raw(cell(item.score, 10)),
+                Span::raw(cell(
+                    &format!("{}/{}/{}", item.kills, item.deaths, item.assists),
+                    13,
+                )),
+                Span::styled(cell(&item.acs.to_string(), 6), s.palette.focus),
+                Span::styled(
+                    format!("{:+}", item.rr),
+                    if item.rr >= 0 {
+                        s.palette.good
+                    } else {
+                        s.palette.bad
+                    },
+                ),
+            ]));
+        }
+        return;
+    }
+    let Some(history) = &app.history else {
+        s.text("No hay partidas disponibles.");
+        return;
+    };
+    let wide = s.width >= 105;
+    let medium = s.width >= 78;
+    s.row(Line::styled(
+        if wide {
+            "RES  CUÁNDO    MAPA       AGENTE     MARCADOR  K/D/A       ACS  HS%    RR    RANGO"
+        } else if medium {
+            "RES  MAPA       AGENTE     K/D/A       ACS    RR    RANGO"
+        } else {
+            "RES  MAPA       AGENTE     K/D/A      RR"
+        },
+        s.palette.dim,
+    ));
+    for item in history.iter().take(20) {
+        let details = item.details.as_ref();
+        let outcome = details.map_or(MatchOutcome::Unknown, |value| value.outcome);
+        let result_style = match outcome {
+            MatchOutcome::Win => s.palette.good,
+            MatchOutcome::Loss => s.palette.bad,
+            MatchOutcome::Draw => s.palette.pending,
+            MatchOutcome::Unknown => s.palette.dim,
+        };
+        let result = outcome_short(outcome);
+        let map = details.map_or("—", |value| value.map.as_str());
+        let agent = details.map_or("—", |value| value.agent.as_str());
+        let kda = details.map_or_else(
+            || "—".into(),
+            |value| {
+                format!(
+                    "{}/{}/{}",
+                    value.stats.kills, value.stats.deaths, value.stats.assists
+                )
+            },
+        );
+        let acs = details.map_or_else(
+            || "—".into(),
+            |value| average_text(value.stats.combat_score, value.rounds_played, 0),
+        );
+        let hs = details.map_or_else(|| "—".into(), |value| match_hs_text(&value.stats));
+        let score = details.and_then(|value| score_text(value.own_score, value.opponent_score));
+        let rr = item
+            .rr_change
+            .map_or_else(|| "—".into(), |value| format!("{value:+}"));
+        let rank = item.tier_after.map_or_else(
+            || "—".into(),
+            |tier| compact_rank_label(&crate::ui::competitive_tier_label(tier)),
+        );
+        let mut spans = vec![Span::styled(cell(result, 5), result_style)];
+        if wide {
+            spans.push(Span::styled(
+                cell(&relative_time(item.entry.started_at_ms), 9),
+                s.palette.dim,
+            ));
+        }
+        spans.extend([
+            Span::styled(cell(map, 11), s.palette.base),
+            Span::styled(cell(agent, 11), s.palette.dim),
+        ]);
+        if wide {
+            spans.push(Span::raw(cell(score.as_deref().unwrap_or("—"), 10)));
+        }
+        spans.push(Span::raw(cell(&kda, if medium { 12 } else { 11 })));
+        if medium {
+            spans.push(Span::styled(cell(&acs, 7), s.palette.focus));
+        }
+        if wide {
+            spans.push(Span::styled(cell(&hs, 7), s.palette.focus));
+        }
+        spans.push(Span::styled(
+            cell(&rr, 6),
+            if item.rr_change.unwrap_or(0) >= 0 {
+                s.palette.good
+            } else {
+                s.palette.bad
+            },
+        ));
+        if medium {
+            spans.push(Span::styled(rank.clone(), s.palette.rank_style(&rank)));
+        }
+        s.row(Line::from(spans));
+    }
+}
+
+#[derive(Clone, Default)]
+struct BreakdownSummary {
     games: u32,
     wins: u32,
     kills: u32,
     deaths: u32,
+    score: u32,
+    damage: u32,
+    score_rounds: u32,
+    damage_rounds: u32,
+    rr: i32,
 }
 
-fn profile_agents(s: &mut Screen, app: &App) {
-    let mut agents = BTreeMap::<String, AgentSummary>::new();
-    for details in app
-        .history
-        .as_ref()
-        .into_iter()
-        .flat_map(|history| history.iter().filter_map(|item| item.details.as_ref()))
-    {
-        let entry = agents.entry(details.agent.clone()).or_default();
-        entry.games += 1;
-        entry.wins += u32::from(details.outcome == MatchOutcome::Win);
-        entry.kills = entry.kills.saturating_add(details.stats.kills);
-        entry.deaths = entry.deaths.saturating_add(details.stats.deaths);
+fn profile_breakdowns(s: &mut Screen, app: &App) {
+    let mut agents = BTreeMap::<String, BreakdownSummary>::new();
+    let mut maps = BTreeMap::<String, BreakdownSummary>::new();
+    for item in app.history.as_ref().into_iter().flatten() {
+        let Some(details) = &item.details else {
+            continue;
+        };
+        add_breakdown(
+            agents.entry(details.agent.clone()).or_default(),
+            details,
+            item.rr_change,
+        );
+        add_breakdown(
+            maps.entry(details.map.clone()).or_default(),
+            details,
+            item.rr_change,
+        );
     }
-    s.section("POR AGENTE", s.palette.focus);
-    if agents.is_empty() {
-        s.text("No hay detalles suficientes por agente.");
-        return;
+    let agents = sorted_breakdowns(agents);
+    let maps = sorted_breakdowns(maps);
+    if s.width >= 96 {
+        s.section("AGENTES / MAPAS", s.palette.focus);
+        s.row(Line::styled(
+            "AGENTE       PJ  WR   K/D  ACS  ADR   RR       MAPA          PJ  WR   K/D  ACS  ADR   RR",
+            s.palette.dim,
+        ));
+        for index in 0..agents.len().max(maps.len()).min(8) {
+            let left = agents
+                .get(index)
+                .map_or_else(|| " ".repeat(43), breakdown_text);
+            let right = maps.get(index).map_or_else(String::new, breakdown_text);
+            s.text(format!("{left}   {right}"));
+        }
+    } else {
+        render_breakdown(s, "POR AGENTE", "AGENTE", &agents);
+        render_breakdown(s, "POR MAPA", "MAPA", &maps);
     }
-    let mut agents = agents.into_iter().collect::<Vec<_>>();
-    agents.sort_by(|(left_name, left), (right_name, right)| {
+}
+
+fn add_breakdown(summary: &mut BreakdownSummary, details: &super::HistoryDetails, rr: Option<i32>) {
+    summary.games += 1;
+    summary.wins += u32::from(details.outcome == MatchOutcome::Win);
+    summary.kills = summary.kills.saturating_add(details.stats.kills);
+    summary.deaths = summary.deaths.saturating_add(details.stats.deaths);
+    if let Some(score) = details.stats.combat_score {
+        summary.score = summary.score.saturating_add(score);
+        summary.score_rounds = summary.score_rounds.saturating_add(details.rounds_played);
+    }
+    if let Some(damage) = details.stats.damage {
+        summary.damage = summary.damage.saturating_add(damage);
+        summary.damage_rounds = summary.damage_rounds.saturating_add(details.rounds_played);
+    }
+    summary.rr = summary.rr.saturating_add(rr.unwrap_or(0));
+}
+
+fn sorted_breakdowns(
+    values: BTreeMap<String, BreakdownSummary>,
+) -> Vec<(String, BreakdownSummary)> {
+    let mut values = values.into_iter().collect::<Vec<_>>();
+    values.sort_by(|(left_name, left), (right_name, right)| {
         right
             .games
             .cmp(&left.games)
             .then_with(|| left_name.cmp(right_name))
     });
+    values
+}
+
+fn breakdown_text((name, summary): &(String, BreakdownSummary)) -> String {
+    let wr = (summary.wins * 100).checked_div(summary.games).unwrap_or(0);
+    let acs = summary
+        .score
+        .checked_div(summary.score_rounds)
+        .map_or_else(|| "—".to_string(), |value| value.to_string());
+    let adr = summary
+        .damage
+        .checked_div(summary.damage_rounds)
+        .map_or_else(|| "—".to_string(), |value| value.to_string());
+    format!(
+        "{} {:>2} {:>3}% {:>5} {:>4} {:>4} {:+4}",
+        cell(name, 12),
+        summary.games,
+        wr,
+        kd_text(summary.kills, summary.deaths),
+        acs,
+        adr,
+        summary.rr
+    )
+}
+
+fn render_breakdown(
+    s: &mut Screen,
+    title: &str,
+    label: &str,
+    values: &[(String, BreakdownSummary)],
+) {
+    s.section(title, s.palette.focus);
+    if values.is_empty() {
+        s.text("No hay detalles suficientes.");
+        return;
+    }
     s.row(Line::styled(
-        if s.width >= 60 {
-            "AGENTE           PJ    K/D    WR"
-        } else {
-            "AGENTE      PJ   K/D   WR"
-        },
+        format!("{label:<12} PJ  WR   K/D  ACS  ADR   RR"),
         s.palette.dim,
     ));
-    for (agent, summary) in agents.into_iter().take(5) {
-        let win_rate = summary.wins as f64 * 100.0 / summary.games as f64;
-        s.row(Line::from(vec![
-            Span::styled(
-                cell(&agent, if s.width >= 60 { 17 } else { 11 }),
-                s.palette.base,
-            ),
-            Span::raw(cell(&summary.games.to_string(), 6)),
-            Span::raw(cell(&kd_text(summary.kills, summary.deaths), 7)),
-            Span::styled(format!("{win_rate:.0}%"), s.palette.good),
-        ]));
+    for value in values.iter().take(8) {
+        s.text(breakdown_text(value));
     }
 }
 
@@ -463,8 +857,8 @@ fn match_view(s: &mut Screen, app: &App) {
                 s.text("Identidad y estadísticas ocultas.\nNo se intentará descubrirlas.");
             } else {
                 s.text(format!(
-                    "{} · K/D {} · WR {}\nHS {} · ADR {} · 20 partidas",
-                    player.rank, player.kd, player.wr, player.hs, player.adr
+                    "{} · Peak {} · K/D {} · WR {}\nHS {} · ADR {} · 20 partidas",
+                    player.rank, player.peak, player.kd, player.wr, player.hs, player.adr
                 ));
             }
             s.text(if app.tracker_notice {
@@ -480,13 +874,20 @@ fn match_view(s: &mut Screen, app: &App) {
         }
         return;
     }
-    if app.postmatch_history_ready
+    let active_match = app.state.as_ref().is_some_and(|state| {
+        matches!(
+            state.phase,
+            GamePhase::PreGame | GamePhase::AgentSelect | GamePhase::InMatch
+        )
+    });
+    if !active_match
+        && app.postmatch_history_ready
         && let Some(item) = app.history.as_ref().and_then(|items| items.first())
     {
         history_match_detail(s, app, item);
         return;
     }
-    if let Some(completed) = &app.completed_match {
+    if !active_match && let Some(completed) = &app.completed_match {
         postmatch(s, completed);
         return;
     }
@@ -507,6 +908,12 @@ fn match_view(s: &mut Screen, app: &App) {
         return;
     };
     s.text(format!("{} / {}", context.map, context.mode));
+    if app.enrichment_pending {
+        s.row(Line::styled(
+            "⟳ Cargando nombres, estadísticas y PEAK…",
+            s.palette.pending,
+        ));
+    }
     let preparing = app
         .state
         .as_ref()
@@ -638,7 +1045,8 @@ fn postmatch(s: &mut Screen, completed: &super::PostMatch) {
 }
 
 fn live_roster(s: &mut Screen, app: &App, roster: &RosterSnapshot, side: RosterSide) {
-    let wide = s.width >= 70;
+    let wide = s.width >= 86;
+    let tiny = s.width < 50;
     let player_context = s.width >= 90;
     let tracker_column = s.width >= if player_context { 93 } else { 78 };
     let players = roster
@@ -656,9 +1064,46 @@ fn live_roster(s: &mut Screen, app: &App, roster: &RosterSnapshot, side: RosterS
         Span::styled("  ", s.palette.dim),
         Span::styled(cell("JUGADOR", if wide { 16 } else { 10 }), s.palette.dim),
         Span::styled(if wide { "  " } else { " " }, s.palette.dim),
-        Span::styled(cell("AGENTE", if wide { 11 } else { 9 }), s.palette.dim),
+        Span::styled(
+            cell(
+                "AGENTE",
+                if wide {
+                    11
+                } else if tiny {
+                    6
+                } else {
+                    9
+                },
+            ),
+            s.palette.dim,
+        ),
         Span::styled(" ", s.palette.dim),
-        Span::styled(cell("RANGO", if wide { 7 } else { 6 }), s.palette.dim),
+        Span::styled(
+            cell(
+                "RANGO",
+                if wide {
+                    7
+                } else if tiny {
+                    5
+                } else {
+                    6
+                },
+            ),
+            s.palette.dim,
+        ),
+        Span::styled(
+            cell(
+                "PEAK",
+                if wide {
+                    7
+                } else if tiny {
+                    5
+                } else {
+                    6
+                },
+            ),
+            s.palette.dim,
+        ),
     ];
     if player_context {
         header.push(Span::styled(cell("NIV.", 6), s.palette.dim));
@@ -684,6 +1129,7 @@ fn live_roster(s: &mut Screen, app: &App, roster: &RosterSnapshot, side: RosterS
         let name = roster_identity(player);
         let agent = available_text(&player.agent, "Agente —");
         let rank = compact_rank_label(&available_text(&player.rank, "—"));
+        let peak = compact_rank_label(&available_text(&player.peak_rank, "—"));
         let level = roster_level(app, player);
         let premade = premade_marker(roster, player);
         let metrics = match &player.stats {
@@ -707,11 +1153,45 @@ fn live_roster(s: &mut Screen, app: &App, roster: &RosterSnapshot, side: RosterS
             ),
             Span::styled(cell(&name, if wide { 16 } else { 10 }), style),
             Span::raw(if wide { "  " } else { " " }),
-            Span::styled(cell(&agent, if wide { 11 } else { 9 }), s.palette.dim),
+            Span::styled(
+                cell(
+                    &agent,
+                    if wide {
+                        11
+                    } else if tiny {
+                        6
+                    } else {
+                        9
+                    },
+                ),
+                s.palette.dim,
+            ),
             Span::raw(" "),
             Span::styled(
-                cell(&rank, if wide { 7 } else { 6 }),
+                cell(
+                    &rank,
+                    if wide {
+                        7
+                    } else if tiny {
+                        5
+                    } else {
+                        6
+                    },
+                ),
                 s.palette.rank_style(&rank),
+            ),
+            Span::styled(
+                cell(
+                    &peak,
+                    if wide {
+                        7
+                    } else if tiny {
+                        5
+                    } else {
+                        6
+                    },
+                ),
+                s.palette.rank_style(&peak),
             ),
         ];
         if player_context {
@@ -774,6 +1254,7 @@ fn live_player_detail(s: &mut Screen, app: &App, roster: &RosterSnapshot, player
     let agent = available_text(&player.agent, "Agente —");
     s.section(&format!("{name} / {agent}"), s.palette.focus);
     let rank = available_text(&player.rank, "Rango —");
+    let peak = available_text(&player.peak_rank, "—");
     let level = roster_level(app, player);
     let premade = premade_detail(roster, player);
     s.row(Line::from(vec![
@@ -788,7 +1269,10 @@ fn live_player_detail(s: &mut Screen, app: &App, roster: &RosterSnapshot, player
     if let DataAvailability::Available(stats) = &player.stats {
         let metrics = roster_metrics(stats);
         s.row(Line::from(vec![
-            Span::styled(format!("{rank} · "), s.palette.rank_style(&rank)),
+            Span::styled(
+                format!("{rank} · Peak {peak} · "),
+                s.palette.rank_style(&rank),
+            ),
             Span::raw(format!(
                 "{} Ranked · K/D {} · WR {}",
                 stats.matches, metrics[0], metrics[3]
@@ -966,7 +1450,8 @@ fn premade_detail(roster: &RosterSnapshot, player: &RosterPlayer) -> String {
 
 fn roster(s: &mut Screen, app: &App, start: usize) {
     let demo = app.demo.as_ref().unwrap();
-    let wide = s.width >= 70;
+    let wide = s.width >= 86;
+    let tiny = s.width < 50;
     s.section(
         if start == 0 {
             "ALIADOS · 5 / HISTÓRICO"
@@ -982,9 +1467,11 @@ fn roster(s: &mut Screen, app: &App, start: usize) {
     if start == 0 {
         s.row(Line::styled(
             if wide {
-                "    JUGADOR        AGENTE      RANGO     K/D    WR    ÚLT.5  TRK"
+                "    JUGADOR        AGENTE      RANGO     PEAK      K/D    WR    ÚLT.5  TRK"
+            } else if tiny {
+                "    JUGADOR AGENTE RANG PEAK K/D"
             } else {
-                "    JUGADOR   AGENTE   RANGO  K/D"
+                "    JUGADOR   AGENTE   RANGO  PEAK   K/D"
             },
             s.palette.dim,
         ));
@@ -1005,14 +1492,48 @@ fn roster(s: &mut Screen, app: &App, start: usize) {
                     .map_or(s.palette.dim, |group| s.palette.premade_index_style(group)),
             ),
             Span::raw(cell(p.name, if wide { 15 } else { 10 })),
-            Span::styled(cell(p.agent, if wide { 12 } else { 9 }), s.palette.dim),
             Span::styled(
-                cell(p.rank, if wide { 10 } else { 7 }),
+                cell(
+                    p.agent,
+                    if wide {
+                        12
+                    } else if tiny {
+                        6
+                    } else {
+                        9
+                    },
+                ),
+                s.palette.dim,
+            ),
+            Span::styled(
+                cell(
+                    p.rank,
+                    if wide {
+                        10
+                    } else if tiny {
+                        5
+                    } else {
+                        7
+                    },
+                ),
                 if p.hidden {
                     s.palette.pending
                 } else {
                     s.palette.rank_style(p.rank)
                 },
+            ),
+            Span::styled(
+                cell(
+                    p.peak,
+                    if wide {
+                        10
+                    } else if tiny {
+                        5
+                    } else {
+                        7
+                    },
+                ),
+                s.palette.rank_style(p.peak),
             ),
             Span::raw(cell(p.kd, if wide { 7 } else { 5 })),
         ];
@@ -1115,7 +1636,7 @@ fn demo_postmatch(s: &mut Screen, app: &App) {
 
 fn demo_completed_roster(s: &mut Screen, app: &App, start: usize, title: &str) {
     let demo = app.demo.as_ref().unwrap();
-    let wide = s.width >= 82;
+    let wide = s.width >= 96;
     s.section(
         title,
         if start == 0 {
@@ -1126,9 +1647,9 @@ fn demo_completed_roster(s: &mut Screen, app: &App, start: usize, title: &str) {
     );
     s.row(Line::styled(
         if wide {
-            "    JUGADOR          AGENTE      RANGO    K / D / A    ACS    HS%    TRK"
+            "    JUGADOR          AGENTE      RANGO    PEAK     K / D / A    ACS    HS%    TRK"
         } else {
-            "    JUGADOR        AGENTE    K / D / A   ACS"
+            "    JUGADOR        AGENTE    RANGO  PEAK   K / D / A"
         },
         s.palette.dim,
     ));
@@ -1457,6 +1978,11 @@ fn historical_roster(
             .as_deref()
             .map(compact_rank_label)
             .unwrap_or_else(|| "—".into());
+        let peak = player
+            .peak_rank
+            .as_deref()
+            .map(compact_rank_label)
+            .unwrap_or_else(|| "—".into());
         let kda = format!(
             "{}/{}/{}",
             player.stats.kills, player.stats.deaths, player.stats.assists
@@ -1483,13 +2009,18 @@ fn historical_roster(
                 s.palette.dim,
             ),
         ];
+        spans.push(Span::styled(
+            cell(&rank, if wide { 9 } else { 7 }),
+            s.palette.rank_style(&rank),
+        ));
+        spans.push(Span::styled(
+            cell(&peak, if wide { 9 } else { 7 }),
+            s.palette.rank_style(&peak),
+        ));
+        spans.push(Span::styled(cell(&kda, if wide { 13 } else { 12 }), style));
         if wide {
-            spans.push(Span::styled(cell(&rank, 9), s.palette.rank_style(&rank)));
+            spans.push(Span::styled(cell(&acs, 7), s.palette.focus));
         }
-        spans.extend([
-            Span::styled(cell(&kda, if wide { 13 } else { 12 }), style),
-            Span::styled(cell(&acs, 7), s.palette.focus),
-        ]);
         if wide {
             spans.extend([
                 Span::styled(cell(&match_hs_text(&player.stats), 8), s.palette.focus),
@@ -1827,9 +2358,12 @@ fn footer_line(app: &App, palette: Palette, width: u16) -> Line<'static> {
                 ("r", "actualizar"),
                 ("q", "salir"),
             ],
-            2 if compact => &[("↑/↓", "mover"), ("q", "salir")],
+            2 if app.profile_detail && compact => &[("↑/↓", "mover"), ("Esc", "resumen")],
+            2 if app.profile_detail => &[("↑/↓", "desplazar"), ("Esc", "resumen"), ("q", "salir")],
+            2 if compact => &[("Enter", "análisis"), ("q", "salir")],
             2 => &[
                 ("↑/↓", "desplazar"),
+                ("Enter", "análisis"),
                 ("r", "actualizar"),
                 ("1-5", "sección"),
                 ("q", "salir"),
@@ -2695,6 +3229,8 @@ mod tests {
                     details: None,
                     rr_change: Some(if index % 2 == 0 { 20 } else { -10 }),
                     rr_after: Some(50),
+                    tier_after: Some(18),
+                    performance_bonus: Some(0),
                 })
                 .collect(),
         );
@@ -2874,6 +3410,14 @@ mod tests {
             assert!(!text.contains("ENEMIGOS") && !text.contains("TUS RONDAS"));
         }
         app.live_match = None;
+        app.update_state(StateInfo::new(
+            GamePhase::PostMatch,
+            GameState::Idle,
+            Confidence::High,
+            "test",
+            true,
+            false,
+        ));
         app.completed_match = Some(super::super::PostMatch {
             mode: crate::models::GameMode::Deathmatch,
             map: "Ascent".into(),
@@ -2940,6 +3484,7 @@ mod tests {
                 identity,
                 agent: DataAvailability::Available(agent.into()),
                 rank: DataAvailability::Available(rank.into()),
+                peak_rank: DataAvailability::Available("Ascendente 1".into()),
                 level: DataAvailability::Available(142),
                 premade: DataAvailability::Available("Grupo A".into()),
                 stats,
@@ -3030,6 +3575,8 @@ mod tests {
         app.competitive = Some(crate::providers::profile::CompetitiveProfile {
             tier: 18,
             ranked_rating: 64,
+            peak_tier: 21,
+            peak_ranked_rating: 12,
             wins: 8,
             games: 14,
         });
@@ -3064,6 +3611,7 @@ mod tests {
                         riot_id: Some("MiCuenta#LAS".into()),
                         agent: "Sova".into(),
                         rank: Some("Ascendente 2".into()),
+                        peak_rank: Some("Inmortal 1".into()),
                         stats: crate::models::PlayerMatchStats {
                             kills: 20,
                             deaths: 10,
@@ -3085,6 +3633,7 @@ mod tests {
                         riot_id: Some("Rival#LAS".into()),
                         agent: "Omen".into(),
                         rank: Some("Diamante 3".into()),
+                        peak_rank: Some("Ascendente 1".into()),
                         stats: crate::models::PlayerMatchStats {
                             kills: 15,
                             deaths: 20,
@@ -3099,6 +3648,8 @@ mod tests {
             }),
             rr_change: Some(20),
             rr_after: Some(64),
+            tier_after: Some(18),
+            performance_bonus: Some(2),
         }]);
 
         app.select_tab(0);
@@ -3111,9 +3662,13 @@ mod tests {
 
         app.select_tab(2);
         let profile = snapshot(&mut app, 100, 30);
-        assert!(profile.contains("20 K / 10 D / 5 A"));
+        assert!(profile.contains("PROGRESIÓN RECIENTE") && profile.contains("K/D 2.00"));
+        app.profile_detail = true;
+        let profile = snapshot(&mut app, 100, 50);
         assert!(
-            profile.contains("POR AGENTE") && profile.contains("Sova") && profile.contains("100%")
+            profile.contains("AGENTES / MAPAS")
+                && profile.contains("Sova")
+                && profile.contains("100%")
         );
         assert!(!profile.contains("pendiente") && !profile.contains("CLI"));
 

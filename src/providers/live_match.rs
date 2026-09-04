@@ -88,7 +88,7 @@ impl LiveMatchSource {
                 party_ids.insert(subject, inferred_party);
             }
         }
-        parse_live_match_with_names_and_stats(
+        let mut context = parse_live_match_with_names_and_stats(
             &payload,
             &request.own_puuid,
             &names,
@@ -96,6 +96,57 @@ impl LiveMatchSource {
             queue.as_deref(),
             request.phase,
             &party_ids,
+        )?;
+        if let Some(roster) = context.roster.as_mut() {
+            for (player, raw) in roster.players.iter_mut().zip(players.iter()) {
+                player.peak_rank = raw
+                    .get("Subject")
+                    .and_then(Value::as_str)
+                    .and_then(|subject| enrichment.peaks.get(subject))
+                    .copied()
+                    .and_then(competitive_tier_label)
+                    .map(DataAvailability::Available)
+                    .unwrap_or(DataAvailability::NotAvailable);
+            }
+        }
+        Ok(context)
+    }
+
+    pub(crate) fn fetch_basic(
+        &self,
+        request: &LiveMatchRequest,
+    ) -> Result<LiveMatchContext, ProviderError> {
+        let payload = self.fetch_payload(request)?;
+        parse_live_match_with_names_and_stats(
+            &payload,
+            &request.own_puuid,
+            &HashMap::new(),
+            &HashMap::new(),
+            request.queue.as_deref(),
+            request.phase,
+            &HashMap::new(),
+        )
+    }
+
+    /// Resuelve las identidades visibles sin esperar historiales, estadísticas
+    /// ni PEAK. Esta etapa permite completar el roster en pocos requests.
+    pub(crate) fn fetch_named(
+        &self,
+        request: &LiveMatchRequest,
+    ) -> Result<LiveMatchContext, ProviderError> {
+        let payload = self.fetch_payload(request)?;
+        let players = roster_players(&payload, &request.own_puuid);
+        let names = self
+            .fetch_visible_names(request, &players, &request.party_ids)
+            .unwrap_or_default();
+        parse_live_match_with_names_and_stats(
+            &payload,
+            &request.own_puuid,
+            &names,
+            &HashMap::new(),
+            request.queue.as_deref(),
+            request.phase,
+            &request.party_ids,
         )
     }
 
@@ -400,6 +451,7 @@ fn normalize_roster(
                 identity,
                 agent,
                 rank,
+                peak_rank: DataAvailability::NotAvailable,
                 level,
                 premade: premades
                     .get(subject)

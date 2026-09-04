@@ -8,7 +8,10 @@ use std::{
     collections::{HashMap, HashSet},
     net::TcpStream,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -130,6 +133,7 @@ pub struct LocalClientSource {
     client: Client,
     lockfile_path: Option<PathBuf>,
     event_phase: Arc<Mutex<Option<EventPhase>>>,
+    match_revision: Arc<AtomicU64>,
     last_phase_probe: Arc<Mutex<Option<Instant>>>,
     glz_base_url: Option<String>,
 }
@@ -165,6 +169,7 @@ impl LocalClientSource {
             client,
             lockfile_path,
             event_phase: Arc::new(Mutex::new(None)),
+            match_revision: Arc::new(AtomicU64::new(0)),
             last_phase_probe: Arc::new(Mutex::new(None)),
             glz_base_url: None,
         }
@@ -231,10 +236,13 @@ impl LocalClientSource {
             // Conservarlo en Lobby/PreGame podía hacer que la siguiente carga
             // consultara durante unos segundos la partida que ya terminó.
             let match_id = if phase == GamePhase::PostMatch {
-                match_id.or(previous_match_id)
+                match_id.or(previous_match_id.clone())
             } else {
                 match_id
             };
+            if match_id.is_some() && match_id != previous_match_id {
+                self.match_revision.fetch_add(1, Ordering::AcqRel);
+            }
             *current = Some(EventPhase {
                 phase,
                 observed_at: Instant::now(),
@@ -518,6 +526,27 @@ impl LocalClientSource {
         &self,
         phase: GamePhase,
     ) -> Result<LiveMatchRequest, ProviderError> {
+        self.live_match_request_with_enrichment(phase, true)
+    }
+
+    fn context_revision(&self) -> u64 {
+        self.match_revision.load(Ordering::Acquire)
+    }
+
+    /// Solicitud prioritaria: evita Party/Presence para poder pintar el roster
+    /// antes del enriquecimiento histórico.
+    pub(crate) fn live_match_request_basic(
+        &self,
+        phase: GamePhase,
+    ) -> Result<LiveMatchRequest, ProviderError> {
+        self.live_match_request_with_enrichment(phase, false)
+    }
+
+    fn live_match_request_with_enrichment(
+        &self,
+        phase: GamePhase,
+        enrich: bool,
+    ) -> Result<LiveMatchRequest, ProviderError> {
         if !matches!(
             phase,
             GamePhase::PreGame | GamePhase::AgentSelect | GamePhase::InMatch
@@ -539,9 +568,11 @@ impl LocalClientSource {
             &sessions,
             puuid_from_access_token(&tokens.access_token).as_deref(),
         )?;
-        let mut queue = self.current_queue(&session, &tokens).ok().flatten();
+        let mut queue = enrich
+            .then(|| self.current_queue(&session, &tokens).ok().flatten())
+            .flatten();
         let mut party_ids = HashMap::new();
-        if let Ok(payload) = self.json_from(&lockfile, PRESENCES_ENDPOINT) {
+        if enrich && let Ok(payload) = self.json_from(&lockfile, PRESENCES_ENDPOINT) {
             party_ids.extend(presence_party_ids(&payload));
             if queue.is_none() {
                 queue = presence_queue(&payload, &session.own_puuid);
@@ -795,6 +826,7 @@ impl Clone for LocalClientSource {
             client: self.client.clone(),
             lockfile_path: self.lockfile_path.clone(),
             event_phase: Arc::clone(&self.event_phase),
+            match_revision: Arc::clone(&self.match_revision),
             last_phase_probe: Arc::clone(&self.last_phase_probe),
             glz_base_url: self.glz_base_url.clone(),
         }
@@ -1088,7 +1120,7 @@ impl GameStateSource for LocalClientSource {
             self.apply_phase_probe(probe);
         }
         if let Some(phase) = self.event_phase(coarse == GameState::GameOpen) {
-            return Ok(state_from_event_phase(phase));
+            return Ok(state_from_event_phase(phase).with_context_revision(self.context_revision()));
         }
         Ok(state_after_health(coarse))
     }
@@ -1313,6 +1345,18 @@ mod tests {
         assert_eq!(source.event_phase(false), Some(GamePhase::PreGame));
         source.clear_event_phase();
         assert_eq!(source.event_phase(false), None);
+    }
+
+    #[test]
+    fn opaque_revision_changes_only_for_a_new_match_identifier() {
+        let source = LocalClientSource::with_lockfile_path(Some(PathBuf::from("unused")));
+        assert_eq!(source.context_revision(), 0);
+        source.set_event_phase(GamePhase::AgentSelect, Some("match-1".into()));
+        assert_eq!(source.context_revision(), 1);
+        source.set_event_phase(GamePhase::InMatch, Some("match-1".into()));
+        assert_eq!(source.context_revision(), 1);
+        source.set_event_phase(GamePhase::InMatch, Some("match-2".into()));
+        assert_eq!(source.context_revision(), 2);
     }
 
     #[test]

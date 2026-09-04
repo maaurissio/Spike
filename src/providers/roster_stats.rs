@@ -51,6 +51,7 @@ pub(crate) struct RosterStatsSource {
 
 pub(crate) struct RosterEnrichment {
     pub stats: HashMap<String, HistoricalStats>,
+    pub peaks: HashMap<String, u64>,
     /// PUUID -> identificador opaco de grupo inferido. No contiene MatchID.
     pub inferred_parties: HashMap<String, String>,
 }
@@ -88,6 +89,7 @@ impl RosterStatsSource {
     ) -> RosterEnrichment {
         let subjects = unique_subjects(subjects);
         let mut histories = HashMap::<String, Vec<String>>::new();
+        let mut peaks = HashMap::new();
 
         for chunk in subjects.chunks(MAX_CONCURRENCY) {
             let fetched = thread::scope(|scope| {
@@ -97,7 +99,8 @@ impl RosterStatsSource {
                     .map(|subject| {
                         scope.spawn(move || {
                             let history = self.fetch_history(request, &subject);
-                            (subject, history)
+                            let peak = self.fetch_peak(request, &subject).ok().flatten();
+                            (subject, history, peak)
                         })
                     })
                     .collect::<Vec<_>>();
@@ -106,7 +109,10 @@ impl RosterStatsSource {
                     .filter_map(|handle| handle.join().ok())
                     .collect::<Vec<_>>()
             });
-            for (subject, history) in fetched {
+            for (subject, history, peak) in fetched {
+                if let Some(peak) = peak {
+                    peaks.insert(subject.clone(), peak);
+                }
                 if let Ok(mut match_ids) = history {
                     exclude_match(&mut match_ids, excluded_match_id);
                     histories.insert(subject, match_ids);
@@ -156,8 +162,31 @@ impl RosterStatsSource {
             .collect();
         RosterEnrichment {
             stats,
+            peaks,
             inferred_parties,
         }
+    }
+
+    fn fetch_peak(
+        &self,
+        request: &RosterStatsRequest,
+        subject: &str,
+    ) -> Result<Option<u64>, ProviderError> {
+        if !safe_identifier(subject) {
+            return Err(ProviderError::Parse(
+                "identificador de jugador inválido en MMR".into(),
+            ));
+        }
+        let base = self
+            .base_url
+            .clone()
+            .unwrap_or_else(|| format!("https://pd.{}.a.pvp.net", request.shard));
+        let url = format!("{base}/mmr/v1/players/{subject}");
+        let response = authenticated(self.client.get(url), request)
+            .send()
+            .map_err(|_| ProviderError::Network("no se pudo consultar MMR de roster".into()))?;
+        let payload = response_json(response, "MMR del roster")?;
+        Ok(peak_tier(&payload))
     }
 
     fn fetch_history(
@@ -207,6 +236,25 @@ impl RosterStatsSource {
             .map_err(|_| ProviderError::Network("no se pudo consultar detalle de roster".into()))?;
         response_json(response, "match-details del roster")
     }
+}
+
+fn peak_tier(payload: &Value) -> Option<u64> {
+    payload
+        .pointer("/QueueSkills/competitive/SeasonalInfoBySeasonID")?
+        .as_object()?
+        .values()
+        .filter_map(|season| {
+            let tier = season.get("CompetitiveTier")?.as_u64()?;
+            (tier >= 3).then_some((
+                tier,
+                season
+                    .get("RankedRating")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+            ))
+        })
+        .max()
+        .map(|(tier, _)| tier)
 }
 
 /// Durante una partida Riot no publica de forma fiable el PartyID enemigo.
@@ -733,7 +781,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
-            for _ in 0..3 {
+            for _ in 0..5 {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut request = [0; 4096];
                 let size = stream.read(&mut request).unwrap();
@@ -751,6 +799,13 @@ mod tests {
                     serde_json::json!({
                         "Subject":"visible",
                         "History":[{"MatchID":"current"},{"MatchID":"shared"}]
+                    })
+                } else if path.contains("/mmr/v1/players/") {
+                    serde_json::json!({
+                        "QueueSkills":{"competitive":{"SeasonalInfoBySeasonID":{
+                            "old":{"CompetitiveTier":18,"RankedRating":80},
+                            "peak":{"CompetitiveTier":21,"RankedRating":10}
+                        }}}
                     })
                 } else {
                     assert!(path.contains("/matches/shared"));
@@ -790,6 +845,8 @@ mod tests {
         );
 
         assert_eq!(enrichment.stats.len(), 2);
+        assert_eq!(enrichment.peaks.len(), 2);
+        assert!(enrichment.peaks.values().all(|tier| *tier == 21));
         assert_eq!(enrichment.stats["hidden"].kd_hundredths(), Some(200));
         assert_eq!(enrichment.stats["visible"].win_rate_tenths(), Some(1000));
         assert_eq!(

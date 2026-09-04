@@ -61,6 +61,16 @@ const INPUT_TIMEOUT: Duration = Duration::from_millis(100);
 const SPLASH_DURATION: Duration = Duration::from_secs(3);
 const PARTY_REFRESH_INTERVAL: Duration = Duration::from_secs(4);
 const MAX_PARTY_REFRESH_ATTEMPTS: u8 = 8;
+const ENRICHMENT_RETRY_INTERVAL: Duration = Duration::from_secs(4);
+const MAX_ENRICHMENT_ATTEMPTS: u8 = 3;
+
+fn preserve_available<T: Clone>(target: &mut DataAvailability<T>, previous: &DataAvailability<T>) {
+    if !matches!(target, DataAvailability::Available(_))
+        && let DataAvailability::Available(value) = previous
+    {
+        *target = DataAvailability::Available(value.clone());
+    }
+}
 
 /// Las cinco vistas persistentes. `Partida` se muestra aparte solo si hay contexto activo.
 const BASE_TABS: [usize; 5] = [0, 2, 3, 4, 5];
@@ -173,6 +183,10 @@ struct HistoryItem {
     details: Option<HistoryDetails>,
     rr_change: Option<i32>,
     rr_after: Option<u32>,
+    #[serde(default)]
+    tier_after: Option<u32>,
+    #[serde(default)]
+    performance_bonus: Option<i32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -284,6 +298,7 @@ struct App {
     player_index: usize,
     history_index: usize,
     detail: bool,
+    profile_detail: bool,
     tracker_notice: bool,
     tracker_open_failed: bool,
     round_page: usize,
@@ -308,6 +323,11 @@ struct App {
     observation_pending: bool,
     context_pending: bool,
     context_requested: bool,
+    enrichment_pending: bool,
+    enrichment_requested: bool,
+    enrichment_attempts: u8,
+    enrichment_retry_at: Option<Instant>,
+    context_retry_at: Option<Instant>,
     context_failed: bool,
     context_progress: u16,
     context_progress_label: &'static str,
@@ -315,6 +335,8 @@ struct App {
     party_attempts: u8,
     party_retry_at: Option<Instant>,
     history_pending: bool,
+    history_peaks_pending: Option<HistoryEntry>,
+    history_peaks_requested: Option<HistoryEntry>,
     generation: u64,
     epoch: u64,
     log_failed: bool,
@@ -340,6 +362,7 @@ impl App {
             player_index: 0,
             history_index: 0,
             detail: false,
+            profile_detail: false,
             tracker_notice: false,
             tracker_open_failed: false,
             round_page: 0,
@@ -364,6 +387,11 @@ impl App {
             observation_pending: false,
             context_pending: false,
             context_requested: false,
+            enrichment_pending: false,
+            enrichment_requested: false,
+            enrichment_attempts: 0,
+            enrichment_retry_at: None,
+            context_retry_at: None,
             context_failed: false,
             context_progress: 0,
             context_progress_label: "Esperando contexto de partida",
@@ -371,6 +399,8 @@ impl App {
             party_attempts: 0,
             party_retry_at: None,
             history_pending: false,
+            history_peaks_pending: None,
+            history_peaks_requested: None,
             generation: 0,
             epoch: 0,
             log_failed: false,
@@ -486,6 +516,9 @@ impl App {
         };
         self.scroll = 0;
         self.detail = false;
+        if self.selected_tab != 2 {
+            self.profile_detail = false;
+        }
         self.tracker_notice = false;
         self.tracker_open_failed = false;
         self.follow_selection = true;
@@ -560,12 +593,12 @@ impl App {
             .state
             .as_ref()
             .is_some_and(|previous| !previous.client_found && state.client_found);
-        let phase_changed = self
-            .state
-            .as_ref()
-            .is_none_or(|previous| previous.phase != state.phase);
+        let phase_changed = self.state.as_ref().is_none_or(|previous| {
+            previous.phase != state.phase || previous.context_revision != state.context_revision
+        });
         let changed = self.state.as_ref().is_none_or(|previous| {
             previous.phase != state.phase
+                || previous.context_revision != state.context_revision
                 || previous.client_found != state.client_found
                 || previous.game_found != state.game_found
         });
@@ -575,7 +608,13 @@ impl App {
             self.detail = false;
             self.follow_selection = true;
             self.generation = self.generation.wrapping_add(1);
+            self.context_pending = false;
             self.context_requested = false;
+            self.enrichment_pending = false;
+            self.enrichment_requested = false;
+            self.enrichment_attempts = 0;
+            self.enrichment_retry_at = None;
+            self.context_retry_at = None;
             self.context_failed = false;
             self.party_pending = false;
             self.party_attempts = 0;
@@ -584,7 +623,13 @@ impl App {
             self.postmatch_history_refresh_pending = false;
             self.live_match = None;
             // El último resumen permanece disponible tras volver al menú.
-            if matches!(state.phase, GamePhase::InMatch | GamePhase::ClientClosed) {
+            if matches!(
+                state.phase,
+                GamePhase::PreGame
+                    | GamePhase::AgentSelect
+                    | GamePhase::InMatch
+                    | GamePhase::ClientClosed
+            ) {
                 self.completed_match = None;
             }
             if state.phase == GamePhase::PostMatch {
@@ -648,12 +693,12 @@ impl App {
                 return;
             }
             Reply::Context { generation, data } => {
-                self.context_pending = false;
                 self.record_riot_sync("contexto de partida", data.is_ok());
                 if generation != self.generation {
                     self.dirty = true;
                     return;
                 }
+                self.context_pending = false;
                 self.context_failed = data.is_err();
                 self.context_progress = if data.is_ok() { 100 } else { 0 };
                 match data {
@@ -670,15 +715,113 @@ impl App {
                         self.party_attempts = 0;
                         self.party_retry_at = Some(Instant::now() + PARTY_REFRESH_INTERVAL);
                         self.push_log(LogLevel::Success, "Contexto de partida actualizado");
+                        self.context_retry_at = None;
                     }
                     Ok(Context::Completed(summary)) => {
                         self.completed_match = Some(summary);
                         self.push_log(LogLevel::Success, "Resumen postpartida actualizado");
                     }
-                    Err(()) => self.push_log(
+                    Err(()) => {
+                        self.context_requested = false;
+                        self.context_retry_at = Some(Instant::now() + Duration::from_secs(2));
+                        self.push_log(
+                            LogLevel::Warning,
+                            "No se pudo actualizar el contexto de partida",
+                        );
+                    }
+                }
+            }
+            Reply::EnrichedContext { generation, data } => {
+                if generation != self.generation {
+                    self.dirty = true;
+                    return;
+                }
+                self.enrichment_pending = false;
+                if let Ok(mut context) = data {
+                    let selected_slot = self.selected_live_player().map(|player| player.slot);
+                    if let (Some(previous), Some(next)) = (
+                        self.live_match
+                            .as_ref()
+                            .and_then(|current| current.roster.as_ref()),
+                        context.roster.as_mut(),
+                    ) {
+                        for player in &mut next.players {
+                            if let Some(old) = previous
+                                .players
+                                .iter()
+                                .find(|old| old.side == player.side && old.slot == player.slot)
+                            {
+                                preserve_available(&mut player.rank, &old.rank);
+                                preserve_available(&mut player.peak_rank, &old.peak_rank);
+                                preserve_available(&mut player.level, &old.level);
+                                preserve_available(&mut player.premade, &old.premade);
+                                preserve_available(&mut player.stats, &old.stats);
+                            }
+                        }
+                    }
+                    self.live_match = Some(context);
+                    self.player_index = selected_slot
+                        .and_then(|slot| {
+                            self.live_match
+                                .as_ref()?
+                                .roster
+                                .as_ref()?
+                                .players
+                                .iter()
+                                .position(|player| player.slot == slot)
+                        })
+                        .unwrap_or(self.player_index);
+                    self.push_log(LogLevel::Success, "Roster enriquecido actualizado");
+                    self.enrichment_retry_at = None;
+                } else {
+                    self.enrichment_requested = false;
+                    self.enrichment_retry_at = Some(Instant::now() + ENRICHMENT_RETRY_INTERVAL);
+                    self.push_log(
                         LogLevel::Warning,
-                        "No se pudo actualizar el contexto de partida",
-                    ),
+                        "No se pudo completar el enriquecimiento del roster",
+                    );
+                }
+            }
+            Reply::NamedContext { generation, data } => {
+                if generation != self.generation {
+                    self.dirty = true;
+                    return;
+                }
+                if let Ok(mut context) = data {
+                    let selected_slot = self.selected_live_player().map(|player| player.slot);
+                    if let (Some(previous), Some(next)) = (
+                        self.live_match
+                            .as_ref()
+                            .and_then(|current| current.roster.as_ref()),
+                        context.roster.as_mut(),
+                    ) {
+                        for player in &mut next.players {
+                            if let Some(old) = previous
+                                .players
+                                .iter()
+                                .find(|old| old.side == player.side && old.slot == player.slot)
+                            {
+                                preserve_available(&mut player.rank, &old.rank);
+                                preserve_available(&mut player.peak_rank, &old.peak_rank);
+                                preserve_available(&mut player.level, &old.level);
+                                preserve_available(&mut player.premade, &old.premade);
+                                preserve_available(&mut player.stats, &old.stats);
+                            }
+                        }
+                    }
+                    self.live_match = Some(context);
+                    self.player_index = selected_slot
+                        .and_then(|slot| {
+                            self.live_match
+                                .as_ref()?
+                                .roster
+                                .as_ref()?
+                                .players
+                                .iter()
+                                .position(|player| player.slot == slot)
+                        })
+                        .unwrap_or(self.player_index);
+                    self.push_log(LogLevel::Success, "Nombres del roster actualizados");
                 }
             }
             Reply::Parties { generation, data } => {
@@ -742,9 +885,30 @@ impl App {
                 }
                 self.profile_failed = data.is_err();
                 if let Ok((profile, competitive, updates)) = data {
+                    let own_rank = competitive.as_ref().and_then(|rank| {
+                        crate::providers::roster::competitive_tier_label(u64::from(rank.tier))
+                    });
+                    let own_peak = competitive.as_ref().and_then(|rank| {
+                        crate::providers::roster::competitive_tier_label(u64::from(rank.peak_tier))
+                    });
                     self.own_profile = Some(profile);
                     self.competitive = competitive;
                     self.competitive_updates = updates;
+                    if let Some(player) = self.live_match.as_mut().and_then(|context| {
+                        context
+                            .roster
+                            .as_mut()?
+                            .players
+                            .iter_mut()
+                            .find(|player| player.is_self)
+                    }) {
+                        if let Some(rank) = own_rank {
+                            player.rank = DataAvailability::Available(rank);
+                        }
+                        if let Some(peak) = own_peak {
+                            player.peak_rank = DataAvailability::Available(peak);
+                        }
+                    }
                     self.push_log(LogLevel::Success, "Perfil y rango actualizados");
                 } else {
                     self.push_log(LogLevel::Warning, "No se pudo actualizar el perfil");
@@ -819,6 +983,29 @@ impl App {
                     self.push_log(LogLevel::Warning, "No se pudo actualizar el historial");
                 }
             }
+            Reply::HistoryPeaks { epoch, entry, data } => {
+                if self.history_peaks_pending.as_ref() == Some(&entry) {
+                    self.history_peaks_pending = None;
+                }
+                if epoch != self.epoch {
+                    self.dirty = true;
+                    return;
+                }
+                if let Ok(peaks) = data
+                    && let Some(item) = self
+                        .history
+                        .as_mut()
+                        .and_then(|items| items.iter_mut().find(|item| item.entry == entry))
+                    && let Some(details) = item.details.as_mut()
+                {
+                    for (player, peak) in details.roster.iter_mut().zip(peaks) {
+                        player.peak_rank = peak;
+                    }
+                    if let Some(history) = &self.history {
+                        let _ = worker::save_cached_history(history);
+                    }
+                }
+            }
             Reply::Saved(result) => {
                 let succeeded = result.is_ok();
                 self.settings.saved(result);
@@ -874,6 +1061,7 @@ impl App {
         }
         if !self.context_pending
             && !self.context_requested
+            && self.context_retry_at.is_none_or(|at| Instant::now() >= at)
             && let Some(
                 phase @ (GamePhase::PreGame
                 | GamePhase::AgentSelect
@@ -908,8 +1096,63 @@ impl App {
             self.party_retry_at = None;
             self.dirty = true;
         }
-        if connected && !self.history_requested && !self.history_failed {
+        if self.live_match.is_some()
+            && !self.enrichment_pending
+            && !self.enrichment_requested
+            && self.enrichment_attempts < MAX_ENRICHMENT_ATTEMPTS
+            && self
+                .enrichment_retry_at
+                .is_none_or(|at| Instant::now() >= at)
+            && let Some(phase @ (GamePhase::PreGame | GamePhase::AgentSelect | GamePhase::InMatch)) =
+                self.state.as_ref().map(|info| info.phase)
+            && worker.submit(Request::EnrichContext {
+                phase,
+                generation: self.generation,
+            })
+        {
+            self.enrichment_pending = true;
+            self.enrichment_requested = true;
+            self.enrichment_attempts = self.enrichment_attempts.saturating_add(1);
+            self.enrichment_retry_at = None;
+            self.dirty = true;
+        }
+        let active_match = self.state.as_ref().is_some_and(|state| {
+            matches!(
+                state.phase,
+                GamePhase::PreGame | GamePhase::AgentSelect | GamePhase::InMatch
+            )
+        });
+        if connected && !active_match && !self.history_requested && !self.history_failed {
             self.request_history(worker);
+        }
+        let peak_entry = if self.postmatch_history_ready {
+            self.history.as_ref().and_then(|items| items.first())
+        } else if self.selected_tab == 3 && self.detail {
+            self.history
+                .as_ref()
+                .and_then(|items| items.get(self.history_index))
+        } else {
+            None
+        }
+        .filter(|item| {
+            item.details.as_ref().is_some_and(|details| {
+                details
+                    .roster
+                    .iter()
+                    .any(|player| player.peak_rank.is_none())
+            })
+        })
+        .map(|item| item.entry.clone());
+        if self.history_peaks_pending.is_none()
+            && let Some(entry) = peak_entry
+            && self.history_peaks_requested.as_ref() != Some(&entry)
+            && worker.submit(Request::HistoryPeaks {
+                epoch: self.epoch,
+                entry: entry.clone(),
+            })
+        {
+            self.history_peaks_pending = Some(entry.clone());
+            self.history_peaks_requested = Some(entry);
         }
     }
 
@@ -976,7 +1219,10 @@ impl App {
             }
             KeyCode::Char('q') => self.request_quit(worker),
             KeyCode::Esc => {
-                if self.detail {
+                if self.selected_tab == 2 && self.profile_detail {
+                    self.profile_detail = false;
+                    self.scroll = 0;
+                } else if self.detail {
                     self.detail = false;
                     self.tracker_notice = false;
                     self.tracker_open_failed = false;
@@ -1009,6 +1255,11 @@ impl App {
             KeyCode::Right | KeyCode::Char('l') => self.select_next(),
             KeyCode::Left | KeyCode::Char('h') => self.select_previous(),
             KeyCode::Enter if self.focus == Focus::Tabs => self.focus = Focus::Content,
+            KeyCode::Enter if self.selected_tab == 2 => {
+                self.profile_detail = !self.profile_detail;
+                self.scroll = 0;
+                self.follow_selection = true;
+            }
             _ if self.focus == Focus::Tabs => return,
             KeyCode::Up | KeyCode::Char('k') if self.selected_tab == 4 => {
                 self.settings.previous();
@@ -1053,7 +1304,12 @@ impl App {
             }
             KeyCode::Char('r') if self.selected_tab == 4 => self.settings.discard(),
             KeyCode::Char('c') if self.selected_tab == 5 => self.logs.clear(),
-            KeyCode::Char('r') if self.selected_tab == 3 => self.request_history(worker),
+            KeyCode::Char('r') if self.selected_tab == 3 => {
+                if self.history_peaks_pending.is_none() {
+                    self.history_peaks_requested = None;
+                }
+                self.request_history(worker);
+            }
             KeyCode::Char('r')
                 if self.selected_tab == 1
                     && self
@@ -1062,12 +1318,24 @@ impl App {
                         .is_some_and(|state| state.phase == GamePhase::PostMatch) =>
             {
                 self.postmatch_history_ready = false;
+                if self.history_peaks_pending.is_none() {
+                    self.history_peaks_requested = None;
+                }
                 self.history_requested = false;
                 self.request_history(worker);
             }
             KeyCode::Char('r') => {
                 if !self.context_pending {
                     self.context_requested = false;
+                    self.context_retry_at = None;
+                }
+                if !self.enrichment_pending {
+                    self.enrichment_requested = false;
+                    self.enrichment_attempts = 0;
+                    self.enrichment_retry_at = None;
+                }
+                if self.history_peaks_pending.is_none() {
+                    self.history_peaks_requested = None;
                 }
                 if !self.profile_pending {
                     self.profile_requested = false;
@@ -1923,6 +2191,41 @@ mod tests {
     }
 
     #[test]
+    fn new_match_revision_clears_postmatch_and_stale_reply_keeps_new_request_pending() {
+        let mut app = App::new(&Config::default());
+        let mut old = phase_info(GamePhase::PostMatch);
+        old.context_revision = Some(1);
+        app.update_state(old);
+        app.completed_match = Some(post_match(2));
+        let old_generation = app.generation;
+
+        let mut next = phase_info(GamePhase::AgentSelect);
+        next.context_revision = Some(2);
+        app.update_state(next);
+        assert!(app.completed_match.is_none());
+        assert!(app.generation != old_generation);
+
+        app.context_pending = true;
+        app.apply(Reply::Context {
+            generation: old_generation,
+            data: Err(()),
+        });
+        assert!(app.context_pending);
+    }
+
+    #[test]
+    fn profile_enter_opens_analysis_and_escape_returns_to_summary() {
+        let worker = Worker::demo().unwrap();
+        let mut app = App::new(&Config::default());
+        app.selected_tab = 2;
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &worker);
+        assert!(app.profile_detail && app.scroll == 0);
+        app.scroll = 9;
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &worker);
+        assert!(!app.profile_detail && app.scroll == 0 && !app.should_quit);
+    }
+
+    #[test]
     fn progressive_party_reply_updates_the_existing_roster() {
         let mut app = App::new(&Config::default());
         app.generation = 4;
@@ -1973,6 +2276,7 @@ mod tests {
             identity,
             agent: DataAvailability::NotAvailable,
             rank: DataAvailability::NotAvailable,
+            peak_rank: DataAvailability::NotAvailable,
             level: DataAvailability::NotAvailable,
             premade: DataAvailability::NotAvailable,
             stats: DataAvailability::NotAvailable,
@@ -1994,6 +2298,7 @@ mod tests {
             riot_id: Some("Ñorte uno#LAS".into()),
             agent: "Omen".into(),
             rank: None,
+            peak_rank: None,
             stats: Default::default(),
             rounds_played: 20,
             premade: None,
@@ -2014,6 +2319,7 @@ mod tests {
             riot_id: None,
             agent: "Sova".into(),
             rank: None,
+            peak_rank: None,
             stats: Default::default(),
             rounds_played: 20,
             premade: None,
@@ -2123,6 +2429,8 @@ mod tests {
             details: None,
             rr_change: None,
             rr_after: None,
+            tier_after: None,
+            performance_bonus: None,
         }
     }
 
